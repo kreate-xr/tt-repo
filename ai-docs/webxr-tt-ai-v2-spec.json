@@ -1,0 +1,432 @@
+{
+  "spec_version": "2.0",
+  "project": "webxr-tt-ai-opponent-v2-rally-completion",
+  "purpose": "Complete the rally loop on top of the V1 scaffold. V1 built the AI worker, FSM, engines, paddle entity, and shotAdapter — but the AI currently just touches the ball without intentional placement. V2 adds the seven missing pieces required to play a full rally: (1) paddle solver, (2) interception path planner, (3) reachability gate, (4) ready position, (5) serve logic, (6) rally end detection and scoring, (7) failure mode handling.",
+  "supersedes": "Nothing. Builds ON TOP OF webxr-tt-ai-integration-spec.json V1 which is already implemented.",
+  "v1_assumed_implemented": {
+    "description": "These exist and work. Do not rebuild or refactor.",
+    "modules": [
+      "js/ai/worker.js - AI Web Worker with message router",
+      "js/ai/shotHistory.js - 15-slot ring buffer with decay",
+      "js/ai/engines/beginner.js - random within safe zone",
+      "js/ai/engines/intermediate.js - Voronoi heatmap (or stub)",
+      "js/ai/engines/pro.js - Voronoi + exploit hooks (or stub)",
+      "js/ai/shotAdapter.js - main thread bridge, computes landing_x/z",
+      "js/modes/aiMatch/aiMatch.js - game mode entry",
+      "js/modes/aiMatch/aiPaddle.js - mounts via registerAIPaddle",
+      "js/modes/aiMatch/aiFSM.js - 8-state FSM"
+    ],
+    "current_observable_behavior": "AI paddle reaches ball position and makes contact, but ball goes wherever physics happens to send it. No intentional placement. No sustained rallies."
+  },
+  "the_seven_gaps_v2_solves": {
+    "gap_1_paddle_solver": "Engine outputs intent (target+speed+spin) but nothing translates intent into paddle velocity+angle that produces that shot through your existing physics. Shots have no real direction.",
+    "gap_2_interception_planning": "FSM says 'move to contact point' but doesn't define HOW the paddle moves there (linear? arc? anticipatory pre-positioning?). Currently paddle teleports or jerks.",
+    "gap_3_reachability": "No gate checks whether AI can physically reach the predicted contact point in time given its movement speed cap. AI attempts impossible shots, looks broken.",
+    "gap_4_ready_position": "Between rallies, AI has no defined neutral pose. Currently undefined behavior.",
+    "gap_5_serves": "AI cannot serve. Pro has 'disguised serve hook' specified but no serve logic exists. Rallies cannot start with AI serving.",
+    "gap_6_rally_end_and_scoring": "No detection of when a rally ends (ball out, double bounce, net violation). No score tracking. No serve rotation. AI mode cannot run a match.",
+    "gap_7_failure_modes": "No handling for: worker timeout, solver infeasibility, unreachable ball, XR session drop, ball state corruption. Silent failures cause undefined behavior."
+  },
+  "host_application_facts_unchanged": {
+    "language": "Plain JavaScript ES modules",
+    "renderer": "THREE.WebGLRenderer",
+    "physics": "Custom kinematics on main thread - gravity, drag, Magnus, spin, restitution. js/physics/ball.js, constants.js, collisions.js.",
+    "paddle_mount_api": "registerAIPaddle({getFace, hitRadius, id})",
+    "paddle_model_dimensions_m": {"x": 0.149, "y": 0.250, "z": 0.020, "face_normal_local": "+x", "face_offset_local_z_m": -0.108, "hit_radius_m": 0.09},
+    "table_dimensions_ITTF_m": {"length": 2.74, "width": 1.525, "height": 0.76, "net_height": 0.1525}
+  },
+  "section_1_paddle_solver": {
+    "file": "js/ai/paddleSolver.js",
+    "purpose": "Translate engine intent (target landing point + speed + spin) into concrete paddle parameters (velocity vector, face normal, contact point) that, when applied through your existing physics, produce a ball that lands where intended.",
+    "runs_on": "Main thread - it needs the live physics module to verify",
+    "called_when": "FSM transitions DECIDING -> MOVING. Replaces the current placeholder behavior of moving the paddle directly to the ball position.",
+    "inputs": {
+      "intent_from_engine": {
+        "target_x_m": "Where on the player's side the ball should land",
+        "target_z_m": "How deep on player's side (0 = at net, 1.37 = at back edge)",
+        "target_speed_mps": "Desired ball speed at the moment AI paddle contacts it",
+        "target_spin_rps": "Desired ball spin, signed (+ = topspin, - = backspin)"
+      },
+      "incoming_ball_prediction": {
+        "contact_position_world": "Vector3 where AI will hit the ball",
+        "contact_velocity_world": "Vector3 of ball velocity at that moment",
+        "contact_spin_axis_world": "Vector3 of ball spin axis * magnitude",
+        "time_to_contact_ms": "Milliseconds until AI must arrive at contact point"
+      },
+      "ai_constraints": {
+        "max_paddle_speed_mps_by_difficulty": {"beginner": 4.0, "intermediate": 7.0, "pro": 11.0},
+        "restitution_coefficient": "Read from existing js/physics/constants.js - do NOT hardcode here, import the value",
+        "ball_mass_kg": "Read from existing physics - do not invent"
+      }
+    },
+    "outputs": {
+      "paddle_velocity_at_contact_world": "Vector3 - the paddle must be moving this way at impact",
+      "paddle_face_normal_at_contact_world": "Vector3 - the paddle face must point this way at impact",
+      "paddle_contact_point_world": "Vector3 - where the paddle face center must be at impact (same as ball position at that moment, offset by paddle thickness/2)",
+      "windup_start_position_world": "Vector3 - paddle starts windup here, computed by extrapolating backward from contact_point along -paddle_velocity for windup_duration_ms",
+      "shot_feasibility": "boolean - true if shot is physically achievable within paddle_speed cap",
+      "predicted_landing_xz": "Vector2 - where the ball is forecast to land. Used by reachability/verification."
+    },
+    "algorithm_two_pass": {
+      "pass_1_analytical_inverse_estimate": {
+        "description": "Closed-form computation of paddle parameters. Fast (~0.3ms). Approximation.",
+        "step_1_required_outgoing_velocity": "Given contact_position_world and (target_x, target_z) on the table surface, solve the ballistic equation for outgoing velocity vector. Include gravity and drag from existing physics constants. Iterate launch angle to hit the target with the requested target_speed at landing (NOT at launch - the engine's target_speed is interpreted as landing speed for consistency). Use simple binary search on launch angle, 6 iterations max, ~0.1ms.",
+        "step_2_required_impulse": "impulse_vector = outgoing_velocity - incoming_velocity (vector subtraction in world coords).",
+        "step_3_paddle_face_normal": "For zero spin imparted: face_normal = normalize(impulse_vector). For nonzero spin: tilt the face_normal so the paddle brushes the ball. Empirical relation: tilt_angle_radians = atan(target_spin_rps * 0.025). Tilt direction is perpendicular to impulse_vector in the vertical plane containing impulse_vector and world up. Positive target_spin = tilt face DOWN (paddle face slightly below impulse direction = topspin). Negative target_spin = tilt UP (slice/backspin).",
+        "step_4_paddle_velocity": "Decompose into normal and tangential components. paddle_velocity_normal = |impulse| / (1 + restitution_coefficient) along face_normal. paddle_velocity_tangent = target_spin_rps * face_radius_m * 2 * PI perpendicular to face_normal, in the tilt plane. Combine: paddle_velocity_world = (paddle_velocity_normal * face_normal) + (paddle_velocity_tangent * tangent_direction).",
+        "step_5_feasibility_check": "If |paddle_velocity_world| > max_paddle_speed_mps_by_difficulty, mark shot_feasibility=false and return early. Do not attempt to clip - clipping produces unpredictable shot."
+      },
+      "pass_2_forward_verification_once": {
+        "description": "Apply computed paddle parameters through your existing physics and check actual landing. ~0.5ms.",
+        "step_1_simulate_contact": "Call existing collision/impulse function from js/physics/collisions.js with the computed paddle_velocity and face_normal. Get back simulated outgoing ball velocity and spin.",
+        "step_2_simulate_flight": "Roll forward through existing js/physics/ball.js until ball bounces. Record landing_xz.",
+        "step_3_compare_to_target": "error_m = distance(landing_xz, target_xz). If error <= 0.15m, accept solution. If error > 0.15m, apply ONE correction.",
+        "step_4_correction_if_needed": "Scale paddle_velocity_normal by (target_distance_along_flight / predicted_distance_along_flight). Re-verify. If still > 0.15m error, mark shot_feasibility=false. Do NOT iterate further - timing budget forbids it."
+      },
+      "total_budget_ms": 1.0,
+      "expected_success_rate": {"beginner": 0.98, "intermediate": 0.95, "pro": 0.88}
+    },
+    "infeasibility_fallback": {
+      "trigger": "shot_feasibility=false from either pass",
+      "action": "Send {type: 'request_safe_target', constraints: {max_speed: paddle_max * 0.85}} back to engine. Engine returns a center-table medium-speed neutral shot. Solver re-runs once on the safe target. If safe target also fails (rare), AI commits to honest miss (paddle goes through ball position with whatever the analytical pass produced; ball goes wherever physics sends it - typically into net or out)."
+    },
+    "telegraph_integration": {
+      "rule": "telegraph.js now reads paddle_face_normal_at_contact directly from solver output. The paddle visibly rotates toward this normal starting at T-150ms. Paddle angle IS the cause of the shot, not a separate indicator.",
+      "deprecation": "Any shot-type-to-angle lookup table in telegraph.js V1 is now informational only. Solver output is the source of truth."
+    },
+    "do_not": [
+      "Do not hardcode physics constants - import from js/physics/constants.js",
+      "Do not iterate forward verification more than once",
+      "Do not silently clip paddle_velocity to max - return infeasibility instead",
+      "Do not call this from inside the AI worker - it runs on main thread for physics access"
+    ]
+  },
+  "section_2_interception_path_planner": {
+    "file": "js/modes/aiMatch/interception.js",
+    "purpose": "Plan the AI paddle's movement from its current position to the solver-computed contact_point over the available time. Replaces any current 'snap to ball position' behavior.",
+    "runs_on": "Main thread, called once per rally during MOVING state",
+    "inputs": {
+      "current_paddle_position_world": "Where AI paddle is right now",
+      "current_paddle_velocity_world": "Recovery momentum if any",
+      "target_contact_point_world": "From solver",
+      "target_paddle_velocity_at_contact": "From solver (vector at contact)",
+      "time_budget_ms": "Time until contact",
+      "max_paddle_speed_by_difficulty": "Same as solver"
+    },
+    "outputs": {
+      "trajectory_keyframes": "Array of {time_ms, position_world, paddle_face_normal_world}. 8 keyframes total spaced across the time budget. The render loop interpolates between them.",
+      "windup_phase_keyframes": "First 60% of time budget - paddle moves to windup_start_position with face oriented neutrally",
+      "swing_phase_keyframes": "Last 40% of time budget - paddle accelerates from windup_start through contact_point reaching target_paddle_velocity at contact, with face rotating to telegraphed normal"
+    },
+    "algorithm": {
+      "windup_phase_path": "Quadratic bezier from current_position to windup_start_position. Control point is the midpoint raised 10-15cm vertically to create a natural arc (not robotic straight-line motion).",
+      "swing_phase_path": "Quintic polynomial from windup_start_position to contact_point. Quintic ensures smooth velocity at both ends - paddle arrives at contact with exactly target_paddle_velocity, no jerk.",
+      "face_rotation": "Slerp from current face orientation to neutral during windup, then slerp from neutral to telegraphed face_normal during swing. Telegraph rotation begins at the 50% mark of swing phase (≈T-150ms before contact).",
+      "speed_validation": "Compute max instantaneous speed along the planned trajectory. If exceeds max_paddle_speed_by_difficulty * 1.1, reduce trajectory curvature OR mark unreachable (see reachability gate)."
+    },
+    "render_integration": "Render loop reads current time, finds bracketing keyframes, interpolates position and face_normal. Use simple Catmull-Rom or cubic interpolation between keyframes for C1 continuity (no visible jerks).",
+    "budget_ms": 1.5,
+    "do_not": [
+      "Do not move in a straight line A to B - robotic, breaks immersion",
+      "Do not teleport - paddle must visibly travel",
+      "Do not exceed max_paddle_speed cap - that's what triggers reachability failure"
+    ]
+  },
+  "section_3_reachability_gate": {
+    "file": "js/modes/aiMatch/reachability.js",
+    "purpose": "Before committing to MOVING state, check whether the AI can physically reach the contact point in time given its movement speed cap. Prevents AI from attempting impossible shots.",
+    "runs_on": "Main thread, called in DECIDING state after solver but BEFORE MOVING transition",
+    "inputs": {
+      "current_paddle_position_world": "Where AI paddle is now",
+      "target_contact_point_world": "From solver",
+      "time_budget_ms": "Time until predicted contact",
+      "max_paddle_speed_by_difficulty": "Per-difficulty cap",
+      "required_terminal_velocity": "Solver output - paddle must arrive moving this fast"
+    },
+    "algorithm": {
+      "required_average_speed_mps": "distance(current_position, contact_point) / (time_budget_ms / 1000)",
+      "feasibility_check": "required_average_speed_mps <= (max_paddle_speed * 0.80). The 0.80 factor accounts for windup overhead (paddle must slow at windup_start before accelerating again).",
+      "outcome_reachable": "Return {reachable: true}. FSM proceeds to MOVING.",
+      "outcome_stretch_reachable": "If required_average_speed is between 0.80x and 1.00x of max_paddle_speed: AI can reach it but only with a stretch animation. Return {reachable: true, stretched: true}. Embodiment plays lunge variant.",
+      "outcome_unreachable": "If required_average_speed > max_paddle_speed: ball cannot be intercepted in time. Return {reachable: false, miss_direction: vector_from_paddle_to_ball}. AI commits to honest miss - plays a believable 'reached for it but couldn't' lunge in miss_direction. Rally ends, point awarded to player."
+    },
+    "rationale": "Without this gate, AI tries impossible shots and either teleports or arrives late and miss-hits awkwardly. The gate makes misses look like real misses - AI lunges visibly toward unreachable balls.",
+    "budget_ms": 0.1,
+    "ties_into_imperfection": "imperfection.js can artificially shrink max_paddle_speed by 10-20% on randomly selected rallies to manufacture 'stretched' or 'unreachable' outcomes for variety. This is how natural-looking misses happen."
+  },
+  "section_4_ready_position": {
+    "file": "js/modes/aiMatch/readyPosition.js",
+    "purpose": "Define where the AI paddle returns to between shots (during IDLE state and end of RECOVERING). Currently undefined.",
+    "neutral_ready_position_world": {
+      "description": "AI's home position when waiting for opponent's shot",
+      "x_m": 0.0,
+      "z_m": "1.5 - assumes AI is on z>0 side of table; this is 13cm behind back edge of AI's half, neutral standoff",
+      "y_m": "0.95 - paddle held at chest height, ~19cm above table surface",
+      "face_normal_world": "(-1, 0, 0) when AI is on right side of table - face roughly pointing toward incoming ball; flip for left-side serve handoff"
+    },
+    "anticipatory_bias": {
+      "description": "Pro AI shifts ready position slightly based on player tendencies. Beginner and Intermediate stay at neutral.",
+      "pro_logic": "Track player's last 10 outgoing shot landing positions. Compute centroid. Bias ready position 30% toward that centroid (capped at +/-0.20m from neutral). Updates between rallies, not during.",
+      "rationale": "Real players stand slightly toward where opponent tends to hit. This is subtle anticipation that skilled human opponents do unconsciously."
+    },
+    "transition_to_ready": "After RECOVERING completes, paddle interpolates from end-of-recovery pose to ready position over 200ms. Smooth, no snapping."
+  },
+  "section_5_serve_logic": {
+    "file": "js/modes/aiMatch/serve.js",
+    "purpose": "AI initiates rallies by serving. Currently undefined. Serves are different from rallies because there is no incoming ball to react to.",
+    "serve_state_machine": {
+      "states": ["PRE_SERVE", "BALL_TOSS", "SERVE_WINDUP", "SERVE_CONTACT", "POST_SERVE"],
+      "transitions": {
+        "PRE_SERVE": "Trigger when AI has the serve (per scoring rules). Move paddle to serve_ready_position over 400ms.",
+        "BALL_TOSS": "Spawn ball at toss origin (above AI's paddle hand). Apply upward initial velocity 2.5 m/s. Existing physics takes over.",
+        "SERVE_WINDUP": "150-300ms after toss, paddle begins moving to contact toss-ball at apex.",
+        "SERVE_CONTACT": "Solver runs with synthetic 'incoming ball' = toss ball state at apex. Standard contact happens.",
+        "POST_SERVE": "Recovery to ready position. FSM hands off to normal rally flow."
+      }
+    },
+    "serve_target_selection": {
+      "beginner": "Center of opponent service box. No variation. Landing target = (0.0, 1.0) on opponent side. Speed 3.5 m/s. Spin 0.",
+      "intermediate": "Random within opponent service box. Speed 5-6 m/s. Mild spin (-5 to +5).",
+      "pro_short_serve_mode": "Probability 0.35: serve lands short (z < 0.4) - forces opponent forward",
+      "pro_long_serve_mode": "Probability 0.35: serve lands deep (z > 1.0) - power serve",
+      "pro_corner_serve_mode": "Probability 0.30: serve lands in side corner with disguised spin (see below)"
+    },
+    "disguised_serve_pro_only": {
+      "description": "Pro telegraphs paddle angle implying one spin, late wrist applies opposite",
+      "implementation": "At T-150ms (normal telegraph time), paddle shows face_normal for spin A. At T-30ms, wrist rotates 25-35 degrees to apply spin B at contact. Solver runs with spin B as the actual target. Telegraph is intentionally false.",
+      "rate": "30% of Pro serves are disguised. Higher rate makes the disguise expected, killing the trick.",
+      "this_is_the_one_place_telegraph_can_lie": "Anywhere else in the game, telegraph must be truthful. Serves are the exception because deception is part of real table tennis serving."
+    },
+    "serve_legality": {
+      "must_bounce_own_side_first": "Outgoing ball MUST bounce on AI's side of table before crossing net. Solver target_z must be > 0 from AI side. If solver produces a direct-over-net serve, mark infeasible and retry.",
+      "must_clear_net": "Ball must clear net height (15.25cm) - existing physics enforces this naturally.",
+      "must_land_in_service_box": "Initial serve must land in diagonal service box (left half of opponent side if serving from right, vice versa). Solver target_x is constrained to this diagonal."
+    },
+    "ball_spawning": {
+      "do_not_invent_ball_spawn_API": "Use whatever existing js/physics/ball.js exposes for spawning. If no API exists, add a single function resetBall(position, velocity) and document it - this is a host-side change requiring approval before implementing.",
+      "approval_required": "Confirm with host owner before adding any new physics module API"
+    }
+  },
+  "section_6_rally_end_and_scoring": {
+    "file": "js/modes/aiMatch/rallyManager.js",
+    "purpose": "Detect when a rally ends, assign the point, manage serve rotation and game scoring. Currently undefined.",
+    "rally_end_conditions": {
+      "description": "Subscribe to existing physics events. Use what already exists - do NOT add new physics events.",
+      "ball_lands_on_correct_side_and_player_misses": "Ball bounces on player side and either bounces twice OR goes out before player paddle contact. Point to AI.",
+      "ball_lands_on_AI_side_and_AI_misses": "Same logic, reversed. Point to player.",
+      "ball_goes_into_net": "Ball trajectory hits net plane and falls back. Point to opposing player (whoever did NOT hit the ball into the net).",
+      "ball_goes_out_of_bounds": "Ball passes x or z table edges without bouncing on opponent side. Point to opposing player.",
+      "ball_double_bounce": "Ball bounces twice on same side without paddle contact. Point to opposing player.",
+      "implementation": "Listen to existing ball state. Track 'last_hitter' (player or AI). On bounce events check side. Track bounce count per side. Use existing physics state, don't re-implement collision detection."
+    },
+    "scoring_rules_ittf_simplified": {
+      "match_format_default": "Best of 5 games. First to 11 points wins a game. Win by 2.",
+      "serve_rotation": "Each player serves 2 consecutive points, then serve swaps. At 10-10 deuce, serve swaps every point.",
+      "configurability": "Expose game_length and best_of as parameters in aiMatch entry. Default to 11/best-of-5."
+    },
+    "rally_manager_responsibilities": [
+      "Track current score for both sides",
+      "Determine who serves next",
+      "Trigger serve.js when it's AI's turn to serve",
+      "Wait for player to serve when it's player's turn (player serves via existing player paddle)",
+      "Reset ball state between rallies",
+      "Update score display via existing UI module",
+      "Detect game end and match end",
+      "Emit events: onPointScored, onGameEnd, onMatchEnd"
+    ],
+    "ui_integration": "Reuse existing UI module (js/ui/) to display score. Do not create new UI primitives unless they don't exist - confirm first.",
+    "state_reset_between_rallies": {
+      "what_resets": ["Ball position and velocity", "Last hitter tracker", "Bounce counters", "FSM to IDLE"],
+      "what_persists": ["Shot history in AI worker", "Voronoi heatmap data", "Player success rate trackers", "Current game/match score"]
+    }
+  },
+  "section_7_failure_mode_handling": {
+    "file": "js/modes/aiMatch/failureHandler.js",
+    "purpose": "Handle the 5 known failure modes explicitly. Without this, failures cause undefined behavior - crashes, frozen AI, broken rallies.",
+    "failure_modes": {
+      "ai_worker_timeout": {
+        "definition": "Main thread requests target via postMessage, no response within 50ms",
+        "detection": "setTimeout when sending request, clear on response",
+        "fallback": "Use last-known-good target from previous rally. If none, use Beginner-mode safe shot (center, medium speed, low spin).",
+        "logging": "console.warn with timing info. Do not crash."
+      },
+      "solver_infeasibility_repeat": {
+        "definition": "Solver returns infeasible 3 times in a row for the same rally",
+        "detection": "Counter incremented per rally, reset on success",
+        "fallback": "AI commits to honest miss with lunge animation. Point goes to player. Rally ends gracefully.",
+        "rationale": "Better to lose a point cleanly than freeze or produce broken physics"
+      },
+      "ball_unreachable_in_time": {
+        "definition": "Reachability gate returns unreachable",
+        "detection": "reachability.js check in DECIDING state",
+        "fallback": "Play lunge-and-miss animation in miss_direction. AI gets to ready position after recovery. Point to player."
+      },
+      "xr_session_lost": {
+        "definition": "WebXR session ends mid-rally (user removes headset, browser crash, etc)",
+        "detection": "Subscribe to xr session 'end' event - existing host code should already handle this; ensure aiMatch hooks in",
+        "fallback": "Pause aiFSM, terminate AI worker cleanly, save current score to memory. Resume on session restart if user returns.",
+        "do_not": "Do not leak worker on session end - terminate it"
+      },
+      "ball_state_corruption": {
+        "definition": "Ball physics returns NaN position or impossible velocity (e.g., > 100 m/s)",
+        "detection": "Validate ball state at start of each FSM tick. Check for NaN/Infinity in position and velocity.",
+        "fallback": "Log error. Reset ball to serve position. Restart rally. Do not crash.",
+        "frequency_expected": "Should be near-zero in healthy code. If happening frequently, it's a physics bug not an AI bug - escalate."
+      }
+    },
+    "general_principles": [
+      "Always degrade gracefully - never crash",
+      "Log failures with enough context to debug (rally number, AI state, ball state)",
+      "Prefer 'AI loses point' over 'game freezes'",
+      "Failures must not corrupt persistent state (score, shot history)"
+    ]
+  },
+  "v2_data_flow_per_rally": {
+    "description": "Full rally with all V2 additions integrated. Replaces V1 data_flow_per_rally.",
+    "T_serve_start": "Rally manager checks: is it AI's turn to serve? If yes, serve.js takes over. If player's turn, wait for player serve.",
+    "T_during_serve_if_AI_serves": "Serve state machine: PRE_SERVE -> BALL_TOSS -> SERVE_WINDUP -> SERVE_CONTACT -> POST_SERVE. Pro may use disguised serve.",
+    "T_after_serve": "Rally is now live. AI FSM in IDLE state at ready position.",
+    "T_player_contact": "Player paddle contacts ball. Existing listener fires. shotAdapter posts shot event to AI worker.",
+    "T_AI_predicts": "Main thread runs existing physics rollout to predict AI-side contact point and time. ~3ms.",
+    "T_AI_requests_target": "FSM enters DECIDING. postMessage to AI worker requesting target.",
+    "T_AI_receives_target": "AI worker returns {target_x, target_z, target_speed, target_spin}. ~1-4ms depending on engine.",
+    "T_solver_runs": "paddleSolver computes paddle_velocity, face_normal, contact_point. ~1ms.",
+    "T_reachability_gate": "reachability.js checks if AI can reach contact_point in time. ~0.1ms. If unreachable, lunge-and-miss. If reachable-with-stretch, flag for embodiment.",
+    "T_interception_planned": "interception.js produces 8 keyframes for paddle motion. ~1.5ms.",
+    "T_FSM_to_MOVING": "Paddle begins interpolating along trajectory.",
+    "T_minus_400ms": "Commitment lock. Target frozen.",
+    "T_minus_150ms": "Telegraph: face_normal interpolates toward solver-computed normal.",
+    "T_minus_30ms_pro_disguised_serve_only": "Late wrist flip for disguised spin (serves only).",
+    "T_equals_0": "Paddle contact. Existing physics applies impulse. Ball travels.",
+    "T_post_contact": "rallyManager watches for rally-end conditions: bounce on opponent side, miss, net, out.",
+    "T_recovering": "Paddle plays recovery animation back to ready position over 300-400ms (per difficulty). Reduced movement speed during recovery (vulnerability window).",
+    "T_rally_end": "rallyManager determines winner of point. Updates score. Resets ball. Determines next server.",
+    "T_idle": "Wait for next serve."
+  },
+  "v2_build_phases": {
+    "phase_1_solver_and_reachability": {
+      "duration_estimate_days": 4,
+      "tasks": [
+        "Implement paddleSolver.js with two-pass algorithm",
+        "Import physics constants from existing js/physics/constants.js (do not duplicate values)",
+        "Implement reachability.js gate",
+        "Wire FSM: DECIDING calls solver, then reachability, then proceeds to MOVING (or fallback)",
+        "Verify: feed 100 random (target, speed, spin) triples through solver and physics - 95%+ must land within 15cm of target",
+        "Verify in headset: AI shots now go where intended, not random directions"
+      ]
+    },
+    "phase_2_interception_planning": {
+      "duration_estimate_days": 3,
+      "tasks": [
+        "Implement interception.js with keyframe-based motion planning",
+        "Quadratic bezier for windup phase, quintic poly for swing phase",
+        "Wire render loop to interpolate keyframes",
+        "Verify in headset: paddle motion looks fluid, no jerks or teleports"
+      ]
+    },
+    "phase_3_ready_position": {
+      "duration_estimate_days": 2,
+      "tasks": [
+        "Implement readyPosition.js",
+        "Define neutral position constants",
+        "Add anticipatory bias for Pro mode",
+        "Wire RECOVERING-to-IDLE transition to interpolate paddle to ready position",
+        "Verify: AI returns to consistent neutral pose between shots"
+      ]
+    },
+    "phase_4_serves": {
+      "duration_estimate_days": 5,
+      "tasks": [
+        "Confirm ball spawning API with host owner (request approval if new API needed)",
+        "Implement serve.js with 5-state serve sub-FSM",
+        "Implement serve target selection per difficulty",
+        "Implement disguised serve logic for Pro",
+        "Implement serve legality constraints (bounce own side, clear net, land in service box)",
+        "Verify: AI can serve from both sides, lands legal serves 95%+ of attempts",
+        "Verify: Pro disguised serves visibly mislead the player (qualitative playtest)"
+      ]
+    },
+    "phase_5_rally_manager_and_scoring": {
+      "duration_estimate_days": 4,
+      "tasks": [
+        "Implement rallyManager.js",
+        "Subscribe to existing ball physics events (do not add new events)",
+        "Detect rally end conditions (miss, net, out, double bounce)",
+        "Implement ITTF scoring (best of 5, first to 11, serve rotation every 2 points, deuce rules)",
+        "Integrate with existing UI module for score display",
+        "Verify: full match playable end to end, score updates correctly, serve rotation works",
+        "Verify: persistent state survives across rallies (heatmap, shot history)"
+      ]
+    },
+    "phase_6_failure_handling": {
+      "duration_estimate_days": 2,
+      "tasks": [
+        "Implement failureHandler.js",
+        "Wire all 5 failure modes",
+        "Test: kill AI worker mid-rally, verify graceful fallback",
+        "Test: end XR session mid-rally, verify clean shutdown",
+        "Test: inject NaN into ball state, verify recovery",
+        "Verify: no failure mode causes crash or undefined behavior"
+      ]
+    },
+    "phase_7_integration_and_tuning": {
+      "duration_estimate_days": 7,
+      "tasks": [
+        "Full end-to-end playtest in headset",
+        "Tune solver tolerances if shots land short/long systematically",
+        "Tune interception curves if motion feels off",
+        "Tune serve timing if disguised serves don't fool testers",
+        "Tune reachability threshold (0.80 factor) if AI feels too lazy or too desperate",
+        "Adjust per-difficulty miss rates if win-rate targets aren't met"
+      ]
+    }
+  },
+  "total_v2_estimate_days": 27,
+  "anti_hallucination_guards_v2": {
+    "do_not_duplicate_physics_constants": "All physics constants (gravity, drag, Magnus coefficient, restitution, ball mass) MUST be imported from existing js/physics/constants.js. Do not redefine. If a constant is missing from constants.js, ask before adding.",
+    "do_not_modify_existing_physics_module": "All V2 modules read from existing physics. Do not modify js/physics/* files except to add resetBall() if needed for serves (and only with approval).",
+    "do_not_invent_new_FSM_states": "FSM still has 8 states from V1. Serve adds a SUB-FSM inside the existing PRE_SERVE/serving phase, not new top-level states.",
+    "do_not_use_libraries_not_in_v1": "No new dependencies. d3-delaunay is the only library V1 added. V2 adds zero.",
+    "do_not_skip_reachability_gate": "Reachability MUST run before MOVING transition. Skipping it causes AI to attempt impossible shots and produces visual breakage.",
+    "do_not_iterate_solver": "Solver runs analytical pass + ONE verification + at most ONE correction. No further iteration.",
+    "do_not_let_telegraph_lie_except_serves": "Telegraph is truthful everywhere except disguised serves. Do not generalize the disguise mechanic to rally shots - it would break the read-and-react skill loop.",
+    "do_not_invent_ball_spawn_API": "If serve needs to spawn a ball and no existing API does it, ASK the host owner before adding one. Do not invent.",
+    "do_not_invent_score_UI": "Use existing UI module. If a score display primitive doesn't exist, ASK before creating one.",
+    "do_not_invent_paddle_motion_paths": "Use the specified quadratic-bezier-for-windup, quintic-poly-for-swing curves. Do not substitute splines, linear interpolation, or other curves. The math is specified for stable timing.",
+    "do_not_invent_serve_legality_rules": "ITTF serve rules are: own side first, clear net, diagonal service box. Do not add other constraints.",
+    "do_not_invent_match_format": "Best of 5, first to 11, serve every 2 points, deuce at 10-10. Configurable via parameters but defaults are fixed."
+  },
+  "v2_testing_requirements": {
+    "unit_tests_jest": [
+      "paddleSolver: 100 random (target, speed, spin) inputs produce shots landing within 15cm of target 95%+ of the time when verified through actual physics",
+      "paddleSolver: infeasible shots correctly marked infeasible (e.g., target_speed > paddle_max_speed * 5)",
+      "reachability: returns reachable/stretched/unreachable correctly across distance and time matrix",
+      "interception: trajectory keyframes have C1 continuity (no velocity discontinuities at keyframe boundaries)",
+      "interception: max instantaneous speed along trajectory never exceeds max_paddle_speed * 1.1",
+      "serve: 100 generated serves are 95%+ legal (own side bounce, clear net, in service box)",
+      "rallyManager: scoring correctly handles deuce, serve rotation, game/match end",
+      "failureHandler: all 5 failure modes degrade gracefully without crashing"
+    ],
+    "headset_playtest_checklist": [
+      "AI shots visibly go to intended targets (not random)",
+      "AI paddle motion is fluid (no jerks, teleports, or stick-figure motion)",
+      "AI returns to ready position between rallies",
+      "AI can serve legally and consistently",
+      "Pro disguised serves fool the player at least occasionally",
+      "Full match can be played from start to match-point without breakage",
+      "Score display updates correctly",
+      "Unreachable balls produce visible lunge-and-miss, not teleport-and-miss",
+      "AI behavior across difficulties feels architecturally different",
+      "No crashes, no frozen states, no undefined behavior across 30-minute play session"
+    ]
+  },
+  "v2_deliverables": [
+    "All 7 new files (paddleSolver, interception, reachability, readyPosition, serve, rallyManager, failureHandler) implemented",
+    "All FSM transitions wired to V2 modules",
+    "Existing V1 files modified only to integrate (not refactor)",
+    "Unit tests for solver, reachability, interception, serve, scoring",
+    "Headset playtest checklist completed",
+    "TUNING.md updated with V2 parameters (solver tolerances, reachability threshold, interception curves, serve probabilities)",
+    "Demo: full match playable end to end with AI serving and rallying at all three difficulties"
+  ]
+}

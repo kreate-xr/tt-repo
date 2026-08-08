@@ -1,0 +1,388 @@
+{
+  "spec_version": "1.0",
+  "project": "webxr-tt-ai-opponent-integration",
+  "purpose": "Build the AI opponent (brain + embodiment + game mode) for an EXISTING WebXR table tennis game. This spec is grounded in the actual host codebase, not greenfield assumptions. Replaces webxr-tt-ai-spec.json and webxr-tt-embodiment-spec.json for implementation purposes. Those two specs remain as reference for conceptual depth (Voronoi math, commitment timing rationale, telegraph design) but their implementation guidance is superseded by this document.",
+  "host_application_facts": {
+    "description": "The host is a working WebXR table tennis game. Do not change any of these facts. Build AROUND them, not against them.",
+    "language": "Plain JavaScript with ES modules",
+    "renderer": "THREE.WebGLRenderer (NOT WebGPURenderer)",
+    "three_version": "0.183.2",
+    "build_tool": "Vite 8.0.5 with basicSsl plugin for HTTPS dev",
+    "package_manager": "npm",
+    "render_loop": "renderer.setAnimationLoop() with THREE.Clock dt guard",
+    "xr_session_mode": "immersive-ar with local-floor required, hand-tracking/plane-detection/dom-overlay optional",
+    "physics_engine": "Custom kinematics on main thread - gravity, drag, Magnus, spin, table/net/paddle restitution. Already tuned. Do not replace.",
+    "physics_location": "js/physics/ball.js, js/physics/constants.js, js/physics/collisions.js",
+    "ball_state_storage": "Module-scoped THREE.Vector3 instances in js/physics/ball.js",
+    "paddle_mount_api": "registerAIPaddle({getFace, hitRadius, id}) in js/physics/ball.js. Returns swept-disc collision detection. Already used by multiplayer remote paddle - the AI mounts in this same slot.",
+    "existing_paddle_model": {
+      "dimensions_m": {"x": 0.149, "y": 0.250, "z": 0.020},
+      "thin_axis": "z",
+      "handle_axis": "y",
+      "face_normal_local": {"x": 1, "y": 0, "z": 0},
+      "face_center_offset_local": {"x": 0, "y": 0, "z": -0.108},
+      "hit_radius_m": 0.09
+    },
+    "existing_shot_listener_payload": {
+      "fields": ["origin", "swingSpeed", "impactSpeed", "spinType", "spinMag", "deltaOmega"],
+      "missing_fields_needed_by_ai": ["landing_x", "landing_z", "swing_lateness_ms", "success"]
+    },
+    "existing_feeder_fsm": {
+      "states": ["WAITING", "WINDING", "SWINGING", "RECOVERING"],
+      "location": "js/modes/training/feeder.js",
+      "structure": "paddle + arm + wrist primitives, no humanoid skeleton",
+      "note": "The AI's FSM extends this shape, does not replace it"
+    },
+    "existing_modes": ["menu", "freePlay", "drill", "tuner", "multiplayer"],
+    "existing_directory_layout": "Flat js/{scene,physics,modes,network,xr,ui,lobby}",
+    "existing_models": "public/models/ contains ITTF-correct table/paddle/ball. Reuse the paddle model for the AI."
+  },
+  "explicitly_not_doing": {
+    "description": "These were in the original specs but are explicitly DROPPED for this integration. Do not build them. Do not migrate to them.",
+    "items": [
+      "TypeScript conversion - stay in plain JS",
+      "WebGPURenderer migration - stay on WebGLRenderer",
+      "Rapier physics in worker - keep custom physics on main thread, it is tuned and ships",
+      "SharedArrayBuffer for ball state - postMessage with arrays is fine at shot-event frequency (~2Hz)",
+      "COOP/COEP headers - not required without SAB",
+      "xrSession.requestAnimationFrame - keep renderer.setAnimationLoop, it works for WebGL XR",
+      "glTF humanoid skeleton with ≥19 bones - extend the existing primitive arm+wrist approach",
+      "Motion worker with 30-keyframe learned-motion plans - procedural animation on main thread is sufficient",
+      "WebGPU prediction compute pass - use the existing JS physics to roll forward when needed",
+      "Three-ik or ccdikhelper library - manual position interpolation is enough for primitive arm",
+      "tfjs-webgpu and LSTM for v1 - Voronoi only. LSTM is deferred to v2.",
+      "vitest migration - keep jest for unit tests",
+      "playwright integration tests - manual headset playtest is the real test",
+      "Multiview rendering, Fixed Foveated Rendering, WebXR Layers - premature optimization for this scale",
+      "Cross-package src/ tree restructuring - keep the flat js/ layout, add new modules within it"
+    ]
+  },
+  "what_to_build": {
+    "description": "Four new modules added to the existing js/ tree. ~10 new files, ~1500-2000 lines of code total. No changes to existing physics, renderer, or modes.",
+    "new_files": {
+      "js/ai/worker.js": "AI Web Worker entry point with message router",
+      "js/ai/shotHistory.js": "Ring buffer (15 slots) with decay logic, runs inside the worker",
+      "js/ai/engines/beginner.js": "Random target within safe zone, no learning",
+      "js/ai/engines/intermediate.js": "Voronoi heatmap with weighted struggle scoring and decay",
+      "js/ai/engines/pro.js": "Same as intermediate for v1, with higher exploit factor and disguised-serve hook. LSTM integration deferred to v2.",
+      "js/ai/shotAdapter.js": "Main-thread bridge: converts existing listener payload to AI shot schema. Computes landing_x/z via existing physics rollout.",
+      "js/modes/aiMatch/aiMatch.js": "Game mode entry, alongside existing menu/freePlay/drill/tuner/multiplayer",
+      "js/modes/aiMatch/aiPaddle.js": "AI paddle entity, mounts via existing registerAIPaddle",
+      "js/modes/aiMatch/aiFSM.js": "Extended FSM with PREDICTING and COMMITTED states inserted before WINDING",
+      "js/modes/aiMatch/telegraph.js": "Maps shot type to paddle angle and windup depth, fires 150ms before contact",
+      "js/modes/aiMatch/recovery.js": "Recovery animation logic with vulnerability window (60% movement speed)",
+      "js/modes/aiMatch/imperfection.js": "Wasted half-step, weight-shift lag, miss-rate injection",
+      "js/modes/aiMatch/intent.js": "Single source of truth for AI behavior. Updates at ~5Hz. Rendering interpolates between updates at 90Hz."
+    },
+    "new_dependencies": {
+      "runtime": ["d3-delaunay@^6.0.4"],
+      "do_not_add_yet": ["@tensorflow/tfjs", "@tensorflow/tfjs-backend-webgpu", "rapier3d-compat", "three-ik"]
+    }
+  },
+  "shot_adapter_design": {
+    "trigger": "Subscribe to the existing paddle-ball contact listener in js/physics/ball.js",
+    "responsibility": "When the PLAYER paddle contacts the ball, compute the missing fields and emit a shot event to the AI worker",
+    "computed_fields": {
+      "landing_x": "Run existing physics forward from current ball state until ball bounces on AI side. Read x coordinate at bounce. Cost: ~3ms with existing JS physics.",
+      "landing_z": "Same rollout, read z at bounce.",
+      "swing_lateness_ms": "Time between ball crossing net plane (computable from existing trajectory) and paddle contact timestamp. Positive = late, negative = early.",
+      "success": "Set by listening for the NEXT contact event. If ball bounced twice on player side or went out of bounds before next contact, success=0. Otherwise success=1. Set with a one-shot deferred update."
+    },
+    "output_schema": {
+      "format": "Plain JS array of 8 floats (do NOT use Float32Array transferable - postMessage handles arrays fine at this frequency)",
+      "fields_in_order": ["shot_id", "timestamp_ms", "landing_x", "landing_z", "success", "swing_lateness_ms", "ball_speed_at_contact_mps", "ball_spin_rps"]
+    },
+    "frequency": "~2Hz during rallies. No need to optimize for higher.",
+    "implementation_note": "Keep the existing listener payload unchanged. The adapter is a pure consumer that translates."
+  },
+  "ai_worker_design": {
+    "file": "js/ai/worker.js",
+    "message_protocol": {
+      "main_to_worker": [
+        "{type: 'init', config: {difficulty}}",
+        "{type: 'shot', payload: [shot_id, ts, landing_x, landing_z, success, lateness, speed, spin]}",
+        "{type: 'request_target', context: {ai_paddle_xz, time_to_contact_ms}}",
+        "{type: 'reset'}",
+        "{type: 'set_difficulty', value: 'beginner' | 'intermediate' | 'pro'}"
+      ],
+      "worker_to_main": [
+        "{type: 'target', payload: [target_x, target_z, target_speed_mps, target_spin_rps, confidence]}",
+        "{type: 'ready'}",
+        "{type: 'error', message}"
+      ]
+    },
+    "engines": {
+      "interface": "Each engine exports {ingestShot(shot, history), computeTarget(history, context) => target, reset()}",
+      "beginner": {
+        "logic": "Random target within center 60% of AI-opponent's player side (target_x in [-0.35, 0.35], target_z in [0.3, 1.1]). Gaussian jitter sigma 0.25m. No learning.",
+        "ball_params": {"speed_range_mps": [3.0, 5.0], "spin_range_rps": [-5, 5]},
+        "win_rate_target_for_player": 0.80
+      },
+      "intermediate": {
+        "logic": "Voronoi via d3-delaunay over last 15 shots. Struggle score = (misses*3) + (lateness_ms/100*2) + (successes*0.5). Decay 0.93 per rally. Min 5 shots before exploit. Exploit factor 0.5 (50% targets weak zones, 50% random). Cell area floor 0.015 sqm. Bayesian shrinkage with prior n=3.",
+        "ball_params": {"speed_range_mps": [5.0, 8.0], "spin_range_rps": [-15, 15]},
+        "win_rate_target_for_player": 0.50
+      },
+      "pro": {
+        "logic": "Same Voronoi as intermediate but exploit factor 0.85. Adds disguised-serve hook: paddle telegraph implies one spin, late wrist rotation produces another. LSTM anticipate-and-counter deferred to v2.",
+        "ball_params": {"speed_range_mps": [7.0, 12.0], "spin_range_rps": [-30, 30]},
+        "win_rate_target_for_player": 0.20
+      }
+    },
+    "accuracy_guardrails": {
+      "shot_coordinate_grid_snap_m": 0.10,
+      "min_shots_before_exploit": 5,
+      "voronoi_min_cell_area_sqm": 0.015,
+      "bayesian_shrinkage_prior_n": 3,
+      "target_jitter_sigma_m": 0.08
+    },
+    "performance_budget": {
+      "per_shot_ingest_ms": 0.2,
+      "per_target_request_ms": {
+        "beginner": 0.1,
+        "intermediate": 0.8,
+        "pro": 1.0
+      }
+    }
+  },
+  "ai_paddle_entity_design": {
+    "file": "js/modes/aiMatch/aiPaddle.js",
+    "mounts_via": "registerAIPaddle({getFace, hitRadius: 0.09, id: 'ai-opponent'})",
+    "paddle_model": "Reuse public/models/ paddle.glb",
+    "structure": "paddle + arm + wrist primitives, mirroring js/modes/training/feeder.js structure. NO humanoid skeleton.",
+    "position_drive": "Direct three.js Object3D position/rotation interpolation. No IK library.",
+    "getFace_implementation": "Return current paddle face center world position + face normal world direction. Recomputed each physics tick by composing the paddle's world transform with the existing local face_center_offset (-0.108 on z) and face_normal_local (+x).",
+    "movement_speed_normal_mps": {"beginner": 1.5, "intermediate": 2.2, "pro": 3.0},
+    "movement_speed_during_recovery_multiplier": 0.4,
+    "rationale_recovery_speed": "Multiplier 0.4 means AI moves at 40% normal speed during recovery. This is the vulnerability window. Quick player returns exploit it. This is THE primary skill ceiling mechanic."
+  },
+  "ai_fsm_design": {
+    "file": "js/modes/aiMatch/aiFSM.js",
+    "states": ["IDLE", "PREDICTING", "DECIDING", "MOVING", "COMMITTED", "SWINGING", "CONTACT", "RECOVERING"],
+    "mapping_to_existing_feeder_fsm": {
+      "IDLE": "≈ existing WAITING",
+      "PREDICTING + DECIDING + MOVING + COMMITTED": "≈ extended version of existing WINDING with added decision and movement phases",
+      "SWINGING": "= existing SWINGING",
+      "CONTACT": "instantaneous, fires on paddle-ball collision detected by existing physics",
+      "RECOVERING": "= existing RECOVERING with added vulnerability window"
+    },
+    "transitions": {
+      "IDLE_to_PREDICTING": "Player paddle contacts ball (subscribe to existing listener)",
+      "PREDICTING_to_DECIDING": "Shot adapter emits shot event AND existing physics rollout returns predicted AI-side contact point. Typically T+5-15ms after player contact.",
+      "DECIDING_to_MOVING": "AI worker returns target via postMessage. Typically T+15-25ms.",
+      "MOVING_to_COMMITTED": "Hard rule: triggered exactly at T-400ms before predicted AI contact, regardless of where AI paddle currently is.",
+      "COMMITTED_to_SWINGING": "Triggered at T-150ms before predicted AI contact. Telegraph fires here.",
+      "SWINGING_to_CONTACT": "Paddle reaches ball position OR T=0 elapsed, whichever comes first.",
+      "CONTACT_to_RECOVERING": "Immediately after impulse applied (the existing physics already handles impulse via registerAIPaddle).",
+      "RECOVERING_to_IDLE": "After recovery_duration_ms elapsed (see below)."
+    },
+    "intent_update_frequency_hz": 5,
+    "render_interpolation_frequency_hz": 90,
+    "commitment_lock_rule": "Once state enters COMMITTED, target_x/z is frozen. If ball trajectory deviates from prediction by more than 8cm in the last 200ms (heavy spin curve, edge clip), AI stays committed and applies up to ±5cm position correction via simple lerp. Beyond ±5cm, AI MISSES. Do not retarget. Do not snap to new ball position.",
+    "missed_shot_animation": "When AI misses due to commitment, paddle continues its planned trajectory through empty space. Add a brief lunge-and-overreach motion (paddle stretches 10-15cm past its commit position toward where the ball ended up). This makes the miss feel earned by the player rather than gifted by the AI."
+  },
+  "telegraph_design": {
+    "file": "js/modes/aiMatch/telegraph.js",
+    "fires_at": "T-150ms before predicted contact (during SWINGING state)",
+    "what_telegraphs": {
+      "paddle_face_angle": "Reveals shot type (topspin/slice/block/loop/push/smash) via paddle rotation relative to neutral",
+      "windup_depth": "Reveals shot power (paddle pulled back 15-70cm from contact point)",
+      "body_orientation": "Hips/torso rotate to align with target side starting at T-300ms (strongest telegraph)"
+    },
+    "shot_type_lookup_table": {
+      "rule": "Derive shot_type in the embodiment layer from the speed+spin tuple returned by the decision layer",
+      "low_speed_low_spin": "block_or_push",
+      "medium_speed_low_spin": "block",
+      "medium_speed_high_topspin": "topspin_drive",
+      "high_speed_low_spin": "smash",
+      "high_speed_high_topspin": "loop",
+      "any_speed_negative_spin": "slice"
+    },
+    "paddle_angle_per_shot_type_relative_to_neutral_face_normal": {
+      "topspin_drive": "Paddle rotates so face_normal_world Y component = -0.34 (face closed 70° from vertical, swing path low-to-high)",
+      "slice": "Paddle rotates so face_normal_world Y component = +0.34 (face open 110°, swing path high-to-low)",
+      "block": "Face stays vertical (face_normal_world Y ≈ 0), minimal swing",
+      "loop": "Face closed 80° (Y component -0.17), exaggerated brushing arc",
+      "push": "Face open 100° (Y component +0.17), short swing",
+      "smash": "Face vertical, swing path high-to-front, full body rotation"
+    },
+    "why_telegraph_is_mandatory": "Table tennis is read-and-react. Without telegraph, players cannot learn to anticipate, cannot improve, and quit within 20 minutes. Counterintuitive: more telegraph = better game.",
+    "implementation_note": "Telegraph values are applied to the AI paddle's local rotation, NOT to the controller. The AI paddle is a scene Object3D, not a controller-attached object."
+  },
+  "recovery_design": {
+    "file": "js/modes/aiMatch/recovery.js",
+    "duration_ms": {
+      "beginner": 300,
+      "intermediate": 350,
+      "pro": 400
+    },
+    "rationale_pro_longer": "Counterintuitive but critical. Pro AI takes bigger swings with deeper commitment, which biomechanically requires longer recovery. This creates the vulnerability window that skilled players exploit with quick returns. Without it, Pro mode has no skill ceiling.",
+    "vulnerability_window": {
+      "active_during": "Entire RECOVERING state",
+      "effect": "AI paddle movement speed multiplied by 0.4 (40% normal)",
+      "behavior": "If player returns ball during this window, AI cannot reach interception point in time, scrambles, often misses. This is THE primary skill ceiling mechanic in the entire game."
+    },
+    "no_instant_reset_rule": "Paddle MUST animate back to ready position over the recovery duration. Do not snap. The visible vulnerability is the gameplay."
+  },
+  "imperfection_design": {
+    "file": "js/modes/aiMatch/imperfection.js",
+    "rationale": "A perfect-precision AI feels like a bot. Slight controlled imperfection is what creates human-feel. This is the longest tuning phase (2-3 weeks of headset playtests).",
+    "rules": {
+      "wasted_half_step_probability": 0.30,
+      "wasted_half_step_description": "30% of shots, AI takes a slight wrong-direction step (5-15cm) before correcting. Only when time_to_contact_ms > 500.",
+      "weight_shift_lag_ms": 80,
+      "weight_shift_description": "Body weight transfer (root position) lags arm motion by ~80ms. Forbid simultaneous arm-and-body initiation.",
+      "miss_rate_injection": {
+        "beginner": 0.15,
+        "intermediate": 0.08,
+        "pro": 0.03,
+        "implementation": "On each shot, roll random number. If under miss rate, inject one of the miss causes below. AI then commits to a target that is intentionally 5-15cm off from where the ball will be."
+      },
+      "miss_causes_weighted_distribution": {
+        "stretched_too_far": 0.40,
+        "mistimed_swing": 0.30,
+        "spin_misread": 0.20,
+        "general_inaccuracy": 0.10
+      },
+      "no_instant_punishment_rule": "When the Voronoi engine detects a new player weakness, wait 1-2 rallies before exploiting it. Track 'rallies_since_weakness_detected' counter in worker."
+    }
+  },
+  "the_five_non_negotiable_rules": {
+    "description": "These rules override any optimization instinct. If implementation matches any anti-pattern in this list, it is wrong.",
+    "rule_1_decide_slowly": "Decisions run at ~5Hz (once per rally). Render interpolates at 90Hz. NEVER make decisions inside the render loop. Banned: recomputing Voronoi per frame, retargeting per frame, re-running engine logic per frame.",
+    "rule_2_commitment_lock": "At T-400ms before predicted contact, target_x/z is frozen. Cannot change. If ball curves unexpectedly, AI scrambles within ±5cm and may miss honestly. Banned: continuous retargeting up to contact frame.",
+    "rule_3_telegraph_mandatory": "Paddle angle and windup MUST reveal shot type at T-150ms. Hiding shot type is banned. Removes game's skill ceiling and players quit.",
+    "rule_4_recovery_vulnerability": "RECOVERING state lasts 300-400ms with 40% movement speed. No instant reset. Quick player returns must be exploitable. Banned: snapping AI to ready position post-contact.",
+    "rule_5_deliberate_imperfection": "Apply wasted half-step (30%), weight shift lag (80ms), miss-rate injection per difficulty. A perfect AI feels robotic. Banned: zero-imperfection mode for any difficulty."
+  },
+  "data_flow_per_rally": {
+    "T_minus_variable_player_contact": "Player paddle contacts ball. Existing listener fires in js/physics/ball.js.",
+    "T_plus_5_to_15ms": "shotAdapter (main thread): runs existing physics rollout to compute landing_x/z. Builds shot event array.",
+    "T_plus_15ms": "shotAdapter posts shot event to AI worker via postMessage.",
+    "T_plus_16ms": "AI worker ingests shot into ShotHistory. Applies decay. Updates Voronoi struggle scores.",
+    "T_plus_500ms_before_AI_contact": "FSM transitions IDLE->PREDICTING->DECIDING. Main thread sends 'request_target' message to AI worker.",
+    "T_plus_501_to_505ms": "AI worker runs engine.computeTarget(). Returns target via postMessage.",
+    "T_minus_400ms_before_AI_contact": "FSM transitions MOVING->COMMITTED. Target frozen. Hard rule.",
+    "T_minus_150ms": "FSM transitions COMMITTED->SWINGING. Telegraph fires. Paddle angle reveals shot type.",
+    "T_equals_0": "Paddle reaches ball position. Existing physics applies impulse via registerAIPaddle. FSM transitions to CONTACT then immediately RECOVERING.",
+    "T_plus_300_to_400ms_after_contact": "RECOVERING completes. FSM returns to IDLE. AI ready for next shot."
+  },
+  "build_phases": {
+    "phase_1_scaffold_and_beginner": {
+      "duration_estimate_days": 5,
+      "tasks": [
+        "Add d3-delaunay to package.json via npm install",
+        "Create js/ai/worker.js with message router stubs",
+        "Create js/ai/shotHistory.js with 15-slot ring buffer",
+        "Create js/ai/shotAdapter.js subscribing to existing ball-contact listener",
+        "Implement shotAdapter physics rollout for landing_x/z using existing physics module",
+        "Create js/ai/engines/beginner.js (pure random within safe zone)",
+        "Create js/modes/aiMatch/aiPaddle.js mounting via registerAIPaddle",
+        "Create js/modes/aiMatch/aiFSM.js with all 8 states wired",
+        "Create js/modes/aiMatch/aiMatch.js as a new mode alongside freePlay/drill",
+        "Verify: full rally flows player->shot event->AI worker->target->AI paddle moves->paddle hits ball->ball returns to player. Beginner difficulty."
+      ]
+    },
+    "phase_2_intermediate_and_commitment": {
+      "duration_estimate_days": 5,
+      "tasks": [
+        "Implement js/ai/engines/intermediate.js with Voronoi via d3-delaunay",
+        "Add struggle score computation with decay 0.93",
+        "Add weighted CDF sampling for target selection",
+        "Add Bayesian shrinkage with prior n=3",
+        "Add accuracy guardrails (grid snap, min cell area, target jitter)",
+        "Implement commitment lock at T-400ms in aiFSM",
+        "Verify: AI visibly adapts after 10+ shots clustered in one zone (debug log only, no visual overlay)",
+        "Verify: AI cannot retarget after T-400ms even under deliberate late spin from player"
+      ]
+    },
+    "phase_3_telegraph_and_recovery": {
+      "duration_estimate_days": 5,
+      "tasks": [
+        "Create js/modes/aiMatch/telegraph.js with shot type lookup table",
+        "Implement paddle angle curves per shot type",
+        "Implement windup depth mapping (15-70cm)",
+        "Add hip/torso pre-rotation at T-300ms",
+        "Create js/modes/aiMatch/recovery.js with vulnerability window",
+        "Implement 40% movement speed during RECOVERING state",
+        "Verify (manual playtest): paddle angle visibly differs by shot type 150ms pre-contact",
+        "Verify (manual playtest): quick player returns during AI recovery cause AI miss"
+      ]
+    },
+    "phase_4_pro_engine": {
+      "duration_estimate_days": 3,
+      "tasks": [
+        "Create js/ai/engines/pro.js extending intermediate with exploit factor 0.85",
+        "Add disguised serve hook (paddle telegraph implies one spin, late wrist applies another)",
+        "Add difficulty selection UI in aiMatch mode",
+        "Verify (manual playtest): three difficulties feel architecturally different to a tester"
+      ]
+    },
+    "phase_5_imperfection_tuning": {
+      "duration_estimate_days": 14,
+      "tasks": [
+        "Create js/modes/aiMatch/imperfection.js",
+        "Implement wasted half-step at 30% probability",
+        "Implement weight shift lag of 80ms",
+        "Implement miss-rate injection per difficulty (15/8/3%)",
+        "Implement believable miss animations (stretched, mistimed, spin misread)",
+        "Implement no-instant-punishment rule (1-2 rally delay before exploiting new weaknesses)",
+        "Tune all imperfection parameters via repeated headset playtests",
+        "Verify: AI no longer feels robotic to playtesters. This is qualitative, no shortcut."
+      ]
+    },
+    "phase_6_v2_deferred": {
+      "duration_estimate_days": "later",
+      "tasks": [
+        "Add @tensorflow/tfjs and tfjs-backend-webgpu (only if WebGPU compute is needed and Quest browser supports it for the target deployment)",
+        "Train or acquire LSTM model for shot prediction",
+        "Integrate anticipate-and-counter into pro.js: predict player return position 200ms ahead, target opposite side",
+        "Confidence-based fallback to Voronoi when LSTM confidence < 0.4"
+      ]
+    }
+  },
+  "testing_requirements": {
+    "unit_tests_jest": {
+      "must_cover": [
+        "ShotHistory ring buffer wraps correctly at 15 slots",
+        "Decay function applied per rally produces expected weights at t+5, t+10, t+20 (0.93^5, 0.93^10, 0.93^20)",
+        "Voronoi cell area floor merges sub-threshold cells",
+        "Bayesian shrinkage formula matches reference values on synthetic data",
+        "Weighted CDF sampling distribution matches input weights within 5% over 10k samples",
+        "Grid snap rounds correctly at 10cm boundaries",
+        "shotAdapter physics rollout produces stable landing_x/z across 100 randomized initial conditions"
+      ]
+    },
+    "manual_headset_qa_checklist": [
+      "Beginner mode: new player wins majority of rallies",
+      "Intermediate mode: AI visibly shifts targeting after 10+ shots in one zone",
+      "Pro mode: AI feels like a tournament opponent, not a faster Intermediate",
+      "Three difficulties feel architecturally different, not numerically different",
+      "Paddle angle telegraph is readable within 5 sessions",
+      "Quick player returns during AI recovery cause AI to miss",
+      "AI occasionally misses in believable ways (stretched, mistimed), not robotic ways (teleport)",
+      "Commitment lock holds: late spin from player can fool the AI into misses",
+      "Wasted half-step looks natural, not glitchy",
+      "FPS stays at 72+ throughout 10-minute match on Quest 3"
+    ]
+  },
+  "anti_hallucination_guards": {
+    "do_not_invent_paths": "Use exactly the paths listed in 'new_files'. Do not invent src/ai/ - it is js/ai/. Do not invent TypeScript file extensions - it is .js.",
+    "do_not_invent_dependencies": "Only d3-delaunay is being added. Do not add tfjs, rapier, three-ik, vitest, or any other library not in 'new_dependencies'.",
+    "do_not_change_existing_modules": "Do not modify js/physics/*, js/scene/*, js/network/*, or existing modes. The AI is purely additive.",
+    "do_not_invent_apis": "Use the existing registerAIPaddle({getFace, hitRadius, id}) signature exactly. Do not invent new physics module APIs.",
+    "do_not_change_paddle_dimensions": "Paddle dimensions are fixed by the existing model: 0.149 x 0.250 x 0.020 m, face normal +x local, face offset -0.108 z local, hit radius 0.09 m.",
+    "do_not_invent_fsm_states": "The 8 FSM states are: IDLE, PREDICTING, DECIDING, MOVING, COMMITTED, SWINGING, CONTACT, RECOVERING. No others.",
+    "do_not_invent_shot_types": "The 6 shot types are: topspin_drive, slice, block, loop, push, smash. Derived from speed+spin via the lookup table only.",
+    "do_not_invent_numeric_values": "Use exact values: decay 0.93, commitment lock T-400ms, telegraph T-150ms, grid snap 0.10m, miss rates 0.15/0.08/0.03, recovery 300/350/400ms, vulnerability multiplier 0.4, wasted half-step 0.30 probability, weight lag 80ms.",
+    "do_not_replace_physics": "The existing custom physics in js/physics/* is tuned and ships. Do not replace with Rapier. Do not move to a worker. Do not refactor."
+  },
+  "deliverables": [
+    "All files in 'new_files' implemented",
+    "d3-delaunay added to package.json",
+    "Unit tests for engine math (jest)",
+    "Manual headset QA checklist completed",
+    "TUNING.md documenting imperfection parameters and how to adjust them",
+    "Demo: AI Match mode selectable from main menu, all three difficulties playable"
+  ]
+}

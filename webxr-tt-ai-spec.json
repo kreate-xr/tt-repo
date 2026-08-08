@@ -1,0 +1,321 @@
+{
+  "spec_version": "1.0",
+  "project": "webxr-table-tennis-ai-engine",
+  "purpose": "Build an adaptive opponent AI engine for a WebXR table tennis game with three distinct difficulty levels that feel architecturally different, not just numerically tuned.",
+  "target_runtime": {
+    "primary_devices": ["Meta Quest 3", "Meta Quest 3S", "Apple Vision Pro", "Samsung Galaxy XR"],
+    "min_supported": "Meta Quest 2",
+    "framerate_target_hz": 90,
+    "framerate_floor_hz": 72,
+    "render_thread_budget_ms_per_frame": 8.0
+  },
+  "tech_stack": {
+    "framework": "Three.js",
+    "version_constraint": "three@^0.170.0 or newer with WebGPURenderer support",
+    "renderer": "THREE.WebGPURenderer (NOT WebGLRenderer)",
+    "physics": "rapier3d-compat (runs in dedicated Web Worker)",
+    "xr_api": "WebXR Device API via THREE.WebXRManager",
+    "language": "TypeScript (strict mode)",
+    "build_tool": "Vite",
+    "package_manager": "pnpm",
+    "ml_backend": "@tensorflow/tfjs with @tensorflow/tfjs-backend-webgpu",
+    "voronoi_lib": "d3-delaunay@^6.0.4",
+    "do_not_use": [
+      "WebGL fallback (project is WebGPU-only; show upgrade message on unsupported browsers)",
+      "Main-thread physics or AI math",
+      "setInterval or setTimeout for game loop timing (use xrSession.requestAnimationFrame deltas)",
+      "localStorage / sessionStorage inside the engine module (host app handles persistence)"
+    ]
+  },
+  "deployment_requirements": {
+    "cross_origin_isolation": "Server MUST send Cross-Origin-Opener-Policy: same-origin AND Cross-Origin-Embedder-Policy: require-corp headers. Without these, SharedArrayBuffer is disabled and worker comms fall back to slow postMessage copies. Document this in README and provide a vite.config.ts that sets these headers in dev server.",
+    "https_required": true,
+    "webxr_feature_flags": ["local-floor", "hand-tracking", "layers"]
+  },
+  "architecture": {
+    "thread_model": {
+      "main_thread": {
+        "responsibilities": [
+          "WebXR session management",
+          "Three.js rendering via WebGPURenderer",
+          "Input event capture (controller pose, paddle pose, ball-paddle collision events)",
+          "Shot event logging (postMessage to AI worker)",
+          "Reading AI target coordinates (postMessage from AI worker)"
+        ],
+        "forbidden_operations": [
+          "Voronoi computation",
+          "Neural network inference",
+          "Physics simulation",
+          "Clustering or statistical math beyond simple arithmetic"
+        ]
+      },
+      "physics_worker": {
+        "library": "rapier3d-compat",
+        "responsibilities": ["Ball trajectory", "Spin", "Bounce", "Paddle collision detection"],
+        "sync_mechanism": "SharedArrayBuffer with Atomics for ball state (position xyz, velocity xyz, spin xyz, timestamp). 32 bytes total, lock-free read on main thread.",
+        "update_rate_hz": 120
+      },
+      "ai_worker": {
+        "responsibilities": [
+          "Maintain shot history ring buffer",
+          "Run Voronoi heatmap (Beginner/Intermediate)",
+          "Run LSTM inference (Pro)",
+          "Compute next target coordinates",
+          "Decay shot weights over time"
+        ],
+        "sync_mechanism": "postMessage with transferable Float32Array buffers",
+        "must_not": "Block on rendering or read DOM"
+      }
+    },
+    "module_structure": {
+      "src/": {
+        "main.ts": "Entry point, WebXR session boot",
+        "engine/": {
+          "TableTennisEngine.ts": "Public API: init(), startMatch(difficulty), onShot(), getAITarget()",
+          "PhysicsBridge.ts": "Owns physics worker, reads ball state via SAB",
+          "AIBridge.ts": "Owns AI worker, sends shot events, receives targets"
+        },
+        "ai/": {
+          "worker.ts": "AI worker entry point with message router",
+          "ShotHistory.ts": "Ring buffer (15 slots), decay logic",
+          "engines/": {
+            "IAIEngine.ts": "Interface: ingestShot(shot), computeTarget(context) => {x, z, confidence}, reset()",
+            "BeginnerEngine.ts": "Pure random within safe zones, no learning",
+            "IntermediateEngine.ts": "Voronoi heatmap with weighted sampling",
+            "ProEngine.ts": "LSTM via tfjs-webgpu + Voronoi fallback when confidence < 0.4"
+          },
+          "models/": {
+            "shot_predictor_lstm.json": "Pre-trained tfjs model (host app provides; engine loads at startMatch if difficulty=pro)",
+            "README.md": "Document expected input shape [batch=1, timesteps=20, features=6] and output [x, z, confidence]"
+          }
+        },
+        "physics/": {
+          "worker.ts": "Rapier-based ball physics worker",
+          "BallState.ts": "SharedArrayBuffer schema"
+        },
+        "rendering/": {
+          "Scene.ts": "Three.js scene setup",
+          "Table.ts": "Standard ITTF table dimensions: 2.74m x 1.525m x 0.76m (length x width x height)",
+          "Paddle.ts": "AI paddle mesh + animation",
+          "BallTrail.ts": "GPU-instanced particle trail (optional, can be disabled on Quest 2)"
+        },
+        "input/": {
+          "PaddleTracker.ts": "Read controller or hand pose, smooth with one-euro filter (cutoff=1.0, beta=0.007) to kill jitter without adding lag",
+          "HandConfidenceFilter.ts": "Reject hand-tracking frames where confidence < 0.7"
+        }
+      }
+    }
+  },
+  "shot_event_schema": {
+    "description": "Every time the player's paddle contacts the ball, main thread emits this to AI worker.",
+    "fields": {
+      "shot_id": "monotonic uint32",
+      "timestamp_ms": "performance.now() value at contact",
+      "landing_x": "float32, meters from table center, range [-0.7625, 0.7625]",
+      "landing_z": "float32, meters from net on player side, range [0, 1.37]",
+      "success": "0 or 1, did the player return it cleanly (no double-bounce, no out)",
+      "swing_lateness_ms": "float32, time between ball-crossing-net and paddle contact. Positive = late, negative = early.",
+      "ball_speed_at_contact_mps": "float32",
+      "ball_spin_rps": "float32, revolutions per second around vertical axis (signed)"
+    },
+    "encoding": "Float32Array of length 8, transferred via postMessage transferable"
+  },
+  "ai_target_schema": {
+    "description": "AI worker returns this when main thread requests next target.",
+    "fields": {
+      "target_x": "float32, meters from table center on PLAYER side, range [-0.7, 0.7] (0.0625m safety margin from edge)",
+      "target_z": "float32, meters from net on player side, range [0.1, 1.3]",
+      "target_speed_mps": "float32, range [3.0, 12.0]",
+      "target_spin_rps": "float32, range [-30, 30]",
+      "confidence": "float32, range [0, 1], used for hybrid fallback decisions"
+    },
+    "encoding": "Float32Array of length 5"
+  },
+  "difficulty_levels": {
+    "beginner": {
+      "engine": "BeginnerEngine",
+      "behavior": "Aims at center 60% of player side with Gaussian jitter sigma=0.25m. Never targets corners. Ball speed 3-5 m/s. Minimal spin (-5 to 5 rps). No learning. Feels like a patient practice partner.",
+      "exploit_factor": 0.0,
+      "ball_speed_range_mps": [3.0, 5.0],
+      "spin_range_rps": [-5, 5],
+      "miss_rate_target": "Player should win ~80% of rallies in first session"
+    },
+    "intermediate": {
+      "engine": "IntermediateEngine",
+      "behavior": "Voronoi heatmap over last 15 shots. Struggle score = (misses * 3) + (lateness_ms / 100 * 2) + (successes * 0.5). Decay multiplier 0.93 per rally. Min 5 shots before exploit activates. Exploit factor 0.5 (50% targets weak zones, 50% random). Cell area floor 0.015 sqm. Bayesian shrinkage with prior n=3 on per-cell scores.",
+      "exploit_factor": 0.5,
+      "ball_speed_range_mps": [5.0, 8.0],
+      "spin_range_rps": [-15, 15],
+      "miss_rate_target": "Player should win ~50% of rallies after 10 sessions"
+    },
+    "pro": {
+      "engine": "ProEngine",
+      "behavior": "LSTM trained on shot sequences predicts player return position with 200ms lookahead. Input: last 20 shots (sequence of 6-feature vectors). Output: predicted (x, z, confidence). If confidence >= 0.4, AI targets the OPPOSITE side of the predicted return (anticipate-and-counter). If confidence < 0.4, fall back to IntermediateEngine logic. Exploit factor 0.85. Adds disguised serves (paddle motion suggests one spin, ball receives different spin via late wrist rotation animation).",
+      "exploit_factor": 0.85,
+      "ball_speed_range_mps": [7.0, 12.0],
+      "spin_range_rps": [-30, 30],
+      "lstm_input_shape": [1, 20, 6],
+      "lstm_features_per_timestep": ["landing_x", "landing_z", "success", "swing_lateness_ms_normalized", "ball_speed_normalized", "ball_spin_normalized"],
+      "lstm_output_shape": [1, 3],
+      "confidence_fallback_threshold": 0.4,
+      "miss_rate_target": "Player should win ~20% of rallies; should feel like the AI is reading them"
+    }
+  },
+  "performance_budgets": {
+    "main_thread_per_frame_ms": 8.0,
+    "ai_worker_per_shot_ms": {
+      "beginner": 0.1,
+      "intermediate": 0.8,
+      "pro": 4.0
+    },
+    "ai_worker_target_request_latency_ms": 2.0,
+    "physics_worker_per_step_ms": 1.5,
+    "postmessage_round_trip_budget_ms": 0.5,
+    "ai_target_request_lead_time_ms": 200,
+    "notes": "AI target must be requested at least 200ms before the AI paddle swing because postMessage is async and there is no guarantee a worker response lands before the next XR frame. Build this lead time into the rally state machine."
+  },
+  "accuracy_guardrails": {
+    "shot_coordinate_grid_snap_m": 0.10,
+    "rationale_grid_snap": "Hand-tracking jitter is ~5-10cm. Snap logged coordinates to 10cm grid BEFORE clustering to kill false signal.",
+    "min_shots_before_exploit": 5,
+    "rationale_min_shots": "Below 5 samples, the heatmap is statistical noise. AI plays neutral center-table until threshold is reached.",
+    "voronoi_min_cell_area_sqm": 0.015,
+    "rationale_min_cell": "Cells smaller than 15 cm^2 represent physically meaningless targets given paddle size and ball diameter. Merge with nearest neighbor.",
+    "bayesian_shrinkage_prior_n": 3,
+    "rationale_shrinkage": "Regress low-sample cells toward population mean to prevent overreaction to one unlucky miss.",
+    "target_jitter_sigma_m": 0.08,
+    "rationale_jitter": "Add Gaussian jitter to chosen target so AI never hits the same coordinate twice. Without this, players spot the pattern within 5 rallies."
+  },
+  "psychological_design_rules": {
+    "no_heatmap_visualization": "Under NO circumstances render the Voronoi grid, struggle scores, or AI targeting logic visibly in the game UI. The system's power is psychological. A debug overlay is allowed but must be gated behind a build flag and OFF in production builds.",
+    "no_telegraphed_targeting": "AI paddle animation must NOT pre-orient toward the target before swing windup begins. Targeting decision happens during windup, not before.",
+    "natural_imperfection": "At every difficulty, inject a small random miss-rate (Beginner 15%, Intermediate 8%, Pro 3%). A perfect-precision AI feels like a bot. A slightly fallible one feels human.",
+    "no_instant_punishment": "When a new player weakness is detected, do NOT exploit on the very next shot. Wait 1-2 rallies. This makes the adaptation feel like recognition, not surveillance."
+  },
+  "webxr_specific_requirements": {
+    "render_loop": "Use xrSession.requestAnimationFrame ONLY. Never window.requestAnimationFrame inside an XR session.",
+    "frame_timing": "Use the XRFrame predictedDisplayTime, not performance.now(), for any rendering-related timing.",
+    "webxr_layers": "Use XRQuadLayer for score display and menu UI. These update on-demand, not per-frame, freeing render budget.",
+    "fixed_foveated_rendering": "Enable FFR level 2 on Quest devices via gl.getExtension or WebGPU equivalent.",
+    "multiview_rendering": "Enable WebXR multiview to halve draw calls for stereo rendering.",
+    "hand_tracking_fallback": "If session has hand-tracking input, use it; otherwise use controllers. Code must support both without runtime branching in the hot path.",
+    "passthrough_mode": "If session is immersive-ar (Quest 3 / Vision Pro MR), use scene understanding to anchor table to a real surface. Fall back to floating table if no plane detected within 3s."
+  },
+  "public_api": {
+    "TableTennisEngine": {
+      "constructor": "new TableTennisEngine(config: EngineConfig)",
+      "methods": {
+        "init(canvas: HTMLCanvasElement): Promise<void>": "Boot WebGPU, spawn workers, load XR session",
+        "startMatch(difficulty: 'beginner' | 'intermediate' | 'pro'): Promise<void>": "Reset state, load appropriate AI engine, begin rally state machine",
+        "endMatch(): MatchStats": "Returns rally count, player win rate, avg rally length, exploit success rate",
+        "pause(): void": "",
+        "resume(): void": "",
+        "destroy(): Promise<void>": "Terminate workers, dispose GPU resources, end XR session"
+      },
+      "events": {
+        "onRallyStart": "callback(rallyId)",
+        "onRallyEnd": "callback(rallyId, winner: 'player' | 'ai', reason)",
+        "onShotLogged": "callback(ShotEvent)",
+        "onError": "callback(Error)"
+      }
+    }
+  },
+  "testing_requirements": {
+    "unit_tests": {
+      "framework": "vitest",
+      "must_cover": [
+        "ShotHistory ring buffer wraps correctly at capacity",
+        "Decay function applied per rally produces expected weights at t+5, t+10, t+20",
+        "Voronoi cell area floor merges sub-threshold cells",
+        "Bayesian shrinkage formula on synthetic data matches reference values",
+        "Weighted CDF sampling distribution matches input weights within 5% over 10k samples",
+        "Grid snap rounds correctly at boundary values",
+        "LSTM input normalization produces values in [-1, 1]",
+        "Confidence fallback triggers at exactly 0.4 threshold"
+      ]
+    },
+    "integration_tests": {
+      "framework": "playwright with WebXR emulator extension",
+      "must_cover": [
+        "Full rally completes in beginner mode without errors",
+        "AI worker responds to shot events within 5ms",
+        "Frame rate stays >= 72fps during 100-rally session on simulated Quest 2 profile",
+        "SharedArrayBuffer is enabled (COOP/COEP headers present)",
+        "Worker terminates cleanly on destroy()"
+      ]
+    },
+    "performance_tests": {
+      "must_measure": [
+        "p50 and p99 of ai_worker_per_shot_ms across 1000 simulated shots per difficulty",
+        "Main thread frame time histogram during 5-minute Pro mode session",
+        "GPU memory growth over 30-minute session (must be flat, no leaks)"
+      ]
+    },
+    "manual_qa_checklist": [
+      "Beginner mode: new player wins majority of rallies",
+      "Intermediate mode: AI visibly shifts targeting after player consistently fails in one zone",
+      "Pro mode: AI appears to anticipate returns (qualitative subjective test with 3 testers)",
+      "No debug overlays visible in production build",
+      "FPS counter shows >= 72 throughout a 10-minute Pro match on Quest 3"
+    ]
+  },
+  "build_phases": {
+    "phase_1_foundation": [
+      "Vite + TypeScript + Three.js WebGPURenderer scaffold",
+      "WebXR session boot with controller and hand-tracking support",
+      "Table, paddle, ball meshes at correct ITTF dimensions",
+      "COOP/COEP headers configured in dev server"
+    ],
+    "phase_2_physics": [
+      "Rapier physics worker with SharedArrayBuffer ball state",
+      "Paddle-ball collision detection on main thread reading SAB",
+      "Ball trajectory matches real table tennis physics (verify with reference video)"
+    ],
+    "phase_3_ai_scaffold": [
+      "AI worker with message router",
+      "ShotHistory ring buffer",
+      "IAIEngine interface",
+      "BeginnerEngine implementation",
+      "End-to-end shot event flow main -> ai_worker -> target -> main"
+    ],
+    "phase_4_intermediate": [
+      "d3-delaunay Voronoi integration",
+      "Struggle score computation",
+      "Weighted CDF sampling",
+      "Decay logic",
+      "All accuracy guardrails (grid snap, min cell area, Bayesian shrinkage)"
+    ],
+    "phase_5_pro": [
+      "tfjs-webgpu backend setup",
+      "LSTM model loading and inference",
+      "Confidence-based fallback to IntermediateEngine",
+      "Anticipate-and-counter targeting logic",
+      "Disguised serve animation system"
+    ],
+    "phase_6_polish": [
+      "Psychological design rules (no telegraphing, natural imperfection, delayed exploitation)",
+      "WebXR Layers for UI",
+      "FFR and multiview enabled",
+      "Passthrough mode for Quest 3 / Vision Pro",
+      "Performance test suite passes all budgets"
+    ]
+  },
+  "non_negotiable_rules": [
+    "No main-thread math beyond shot logging and target reading.",
+    "No WebGL fallback - WebGPU is the floor.",
+    "No visible heatmap in production - the AI's intelligence must remain implicit.",
+    "No hardcoded magic numbers - all tunables in config files exposed via EngineConfig.",
+    "No telemetry or analytics phoning home from the engine module - host app owns that.",
+    "No third-party CDN dependencies at runtime - bundle everything.",
+    "Each difficulty level must feel architecturally different to a tester, not just numerically different."
+  ],
+  "deliverables": [
+    "Complete src/ tree as specified",
+    "vite.config.ts with COOP/COEP headers",
+    "package.json with all dependencies pinned",
+    "README.md with setup, build, and deployment instructions",
+    "ARCHITECTURE.md explaining the thread model and AI design decisions",
+    "Test suite covering unit, integration, and performance requirements",
+    "Example index.html that boots the engine and starts a match"
+  ]
+}

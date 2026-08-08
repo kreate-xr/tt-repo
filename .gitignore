@@ -1,0 +1,22 @@
+node_modules/
+dist/
+
+# Local env files — VITE_FIREBASE_* config lives here, do not commit
+.env
+.env.local
+.env.*.local
+
+# Claude Code machine-local settings
+.claude/settings.local.json
+
+# Editor / OS noise
+.DS_Store
+*.log
+.vscode/
+.idea/
+
+# Firebase deploy/hosting cache
+.firebase/
+
+# ngrok local config (if used for tunneling)
+ngrok.yml

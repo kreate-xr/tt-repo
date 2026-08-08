@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MR Table Tennis</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0a;
+      color: #fff;
+      overflow: hidden;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+
+    #overlay {
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 10;
+      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0a 100%);
+    }
+
+    #overlay h1 {
+      font-size: 2.5rem;
+      margin-bottom: 0.5rem;
+      background: linear-gradient(135deg, #00ff88, #00aaff);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    #overlay p {
+      color: #888;
+      margin-bottom: 2rem;
+      font-size: 1.1rem;
+    }
+
+    #enter-mr {
+      padding: 16px 48px;
+      font-size: 1.2rem;
+      border: none;
+      border-radius: 12px;
+      background: linear-gradient(135deg, #00ff88, #00aaff);
+      color: #000;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    #enter-mr:hover {
+      transform: scale(1.05);
+      box-shadow: 0 0 30px rgba(0, 255, 136, 0.4);
+    }
+    #enter-mr:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    #enter-desktop {
+      margin-top: 12px;
+      padding: 12px 36px;
+      font-size: 1rem;
+      border: 2px solid rgba(255,255,255,0.2);
+      border-radius: 12px;
+      background: transparent;
+      color: #aaa;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    #enter-desktop:hover {
+      border-color: #00ff88;
+      color: #fff;
+      background: rgba(0, 255, 136, 0.1);
+    }
+
+    #status {
+      margin-top: 1rem;
+      color: #ff4444;
+      font-size: 0.9rem;
+      text-align: center;
+      max-width: 400px;
+    }
+
+    #loading {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      z-index: 20;
+      background: rgba(0,0,0,0.9);
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+    }
+    #loading p {
+      font-size: 1.2rem;
+      color: #aaa;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Start Screen -->
+  <div id="overlay">
+    <h1>MR Table Tennis</h1>
+    <p>Play table tennis in your real room</p>
+    <button id="enter-mr">Enter Mixed Reality</button>
+
+    <div id="multiplayer-controls" style="margin-top: 18px; display: flex; flex-direction: column; align-items: center; gap: 10px;">
+      <button id="create-room" style="padding: 10px 28px; font-size: 0.95rem; border: 2px solid rgba(0,170,255,0.5); border-radius: 10px; background: transparent; color: #cfe; cursor: pointer;">Create Multiplayer Room</button>
+      <div style="display: flex; gap: 6px; align-items: center;">
+        <input id="room-code-input" maxlength="6" placeholder="ROOM CODE" autocapitalize="characters" style="padding: 9px 12px; width: 130px; font-size: 1rem; letter-spacing: 0.15em; text-align: center; border: 2px solid rgba(255,255,255,0.18); border-radius: 10px; background: rgba(255,255,255,0.05); color: #fff; text-transform: uppercase;" />
+        <button id="join-room" style="padding: 10px 22px; font-size: 0.95rem; border: 2px solid rgba(0,170,255,0.5); border-radius: 10px; background: transparent; color: #cfe; cursor: pointer;">Join</button>
+      </div>
+      <div id="multiplayer-status" style="min-height: 1.2em; color: #8ad; font-size: 0.9rem; text-align: center;"></div>
+    </div>
+
+    <div id="status"></div>
+  </div>
+
+  <!-- Loading Screen -->
+  <div id="loading">
+    <p>Loading models...</p>
+  </div>
+
+  <script type="module" src="js/main.js"></script>
+</body>
+</html>
