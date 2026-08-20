@@ -3,11 +3,6 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "signaling": "node signaling-server.js",
     "telemetry": "node telemetry-server.js"
-  },
-  "dependencies": {
-    "tt-webxr": "file:..",
-    "ws": "^8.18.0"
   }
 }

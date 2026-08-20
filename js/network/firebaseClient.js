@@ -65,6 +65,13 @@ export function ensureAnonymousAuth() {
   if (!auth) initFirebase();
   if (auth.currentUser) return Promise.resolve(auth.currentUser);
   if (signedInPromise) return signedInPromise;
-  signedInPromise = signInAnonymously(auth).then((cred) => cred.user);
+  signedInPromise = signInAnonymously(auth)
+    .then((cred) => cred.user)
+    .catch((err) => {
+      // Drop the memoized promise so a transient failure (offline, quota)
+      // doesn't poison every later lobby attempt until a page reload.
+      signedInPromise = null;
+      throw err;
+    });
   return signedInPromise;
 }

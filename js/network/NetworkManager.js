@@ -187,6 +187,10 @@ export class NetworkManager {
         this._wireChannels(channels);
         return channels;
       });
+      // channelsPromise is awaited below, but if the offer flow throws first
+      // its rejection would surface as an unhandled-rejection — pre-arm a
+      // no-op catch on a derived promise (the awaited one still rejects).
+      channelsPromise.catch(() => {});
 
       this.signaling.on('offer', async (msg) => {
         try {

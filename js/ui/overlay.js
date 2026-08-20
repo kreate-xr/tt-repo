@@ -20,6 +20,14 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
   // so an abandoned attempt can never clobber the one that replaced it.
   let lobbySession = 0;
 
+  // BETA LAUNCH: passthrough MR only. The VR venue picker (Arena / TT Arena)
+  // is disabled — uncomment the block below to restore it for the full
+  // release. Comments (and therefore this whole block) are stripped by the
+  // production build, so none of it is visible in the shipped bundle. The
+  // localStorage key is deliberately left alone so a pre-beta venue choice
+  // comes back when the picker returns.
+  const xrMode = 'ar';
+  /*
   // XR mode toggle: 'ar' (passthrough, current default) vs 'vr' (dark
   // stadium venue) vs 'vr-tt' (alternate tt-arena venue). WebXR session type
   // is fixed at request time so this is pre-session. Persisted so a
@@ -30,7 +38,8 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
   try {
     const saved = localStorage.getItem(XR_MODE_STORAGE_KEY);
     if (VALID_MODES.has(saved)) xrMode = saved;
-  } catch { /* localStorage disabled — stick with default */ }
+  } catch { // localStorage disabled — stick with default
+  }
 
   const modeToggleWrap = document.createElement('div');
   modeToggleWrap.id = 'xr-mode-toggle';
@@ -74,6 +83,7 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     enterMRBtn.textContent = xrMode === 'ar' ? 'Enter Mixed Reality' : 'Enter Arena';
   }
   refreshModeBtns();
+  */
 
   function setMpStatus(text, isError = false) {
     if (!mpStatusEl) return;
@@ -145,7 +155,9 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     if (msg.includes('ROOM_NOT_FOUND')) return `Room ${code} not found — double-check the code with your friend.`;
     if (msg.includes('ROOM_FULL')) return `Room ${code} already has two players. Ask your friend to create a new room.`;
     if (msg.includes('ICE_TIMEOUT')) return 'Could not connect to the other player (network issue). Both of you: try again with a new room.';
-    return `Connection failed: ${msg}. Try again.`;
+    // Unrecognized failure: keep the raw SDK/SDP error out of the UI.
+    console.error('lobby error:', err);
+    return 'Connection failed — check your internet connection and try again.';
   }
 
   function onLobbyConnected(nm, role) {

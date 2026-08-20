@@ -6,7 +6,9 @@
 //   Document layout:
 //     rooms/{code} {
 //       host:       { joinedAt: Timestamp }              // present when host has joined
+//       hostUid:    string                               // anonymous-auth uid; security rules
 //       guest:      { joinedAt: Timestamp }              // present when guest has joined
+//       guestUid:   string                               //   bind writes to these uids
 //       offer:      { type, sdp }                        // host writes
 //       answer:     { type, sdp }                        // guest writes
 //       createdAt:  Timestamp
@@ -72,7 +74,8 @@ export class SignalingClient {
     if (this.roomRef) throw new Error('SignalingClient already connected');
     this.room = roomCode;
 
-    await ensureAnonymousAuth();
+    const user = await ensureAnonymousAuth();
+    this.uid = user.uid;
     const db = getDb();
     this.roomRef = doc(db, 'rooms', roomCode);
 
@@ -88,6 +91,7 @@ export class SignalingClient {
           // be reused after a reload or a failed attempt.
           txn.set(this.roomRef, {
             host: { joinedAt: serverTimestamp() },
+            hostUid: user.uid,
             createdAt: serverTimestamp(),
           });
           return 'host';
@@ -96,7 +100,10 @@ export class SignalingClient {
         // the guest silently become host of an empty room and hang forever.
         if (!snap.exists() || !snap.data().host) return 'notFound';
         if (snap.data().guest) return 'full';
-        txn.update(this.roomRef, { guest: { joinedAt: serverTimestamp() } });
+        txn.update(this.roomRef, {
+          guest: { joinedAt: serverTimestamp() },
+          guestUid: user.uid,
+        });
         return 'guest';
       });
     } catch (err) {
@@ -200,7 +207,9 @@ export class SignalingClient {
   async leaveRoom() {
     if (!this.roomRef) return;
     try {
-      await updateDoc(this.roomRef, { guest: deleteField(), answer: deleteField() });
+      await updateDoc(this.roomRef, {
+        guest: deleteField(), guestUid: deleteField(), answer: deleteField(),
+      });
     } catch { /* best-effort — room may already be gone */ }
   }
 

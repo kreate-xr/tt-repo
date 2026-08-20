@@ -1,12 +1,15 @@
 {
   "name": "tt-webxr",
   "version": "1.0.0",
-  "main": "index.js",
+  "private": true,
   "scripts": {
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "test": "jest"
+  },
+  "engines": {
+    "node": ">=20.19"
   },
   "jest": {
     "testMatch": [
@@ -22,23 +25,20 @@
       "^three$": "<rootDir>/node_modules/three/build/three.cjs"
     }
   },
-  "keywords": [],
-  "author": "",
   "license": "ISC",
   "type": "commonjs",
-  "description": "",
   "dependencies": {
-    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "d3-delaunay": "^6.0.4",
     "firebase": "^12.13.0",
     "msgpack-lite": "^0.1.26",
-    "three": "0.183.2",
-    "vite": "^8.0.5"
+    "three": "0.183.2"
   },
   "devDependencies": {
     "@babel/core": "^7.29.0",
     "@babel/preset-env": "^7.29.5",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
     "babel-jest": "^30.4.1",
-    "jest": "^30.4.2"
+    "jest": "^30.4.2",
+    "vite": "^8.0.5"
   }
 }

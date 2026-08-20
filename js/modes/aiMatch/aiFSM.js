@@ -118,7 +118,7 @@ const DISGUISE_FRACTION_OF_SWING = 2 / 3;
 const MICRO_CORRECTION_BUDGET_M = 0.05;
 
 // Debug logging — flip false for production / playtest with no console noise.
-const DEBUG_LOG = true;
+const DEBUG_LOG = false;
 
 function tableCenterZ() {
   return tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;

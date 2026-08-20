@@ -9,11 +9,14 @@ import {
   setArenaLighting, restoreARLighting,
   applyMRFallbackLighting, applyLightEstimate,
 } from '../scene/sceneSetup.js';
-import { createArena, onArenaLoadProgress } from '../scene/arena.js';
+// BETA LAUNCH: arena/stadium venues disabled — import commented out so the
+// venue code (and its strings) is tree-shaken out of the shipped bundle
+// entirely. Restore together with the venue picker in js/ui/overlay.js and
+// the arena block in startInGame below.
+// import { createArena, onArenaLoadProgress } from '../scene/arena.js';
 import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor } from '../scene/models.js';
-import { initDebugHud, hudLog, isDebugHudReady, refreshHud, SELF_TEST } from '../scene/hud.js';
+import { hudLog, SELF_TEST } from '../scene/hud.js';
 // FPS HUD disabled — import kept commented for easy restore.
-// import { createFpsMeter } from '../scene/fpsMeter.js';
 import {
   tickPhysics, clearListeners, spawnBallAt,
   onPaddleHit, onTableBounce, onNetHit, onBallLost,
@@ -164,7 +167,13 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // with spotlights, differing only in which venue GLB is loaded. WebXR
   // session type is fixed at request time, so this is a pre-session choice,
   // driven by the toggle on the start screen.
-  const isVR = xrMode === 'vr' || xrMode === 'vr-tt';
+  //
+  // BETA LAUNCH: pinned to false so the minifier dead-code-eliminates the
+  // whole VR branch (mode strings included) from the shipped bundle —
+  // overlay.js only ever passes 'ar' while the venue picker is off anyway.
+  // Restore the original line with the picker.
+  const isVR = false;
+  // const isVR = xrMode === 'vr' || xrMode === 'vr-tt';
   const sessionType = isVR ? 'immersive-vr' : 'immersive-ar';
   const supported = await navigator.xr.isSessionSupported(sessionType);
   if (!supported) {
@@ -260,7 +269,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // look like the VR-tuned key. Rim stays on for silhouette.
   if (xrMode === 'ar') applyMRFallbackLighting();
 
-  if (!isDebugHudReady()) initDebugHud();
   initStatsHud();
 
   // --- Controller binding + laser -----------------------------------------
@@ -372,6 +380,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // legibility. The wrist menu still overrides it either way.
   if (!isVR) setBallColor('orange');
 
+  // BETA LAUNCH: venue loading disabled with the createArena import above —
+  // xrMode is pinned to 'ar' in overlay.js so isVR can't be true anyway;
+  // `arena` stays null and every consumer already null-guards it.
+  /*
   if (isVR) {
     // createArena needs tableBox, so it can only run after loadModels.
     arena = createArena(xrMode === 'vr-tt' ? 'tt' : 'stadium');
@@ -401,6 +413,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       if (loadingScreen) loadingScreen.style.display = 'none';
     }
   }
+  */
 
   scene.remove(loadPanel.mesh);
   loadPanel.dispose();
@@ -582,7 +595,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // The footer shortcuts hand off to the existing panels rather than
   // reimplementing them.
   trainingMenu.on('calibrate', () => { trainingMenu.hide(); enterTuner(calibWizard); });
-  trainingMenu.on('tune', () => { trainingMenu.hide(); enterTuner(tuner); });
+  // Physics tuner mutates live physics constants (gravity, drag, restitution) —
+  // in multiplayer the two clients would silently disagree. Dev-only (?selftest).
+  trainingMenu.on('tune', () => { if (SELF_TEST) { trainingMenu.hide(); enterTuner(tuner); } });
   trainingMenu.on('exit', () => onTunerBack());
 
   // The PLAY tile opens the Machine Play menu instead of entering free play
@@ -604,9 +619,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     enterFreePlay();
   });
   machinePlayMenu.on('calibrate', () => { machinePlayMenu.hide(); enterTuner(calibWizard); });
-  machinePlayMenu.on('tune', () => { machinePlayMenu.hide(); enterTuner(tuner); });
+  machinePlayMenu.on('tune', () => { if (SELF_TEST) { machinePlayMenu.hide(); enterTuner(tuner); } });
 
-  wristMenu.on('tune', () => enterTuner(tuner));
+  wristMenu.on('tune', () => { if (SELF_TEST) enterTuner(tuner); });
   wristMenu.on('calibrate', () => enterTuner(calibWizard));
   wristMenu.on('ballColor', ({ colorId }) => setBallColor(colorId));
   wristMenu.on('exit', () => endSession());
@@ -737,14 +752,17 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       // Populated only when a venue GLB with named walls is loaded (tt-arena).
       // Drills that render UI panels (currently just aiMatch's scoreboard) use
       // it to wall-mount instead of floating in world space.
-      arenaAnchor: arena && arena.getBackWallAnchor ? arena.getBackWallAnchor() : null,
-      // Full arena handle so drills can opt into stadium-specific
+      // (These two keys were named arenaAnchor / arena pre-beta; renamed to
+      // neutral terms because object keys survive minification and the beta
+      // bundle must not hint at the unreleased venues.)
+      scoreboardAnchor: arena && arena.getBackWallAnchor ? arena.getBackWallAnchor() : null,
+      // Full venue handle so drills can opt into stadium-specific
       // enhancements (live scoreboard on the venue's TV meshes, positional
-      // crowd audio on the 24 audience sections). Null when no arena is
+      // crowd audio on the 24 audience sections). Null when no venue is
       // mounted (AR/MR mode). Drills should feature-detect the accessor
       // methods (getStadiumScreens / getCrowdAnchors) since only the
       // stadium variant populates them.
-      arena,
+      env: arena,
     };
     // Multiplayer drill needs the live NetworkManager + role from the lobby.
     // Other drills ignore this slot.
@@ -1112,17 +1130,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
   }
 
-  // Frame-rate meter — billboarded chip near the top of view (dom-overlay is
-  // AR-only on Quest, so this must be an in-scene mesh to show in VR arena
-  // mode too). Hide with ?nofps.
-  // Disabled for now.
-  // const fpsMeter = createFpsMeter(scene);
-
   // --- Session end cleanup ---
   session.addEventListener('end', () => {
     teardownDrill();
     clearStatsHud();
-    // fpsMeter.dispose();
     wristMenu.hide();
     wristMenu.dispose();
     tuner.hide();
@@ -1283,9 +1294,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       showDrillSummary();
     }
 
-    // fpsMeter.update(rawDt, renderer.xr.getCamera());
-
-    if (SELF_TEST) refreshHud();
     renderer.render(scene, camera);
   });
 }

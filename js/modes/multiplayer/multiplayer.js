@@ -77,13 +77,20 @@ const TELEMETRY_URL = (() => {
     && import.meta.env.VITE_TELEMETRY_URL;
   if (fromEnv) return fromEnv;
   const host = (typeof location !== 'undefined' && location.hostname) || 'localhost';
+  // No deployed sink: the :8081 dev server (server/telemetry-server.js) only
+  // exists locally. Off localhost, disable beaconing (TelemetryReporter keeps
+  // sampling for the in-session HUD; it just doesn't POST anywhere).
+  if (host !== 'localhost' && host !== '127.0.0.1') return null;
   // Always plain http(s) — telemetry sink is independent of the signaling
   // protocol. Match the page's protocol to avoid mixed-content blocking.
   const proto = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'https' : 'http';
   return `${proto}://${host}:8081/telemetry`;
 })();
 
-export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = null, arenaAnchor = null } = {}) {
+// `scoreboardAnchor` was `arenaAnchor` pre-beta — renamed because destructured
+// keys survive minification and the beta bundle must not hint at the
+// unreleased venues (see js/modes/inGame.js drill-args note).
+export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = null, scoreboardAnchor = null } = {}) {
   if (!multiplayer || !multiplayer.networkManager) {
     throw new Error('createMultiplayerDrill requires { multiplayer: { networkManager, role } }');
   }
@@ -123,7 +130,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   const playerServe = createPlayerServeController({ xr });
   const scoreboard = createScoreboard({
     config: { bestOf: 1, playerName: 'YOU', aiName: 'OPPONENT' },
-    anchor: arenaAnchor,
+    anchor: scoreboardAnchor,
   });
   // On-table serve cue, same as the AI match: pulsing chevrons on the
   // LOCAL player's half whenever it's their serve. Both peers render their

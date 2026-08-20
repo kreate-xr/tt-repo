@@ -40,11 +40,14 @@ import { createPlayerServeController } from './playerServe.js';
 import { createRallyManager } from './rallyManager.js';
 import { createFailureHandler } from './failureHandler.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
-import { createStadiumScoreboard } from '../../scene/stadiumScoreboard.js';
-import { createCrowdAudio } from '../../scene/crowdAudio.js';
-import { createCrowdWave } from '../../scene/crowdWave.js';
-import { createArenaLighting } from '../../scene/arenaLighting.js';
-import { createSponsorBoards } from '../../scene/sponsorBoards.js';
+// BETA LAUNCH: stadium venue disabled (see js/ui/overlay.js) — these imports
+// are commented out so the stadium/crowd modules are tree-shaken out of the
+// shipped bundle. Restore together with the mount block further down.
+// import { createStadiumScoreboard } from '../../scene/stadiumScoreboard.js';
+// import { createCrowdAudio } from '../../scene/crowdAudio.js';
+// import { createCrowdWave } from '../../scene/crowdWave.js';
+// import { createArenaLighting } from '../../scene/arenaLighting.js';
+// import { createSponsorBoards } from '../../scene/sponsorBoards.js';
 import { faultRuleText } from '../../scene/faultText.js';
 import { createServeArrow } from '../../scene/serveArrow.js';
 import { createPointBurst } from '../../scene/pointBurst.js';
@@ -171,7 +174,12 @@ function resetPlayerVelocity() {
 // PREDICTING → DECIDING), so this constant isn't actively used yet but is
 // kept here so Phase 2 can switch to a periodic re-target inside MOVING.
 
-export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor = null, arena = null } = {}) {
+// `scoreboardAnchor` / `env` were `arenaAnchor` / `arena` pre-beta — renamed
+// because destructured keys survive minification and the beta bundle must not
+// hint at the unreleased venues. Local names are minifier-mangled, so `arena`
+// is kept as an alias below and the commented mount block restores unchanged.
+export function createAIMatchDrill({ ballEvents, profile, hooks, xr, scoreboardAnchor = null, env = null } = {}) {
+  const arena = env;
   if (!ballEvents) throw new Error('createAIMatchDrill requires { ballEvents }');
 
   // Difficulty comes from the wrist menu's difficulty buttons via
@@ -376,7 +384,7 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
   // arenaAnchor is populated only in tt-arena VR mode (see js/scene/arena.js
   // getBackWallAnchor); other modes leave it null and the scoreboard falls
   // back to its floating position behind the AI baseline.
-  const scoreboard = createScoreboard({ config: { bestOf: 5 }, anchor: arenaAnchor });
+  const scoreboard = createScoreboard({ config: { bestOf: 5 }, anchor: scoreboardAnchor });
 
   // Stadium-only enhancements. When the player is inside the broadcast-
   // stadium venue, mirror the scoreboard onto the venue's TV / Screen /
@@ -388,6 +396,10 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
   let crowdWave = null;
   let arenaLighting = null;
   let sponsorBoards = null;
+  // BETA LAUNCH: stadium mounts disabled with the imports above. `arena` is
+  // always null while the venue picker is off, so this block could never run
+  // anyway; every reference below (update/dispose/event hooks) null-guards.
+  /*
   if (arena && arena.getStadiumScreens && arena.getCrowdAnchors) {
     const screens = arena.getStadiumScreens();
     if (screens && screens.length > 0) {
@@ -452,6 +464,7 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
       }
     }
   }
+  */
 
   // Single patch point for both scoreboard surfaces (floating/wall panel +
   // stadium TVs) so every producer below keeps them in sync with one call.

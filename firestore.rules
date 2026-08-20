@@ -1,33 +1,127 @@
 rules_version = '2';
 
-// Prototype-grade rules: any authenticated user (including anonymous) can
-// read + write any room. The Anonymous-auth requirement is the only gate —
-// it stops crawlers and unauthenticated abuse, but anyone who can run the
-// game can also interfere with any room they know the code of.
+// Signaling rooms for WebRTC lobby (see js/network/SignalingClient.js).
 //
-// Production hardening to add later:
-//   - Cap room size: writes to /rooms/{code} disallowed if data.host AND
-//     data.guest are both present and the writer isn't one of them
-//   - TTL: deny writes to rooms whose createdAt > 1 hour old (paired with a
-//     Cloud Functions scheduled job that deletes them)
-//   - Validate offer/answer shape (must be {type, sdp})
-//   - Per-IP rate-limit room creation via App Check / reCAPTCHA Enterprise
+// Model enforced here:
+//   - All access requires (anonymous) auth.
+//   - `list` is denied everywhere — room codes cannot be enumerated; a peer
+//     must know the exact code to even read a room.
+//   - The creating host stamps hostUid, the joining guest stamps guestUid
+//     (both must equal request.auth.uid); every later write is bound to one
+//     of those two uids, so a third party who guesses a live code cannot
+//     overwrite the offer/answer or hijack the session.
+//   - Rooms expire after MAX_AGE: no writes are accepted on an expired room,
+//     and an expired room's code may be reclaimed by a new host. Orphaned
+//     docs still need a scheduled Cloud Function (or Firestore TTL policy on
+//     `createdAt`) to be physically deleted — rules can only stop their use.
+//   - offer/answer must be shaped like session descriptions and are size-capped.
 //
-// Deploy:
-//   gcloud firestore rules deploy firestore.rules
-// Or via Firebase CLI:
-//   firebase deploy --only firestore:rules
+// Deploy: firebase deploy --only firestore:rules
 
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // Rooms are throwaway lobby docs; anything older than this is garbage.
+    function fresh(data) {
+      return data.createdAt is timestamp
+        && request.time < data.createdAt + duration.value(2, 'h');
+    }
+
+    function isHost(data)  { return signedIn() && data.hostUid == request.auth.uid; }
+    function isGuest(data) { return signedIn() && data.guestUid == request.auth.uid; }
+
+    function validDescription(d, kind) {
+      return d is map
+        && d.keys().hasOnly(['type', 'sdp'])
+        && d.type == kind
+        && d.sdp is string
+        && d.sdp.size() < 30000;
+    }
+
+    // The full doc a host writes when creating (or reclaiming) a room.
+    function validHostDoc() {
+      return request.resource.data.keys().hasOnly(['host', 'hostUid', 'createdAt'])
+        && request.resource.data.host is map
+        && request.resource.data.hostUid == request.auth.uid
+        && request.resource.data.createdAt == request.time;
+    }
+
     match /rooms/{room} {
-      allow read, write: if request.auth != null;
+      // Exact-code reads only; onSnapshot on the doc is a `get`.
+      allow get: if signedIn();
+      allow list: if false;
+
+      allow create: if signedIn() && validHostDoc();
+
+      allow update: if signedIn() && (
+        // Host reclaims a code: full overwrite via txn.set. Allowed only for
+        // the room's own host, or on an expired leftover from a dead session.
+        (validHostDoc() && (isHost(resource.data) || !fresh(resource.data)))
+
+        // Guest joins: adds exactly guest + guestUid, only while the slot is
+        // empty (server-side room-size cap) and the room is still fresh.
+        || (request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['guest', 'guestUid'])
+            && !('guest' in resource.data)
+            && request.resource.data.guest is map
+            && request.resource.data.guestUid == request.auth.uid
+            && fresh(resource.data))
+
+        // Host writes the offer.
+        || (request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['offer'])
+            && isHost(resource.data)
+            && validDescription(request.resource.data.offer, 'offer')
+            && fresh(resource.data))
+
+        // Guest writes the answer.
+        || (request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['answer'])
+            && isGuest(resource.data)
+            && validDescription(request.resource.data.answer, 'answer')
+            && fresh(resource.data))
+
+        // Guest vacates the room (leaveRoom: deletes guest/guestUid/answer).
+        || (request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['guest', 'guestUid', 'answer'])
+            && isGuest(resource.data))
+      );
+
+      // Either participant may tear the room down.
+      allow delete: if isHost(resource.data) || isGuest(resource.data);
+
+      // ICE candidates: only the matching participant writes their own
+      // collection; only room participants may read either collection.
+      // (get() costs one extra read per rule evaluation — fine at the
+      // handful-of-candidates scale of a lobby handshake.)
+      function roomData() {
+        return get(/databases/$(database)/documents/rooms/$(room)).data;
+      }
+      function isParticipant() {
+        return isHost(roomData()) || isGuest(roomData());
+      }
+      function validCandidate() {
+        return request.resource.data.keys()
+            .hasOnly(['candidate', 'sdpMid', 'sdpMLineIndex', 'usernameFragment'])
+          && (!('candidate' in request.resource.data)
+              || request.resource.data.candidate == null
+              || (request.resource.data.candidate is string
+                  && request.resource.data.candidate.size() < 2000));
+      }
 
       match /hostCandidates/{candidate} {
-        allow read, write: if request.auth != null;
+        allow read: if isParticipant();
+        allow create: if isHost(roomData()) && validCandidate();
+        allow update, delete: if false;
       }
       match /guestCandidates/{candidate} {
-        allow read, write: if request.auth != null;
+        allow read: if isParticipant();
+        allow create: if isGuest(roomData()) && validCandidate();
+        allow update, delete: if false;
       }
     }
   }

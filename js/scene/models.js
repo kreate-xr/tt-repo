@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { scene } from './sceneSetup.js';
-import { SELF_TEST, initDebugHud } from './hud.js';
+import { SELF_TEST } from './hud.js';
 import { detectDiscCollision } from '../physics/collisions.js';
 // compositeSpinMarkings stamps spin-legibility markings (cert dots + faint
 // arcs) onto Ball.glb's baked base-color map at load — the authored map is a
@@ -20,6 +20,10 @@ import { deriveHandleGripPreset } from '../xr/handleGrip.js';
 import { registerDerivedPreset } from '../xr/calibrationPresets.js';
 
 const loader = new GLTFLoader();
+
+// Load-time geometry diagnostics stay out of the production console; warnings
+// and errors still go through console.warn/error unconditionally.
+const logInfo = (...args) => { if (SELF_TEST) console.log(...args); };
 
 // Paddle asset selection. The re-authored Paddle.glb is now the DEFAULT; the
 // procedural bat (scene/paddleGeometry.js, defined by physics/paddleSpec.js)
@@ -326,7 +330,7 @@ function hideTableNet(root) {
     node.visible = false;
     hidden.push(node.name || '(unnamed)');
   });
-  console.log('Table.glb built-in net hidden:', hidden.length ? hidden : '(none matched)');
+  logInfo('Table.glb built-in net hidden:', hidden.length ? hidden : '(none matched)');
 }
 
 // Second half of removing Table.glb's net: its white top tape.
@@ -424,7 +428,7 @@ function stripTableNetTape(root, surfaceY, netZ) {
     geom.setIndex(below);
     geom.computeBoundingBox();
     geom.computeBoundingSphere();
-    console.log(`Table.glb net tape stripped from '${node.name || '(unnamed)'}': ` +
+    logInfo(`Table.glb net tape stripped from '${node.name || '(unnamed)'}': ` +
       `${above.length / 3} triangles (${width.toFixed(3)} × ${height.toFixed(3)} × ` +
       `${depth.toFixed(3)} m band, ${zOff.toFixed(3)} m from the net line)`);
   });
@@ -459,7 +463,7 @@ function enhanceNetVisibility(root) {
     mat.needsUpdate = true;
     matched.push(node.name || '(unnamed)');
   });
-  console.log('Net visibility enhancement applied to:', matched.length ? matched : '(no meshes matched — check GLB node names)');
+  logInfo('Net visibility enhancement applied to:', matched.length ? matched : '(no meshes matched — check GLB node names)');
 }
 
 // P16 §2.5: table roughness clamped to [0.35, 0.45]. With the P16 rig's
@@ -517,7 +521,7 @@ export async function loadModels(loadingScreen, statusEl) {
     if (!glbPaddle && typeof location !== 'undefined') {
       const overrides = paddleSpecOverridesFromQuery(location.search);
       if (Object.keys(overrides).length) {
-        console.log('Paddle spec overrides:', overrides);
+        logInfo('Paddle spec overrides:', overrides);
         setPaddleSpec(overrides);
       }
     }
@@ -594,8 +598,8 @@ export async function loadModels(loadingScreen, statusEl) {
       new THREE.Vector3(edgeLeft.x,  tableSurfaceY - 0.02, edgeFar.z),
       new THREE.Vector3(edgeRight.x, tableSurfaceY,        edgeNear.z),
     );
-    console.log('Table play-surface bounds:', tableBox.min, tableBox.max);
-    console.log('Table length:', tableLength, 'Surface Y:', tableSurfaceY);
+    logInfo('Table play-surface bounds:', tableBox.min, tableBox.max);
+    logInfo('Table length:', tableLength, 'Surface Y:', tableSurfaceY);
 
     // Finish removing Table.glb's net now that the play-surface height is
     // known — the tape band is identified relative to it. Runs after the table
@@ -762,7 +766,7 @@ export async function loadModels(loadingScreen, statusEl) {
       console.warn(`Ball.glb radius is ${measuredRadius.toFixed(4)} m but physics uses ` +
         `${ballRadius} m — re-export the asset at 40 mm diameter.`);
     }
-    console.log('Ball radius:', ballRadius, '(Ball.glb measured', measuredRadius.toFixed(4), ')');
+    logInfo('Ball radius:', ballRadius, '(Ball.glb measured', measuredRadius.toFixed(4), ')');
 
     // Blob shadow — soft radial-gradient quad on the table surface that
     // follows the ball's XZ and fades/shrinks with height. Load-bearing
@@ -792,7 +796,7 @@ export async function loadModels(loadingScreen, statusEl) {
       new THREE.Vector3(netCtr.x - NET_HALF_X, tableSurfaceY, netCtr.z - NET_THICKNESS / 2),
       new THREE.Vector3(netCtr.x + NET_HALF_X, netCtr.y,      netCtr.z + NET_THICKNESS / 2),
     ).expandByScalar(ballRadius);
-    console.log('Net bounds (inflated):', netBox.min, netBox.max);
+    logInfo('Net bounds (inflated):', netBox.min, netBox.max);
 
     // --- Paddle ---
     if (glbPaddle) {
@@ -987,19 +991,19 @@ export async function loadModels(loadingScreen, statusEl) {
     });
     if (handleGrip) {
       registerDerivedPreset('handle_grip', handleGrip);
-      console.log('Handle-grip preset (derived): posOffset',
+      logInfo('Handle-grip preset (derived): posOffset',
         handleGrip.posOffset, 'rotOffset', handleGrip.rotOffset);
     } else {
       console.warn('Handle-grip preset NOT derived — degenerate handle geometry');
     }
 
-    console.log('Paddle model size (unrotated):', unrotatedSize);
-    console.log('Thin/normal axis:', thinAxis, '| Long/handle axis:', longAxis);
-    console.log('Face normal (controller-local):', paddleFaceNormalLocal);
-    console.log('Face center offset (controller-local):', paddleFaceOffset);
-    console.log('Paddle face hit radius:', paddleHitRadius,
+    logInfo('Paddle model size (unrotated):', unrotatedSize);
+    logInfo('Thin/normal axis:', thinAxis, '| Long/handle axis:', longAxis);
+    logInfo('Face normal (controller-local):', paddleFaceNormalLocal);
+    logInfo('Face center offset (controller-local):', paddleFaceOffset);
+    logInfo('Paddle face hit radius:', paddleHitRadius,
       '(blade half-extents', bladeHalfWidth, bladeHalfLength, ')');
-    console.log('Paddle blade half-thickness:', paddleHalfThickness,
+    logInfo('Paddle blade half-thickness:', paddleHalfThickness,
       '(bbox thin axis was', unrotatedSize[thinAxis] / 2, '— includes the handle)');
 
     if (SELF_TEST) {
@@ -1020,13 +1024,12 @@ export async function loadModels(loadingScreen, statusEl) {
       );
       scene.add(debugDiscMesh);
 
-      initDebugHud();
       runCollisionSelfTest();
     }
 
     if (loadingScreen) loadingScreen.style.display = 'none';
     modelsLoaded = true;
-    console.log('All models loaded successfully');
+    logInfo('All models loaded successfully');
   } catch (err) {
     console.error('Failed to load models:', err);
     if (loadingScreen) loadingScreen.style.display = 'none';
@@ -1045,7 +1048,7 @@ function runCollisionSelfTest() {
   const results = [];
   function test(name, pass, detail) {
     results.push({ name, pass, detail });
-    console.log(`[COLLISION TEST] ${pass ? 'PASS' : 'FAIL'}: ${name} — ${detail}`);
+    logInfo(`[COLLISION TEST] ${pass ? 'PASS' : 'FAIL'}: ${name} — ${detail}`);
   }
 
   const testControllerPos = new THREE.Vector3(0, 1, 0);
@@ -1135,7 +1138,7 @@ function runCollisionSelfTest() {
 
   const passed = results.filter(r => r.pass).length;
   const total = results.length;
-  console.log(`[COLLISION TEST] === ${passed}/${total} ${passed === total ? 'PASSED' : 'PASSED, ' + (total - passed) + ' FAILED'} ===`);
+  logInfo(`[COLLISION TEST] === ${passed}/${total} ${passed === total ? 'PASSED' : 'PASSED, ' + (total - passed) + ' FAILED'} ===`);
 
   if (passed < total) {
     const el = document.createElement('div');
