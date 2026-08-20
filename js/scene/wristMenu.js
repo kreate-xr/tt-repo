@@ -87,7 +87,10 @@ const DIFFICULTIES = [
 // subtitle track the currently-selected drill via the top drill picker.
 const MODES = [
   { id: 'training',    label: 'TRAINING', ring: '#ffc857', icon: 'ballMachine', subtitle: 'DRILLS · PRESETS' },
-  { id: 'freeplay',    label: 'FREE',  ring: '#3ec9d6', icon: 'paddle',     subtitle: 'PLAY'   },
+  // Was FREE / PLAY, which entered an empty table directly. It now opens the
+  // Machine Play menu (rally, survival, score challenge, free hit) — the tile
+  // is a mode with a menu behind it, like TRAINING, rather than a single state.
+  { id: 'machinePlay', label: 'PLAY',  ring: '#3ec9d6', icon: 'paddle',     subtitle: 'VS MACHINE' },
   { id: 'aiMatch',     label: 'AI',    ring: '#3ddc97', icon: 'aiMatch',    subtitle: 'MATCH'  },
   { id: 'multiplayer', label: 'MULTI', ring: '#ff8a5b', icon: 'multiplayer', subtitle: 'PLAYER' },
 ];
@@ -725,8 +728,9 @@ export class WristMenu {
       if (button.modeId === 'training') {
         // Opens the M0 training menu; drill selection happens in there.
         this.emit('training', { difficulty: difficultyId });
-      } else if (button.modeId === 'freeplay') {
-        this.emit('freeplay');
+      } else if (button.modeId === 'machinePlay') {
+        // Opens the Machine Play menu; the mode is chosen in there.
+        this.emit('machinePlay');
       } else if (button.modeId === 'aiMatch') {
         this.emit('start', { drill: 'aiMatch', difficulty: difficultyId });
       } else if (button.modeId === 'multiplayer') {
@@ -794,18 +798,22 @@ export function createLaserLine() {
   const group = new THREE.Group();
   const ACCENT_RGB = new THREE.Color(ACCENT);
 
-  // Unit-length tube along -Z, tapering toward the hand.
-  const beamGeom = new THREE.CylinderGeometry(0.0016, 0.0045, 1, 8, 1, true);
+  // Unit-length tube along -Z, tapering toward the tip. Kept deliberately
+  // thin — a fat beam reads as a prop rather than a pointer, and the tip disc
+  // (not the tube) is what communicates aim.
+  const beamGeom = new THREE.CylinderGeometry(0.0010, 0.0024, 1, 8, 1, true);
   beamGeom.rotateX(-Math.PI / 2);   // +Y axis → -Z
   beamGeom.translate(0, 0, -0.5);   // span 0 → -1
 
-  // Fade toward the hand: with additive blending, dark ≈ invisible, so the
-  // beam emerges from nothing instead of ending in a hard stub at the grip.
+  // Dim toward the hand, but not to nothing: the near end has to stay legible
+  // or the beam looks detached from the paddle and you lose the sense that you
+  // are the one emitting it. Floor of 0.45 keeps it visibly rooted at the grip
+  // while the tip still wins the eye.
   const pos = beamGeom.attributes.position;
   const colors = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
     const t = Math.min(1, Math.max(0, -pos.getZ(i)));      // 0 at hand, 1 at tip
-    const k = 0.15 + 0.85 * t * t;
+    const k = 0.45 + 0.55 * t * t;
     colors[i * 3] = ACCENT_RGB.r * k;
     colors[i * 3 + 1] = ACCENT_RGB.g * k;
     colors[i * 3 + 2] = ACCENT_RGB.b * k;
@@ -824,7 +832,7 @@ export function createLaserLine() {
   group.add(beam);
 
   const tip = new THREE.Mesh(
-    new THREE.CircleGeometry(0.010, 20),
+    new THREE.CircleGeometry(0.008, 20),
     new THREE.MeshBasicMaterial({
       color: ACCENT,
       transparent: true,

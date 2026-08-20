@@ -36,8 +36,15 @@ import * as THREE from 'three';
 // actually reads as a real player. A flat probability makes the AI shank
 // balls it was perfectly positioned for and nail balls it had no business
 // reaching; real errors track how stretched, rushed and spun-up you are.
+// Beginner dropped 0.18 → 0.12 for the long-rally retune: at 0.18 with the
+// situational multipliers on top, the AI donated a point every ~5 of its own
+// shots, so rallies died before they developed. CLUB is the practice-partner
+// tier — its job is to keep the ball alive; the player should win points by
+// beating it, not by waiting for it. 0.12 still misses visibly more than the
+// upper tiers, and hard balls still push it toward 4x via
+// scaleMissRateForSituation.
 export const MISS_RATE_BY_DIFFICULTY = Object.freeze({
-  beginner: 0.18,
+  beginner: 0.12,
   intermediate: 0.05,
   pro: 0.03,
 });

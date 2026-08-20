@@ -85,16 +85,51 @@ export function pulseImpact(intensity, durationMs) {
   }, d);
 }
 
+// Foul buzz — the umpire's whistle, felt rather than heard.
+//
+// Fired when the local player breaks a rule (illegal volley, serve struck
+// from over the table). It has to be unmistakably NOT a ball contact: an
+// impact is one sharp attack with a decaying tail, so this is the opposite
+// shape — three flat, evenly spaced, equal-strength buzzes. Rhythm is what
+// makes it read as a signal instead of a collision, and it lands at the
+// moment of the offence, well before the result panel explains it.
+const FOUL_PULSE_MS = 90;
+const FOUL_GAP_MS = 70;
+const FOUL_PULSE_COUNT = 3;
+const FOUL_INTENSITY = 0.7;
+
+export function pulseFoul() {
+  if (!activeHandedness) return;
+  const hand = activeHandedness;
+  for (let i = 0; i < FOUL_PULSE_COUNT; i++) {
+    const delay = i * (FOUL_PULSE_MS + FOUL_GAP_MS);
+    if (delay === 0) {
+      pulseHand(hand, FOUL_INTENSITY, FOUL_PULSE_MS);
+      continue;
+    }
+    setTimeout(() => {
+      // The paddle may have changed hands (or the session ended) between
+      // scheduling and firing — same guard as pulseImpact's tail.
+      if (activeHandedness === hand) pulseHand(hand, FOUL_INTENSITY, FOUL_PULSE_MS);
+    }, delay);
+  }
+}
+
 // Continuous-swing haptic. Called every physics tick with the current paddle
 // speed; fires a short pulse whose intensity scales with speed above the
 // threshold. The pulses overlap on the Quest haptic motor and produce a
 // continuous "drag through air" sensation. Below threshold this is a no-op.
-export function pulseSwing(speed, threshold, maxSpeed, maxIntensity, durationMs) {
+// `curve` shapes the speed→intensity ramp. It used to be hardcoded to 2 (a
+// square) to keep light hand-positioning silent, but the threshold already
+// does that job, and squaring on top of it crushed the entire mid-range where
+// wrist strokes actually live: a 2.5 m/s flick came out at 0.009 intensity —
+// three orders below anything a Quest motor can render. The deadzone is the
+// threshold's job; the curve's job is only to keep the ramp from feeling
+// front-loaded. Exponents near 1.4 do that without deleting the mid-range.
+export function pulseSwing(speed, threshold, maxSpeed, maxIntensity, durationMs, curve = 1.4) {
   if (!activeHandedness || speed < threshold) return;
   const range = Math.max(0.001, maxSpeed - threshold);
   const t = Math.min((speed - threshold) / range, 1);
-  // Square the curve so light hand-positioning movement reads as silent and
-  // only deliberate swings produce noticeable buzz.
-  const intensity = maxIntensity * t * t;
+  const intensity = maxIntensity * Math.pow(t, curve);
   pulseHand(activeHandedness, intensity, durationMs);
 }

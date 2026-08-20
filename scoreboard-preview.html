@@ -1,0 +1,58 @@
+<!-- TEMPORARY dev-only preview for the SportyXR scoreboard layout.
+     Not part of the game — safe to delete. Open at /scoreboard-preview.html -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Scoreboard layout preview</title>
+<style>
+  body { background: #222; margin: 20px; font-family: sans-serif; color: #ddd; }
+  canvas { width: 900px; display: block; margin-bottom: 8px; border: 1px solid #555; }
+</style>
+</head>
+<body>
+  <p>Game 1 in progress (only GAME 1 shown in history row)</p>
+  <canvas id="fresh" width="2048" height="1152"></canvas>
+  <p>Mid-match (game 3 live, player serving)</p>
+  <canvas id="mid" width="2048" height="1152"></canvas>
+  <p>Match over</p>
+  <canvas id="over" width="2048" height="1152"></canvas>
+<script type="module">
+  import { createScoreboardState, renderScoreboardLayout } from '/js/scene/scoreboardLayout.js';
+
+  const fresh = createScoreboardState({ bestOf: 5 });
+  Object.assign(fresh, {
+    playerScore: 3, aiScore: 2, currentServer: 'ai',
+    shotsHit: 11, topSpeedKmh: 38.2, elapsedMs: 95000,
+  });
+  renderScoreboardLayout(document.getElementById('fresh').getContext('2d'), fresh);
+
+  const mid = createScoreboardState({ bestOf: 5 });
+  Object.assign(mid, {
+    playerScore: 7, aiScore: 5, playerGames: 1, aiGames: 1,
+    currentServer: 'player',
+    gameHistory: [
+      { playerScore: 11, aiScore: 8 },
+      { playerScore: 9, aiScore: 11 },
+    ],
+    shotsHit: 64, topSpeedKmh: 52.7, elapsedMs: 9 * 60000 + 42000,
+  });
+  renderScoreboardLayout(document.getElementById('mid').getContext('2d'), mid);
+
+  const over = createScoreboardState({ bestOf: 5 });
+  Object.assign(over, {
+    playerScore: 0, aiScore: 0, playerGames: 3, aiGames: 2,
+    currentServer: 'ai', matchOverBanner: 'YOU WIN!',
+    gameHistory: [
+      { playerScore: 11, aiScore: 8 },
+      { playerScore: 11, aiScore: 9 },
+      { playerScore: 9, aiScore: 11 },
+      { playerScore: 7, aiScore: 11 },
+      { playerScore: 11, aiScore: 9 },
+    ],
+    shotsHit: 102, topSpeedKmh: 61.4, elapsedMs: 15 * 60000 + 42000,
+  });
+  renderScoreboardLayout(document.getElementById('over').getContext('2d'), over);
+</script>
+</body>
+</html>

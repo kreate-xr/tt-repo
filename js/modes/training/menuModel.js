@@ -12,16 +12,23 @@
 // "I can't find it" — which is precisely the confusion that hid the ball
 // machine behind six renamed entries.
 
+import { validateConfig } from './drillConfig.js';
 import {
-  FIELD_SPECS, SPIN_TYPES, DEPTHS, ARCS, FEED_ORIGINS,
-  defaultConfig, validateConfig, INFINITE, SPIN_MAX_RAD_S,
-} from './drillConfig.js';
+  FeedConfigModel, CUSTOM_FIELDS, BURST_STOPS, describeConfig, formatField,
+} from './feedConfigModel.js';
 import { QUICK_FEED, QUICK_FEED_ORDER } from './presets.js';
 import { PATTERNS, PATTERN_ORDER } from './patterns.js';
 import { TIERS, TIER_SETTINGS } from './ladder.js';
 import {
   weaknessReport, sessionHeadline, heatmapAdvice, whyDidIMiss, FAULTS,
 } from './analysis.js';
+import { SETTING_SPECS } from '../../profile/store.js';
+
+// The config-editing half of this model now lives in feedConfigModel.js so the
+// Machine Play menu can edit a feed with the same rules. Re-exported here
+// because the Custom Feed renderer and its tests have always imported these
+// from the menu model, and moving the import site adds nothing.
+export { CUSTOM_FIELDS, BURST_STOPS, describeConfig, formatField };
 
 export const SCREENS = Object.freeze({
   ROOT: 'root',
@@ -34,11 +41,47 @@ export const SCREENS = Object.freeze({
   LADDERS: 'ladders',
   CLASSIC: 'classic',
   REVIEW: 'review',
+  SETTINGS: 'settings',
 });
+
+// M10 global settings, as menu rows.
+//
+// Only settings that ACTUALLY DO SOMETHING are selectable. store.js states the
+// rule this follows ("a setting that changes nothing is worse than no
+// setting"), and the rest of this menu states the other half of it: unbuilt
+// things are listed and disabled rather than hidden, so "not wired yet" stays
+// distinguishable from "I can't find it". Wiring one of these up is then a
+// two-line change here — drop `note` and set `available: true`.
+export const SETTING_ROWS = Object.freeze([
+  {
+    key: 'dominantHand', label: 'Dominant hand', available: true,
+    help: 'Which hand holds the paddle. Drill patterns mirror to match',
+    valueLabels: { L: 'Left', R: 'Right' },
+  },
+  { key: 'ballSpeedMultiplier', label: 'Ball speed',   note: 'not wired yet' },
+  { key: 'tableHeightOffset',   label: 'Table height', note: 'not wired yet' },
+  { key: 'hudDensity',          label: 'HUD density',  note: 'not wired yet' },
+  { key: 'units',               label: 'Units',        note: 'not wired yet' },
+  { key: 'audioCues',           label: 'Audio cues',   note: 'not wired yet' },
+]);
+
+/** Player-facing text for a setting's current value. */
+export function formatSettingValue(row, value) {
+  if (row.format) return row.format(value);
+  if (row.valueLabels && row.valueLabels[String(value)] !== undefined) {
+    return row.valueLabels[String(value)];
+  }
+  return String(value);
+}
 
 // M2's submenu. Only what actually runs is enabled; the rest is listed so
 // "not built" stays distinguishable from "can't find it".
 export const DRILL_ITEMS = Object.freeze([
+  // Starts directly — no sub-screen. It runs on the pattern machinery, but
+  // burying it inside Pattern Drills made it too hard to reach; `random`
+  // is pinned so a stale Random Mode visit can't shuffle it.
+  { id: 'rapidFire', label: 'Rapid Fire', action: 'startPattern', random: false, available: true,
+    subtitle: 'Machine sweeps side to side, feeding non-stop' },
   { id: 'patternDrills', label: 'Pattern Drills', screen: 'patterns', available: true,
     subtitle: 'Falkenberg and seven more classics' },
   { id: 'randomMode', label: 'Random Mode', screen: 'patterns', random: true, available: true,
@@ -85,48 +128,19 @@ export const BALL_MACHINE_ITEMS = Object.freeze([
   { id: 'savedPresets', label: 'Saved Presets', screen: SCREENS.SAVED_PRESETS, available: true },
 ]);
 
-/**
- * The Custom Feed attribute list — M1's table, in the order it is edited.
- *
- * Each entry declares how it is EDITED, not how it is drawn, so the renderer
- * can lay out a slider or a segment without knowing what a "scatter sigma" is.
- * Ranges come from FIELD_SPECS so a control can never offer a value the
- * validator would clamp — the spin slider in particular stops at the feasible
- * envelope rather than the spec's unreachable 900 rad/s.
- */
-export const CUSTOM_FIELDS = Object.freeze([
-  { key: 'speed', label: 'Speed', kind: 'slider', unit: 'm/s',
-    min: FIELD_SPECS.speed.min, max: FIELD_SPECS.speed.max, step: FIELD_SPECS.speed.step },
-  { key: 'spinType', label: 'Spin', kind: 'segment', options: SPIN_TYPES },
-  { key: 'spinMagnitude', label: 'Spin amount', kind: 'slider', unit: 'rad/s',
-    min: 0, max: SPIN_MAX_RAD_S, step: FIELD_SPECS.spinMagnitude.step },
-  { key: 'placement', label: 'Placement', kind: 'zoneGrid' },
-  { key: 'depth', label: 'Depth', kind: 'segment', options: DEPTHS },
-  { key: 'arc', label: 'Arc', kind: 'segment', options: ARCS },
-  { key: 'scatterSigma', label: 'Scatter', kind: 'slider', unit: 'm',
-    min: FIELD_SPECS.scatterSigma.min, max: FIELD_SPECS.scatterSigma.max,
-    step: FIELD_SPECS.scatterSigma.step },
-  { key: 'interval', label: 'Interval', kind: 'slider', unit: 's',
-    min: FIELD_SPECS.interval.min, max: FIELD_SPECS.interval.max,
-    step: FIELD_SPECS.interval.step },
-  { key: 'burstCount', label: 'Balls', kind: 'burst' },
-  { key: 'feedOrigin', label: 'Machine position', kind: 'segment', options: FEED_ORIGINS },
-  { key: 'audioCue', label: 'Audio cue', kind: 'toggle' },
-]);
-
-// Burst is stepped through named stops rather than a raw slider — "20 balls"
-// and "∞" are the choices a player actually wants, and a 1–100 slider makes
-// both awkward to hit.
-export const BURST_STOPS = Object.freeze([5, 10, 20, 30, 50, 100, INFINITE]);
-
-export class TrainingMenuModel {
-  constructor({ presets = null, getSessionLog = null, getRecentContacts = null } = {}) {
+export class TrainingMenuModel extends FeedConfigModel {
+  constructor({
+    presets = null, settings = null, getSessionLog = null, getRecentContacts = null,
+  } = {}) {
+    super();
     this.stack = [SCREENS.ROOT];
-    this.config = defaultConfig();
-    this.selectedPreset = null;
     // Injected so the model stays testable without localStorage; the renderer
     // passes the real profile store.
     this.presetsApi = presets;
+    // The same store in practice, but a separate slot: preset storage and
+    // global settings are independent capabilities, and a caller that wants
+    // one should not be forced to stub the other.
+    this.settingsApi = settings;
     // Supplies the most recent session's EventLog. A provider rather than a
     // stored log because the menu outlives any single drill, and holding a
     // reference would pin a finished session's events in memory.
@@ -137,13 +151,22 @@ export class TrainingMenuModel {
     // Set when the player entered the pattern list via Random Mode; the same
     // screen serves both, differing only in how steps are ordered.
     this.randomMode = false;
-    // Handedness decides which column is the backhand. Read from the profile
-    // when one is attached so patterns mirror for left-handers automatically.
-    this.hand = 'R';
     this.message = null;
   }
 
   get screen() { return this.stack[this.stack.length - 1]; }
+
+  /**
+   * Handedness decides which column is the backhand, so patterns mirror for
+   * left-handers (see patterns.js resolveWing / resolveOrigin). Read live from
+   * the profile rather than copied at construction: the settings screen can
+   * change it between two drill starts off the same model instance.
+   * Falls back to right-handed when no store is attached.
+   */
+  get hand() {
+    const v = this.settingsApi ? this.settingsApi.getSetting('dominantHand') : 'R';
+    return v === 'L' ? 'L' : 'R';
+  }
 
   get title() {
     switch (this.screen) {
@@ -157,6 +180,7 @@ export class TrainingMenuModel {
       case SCREENS.LADDERS:       return 'LADDERS';
       case SCREENS.CLASSIC:       return 'CLASSIC DRILLS';
       case SCREENS.REVIEW:        return 'REVIEW & STATS';
+      case SCREENS.SETTINGS:      return 'SETTINGS';
       default:                    return 'TRAINING';
     }
   }
@@ -174,6 +198,7 @@ export class TrainingMenuModel {
       [SCREENS.LADDERS]: 'LADDERS',
       [SCREENS.CLASSIC]: 'CLASSIC DRILLS',
       [SCREENS.REVIEW]: 'REVIEW & STATS',
+      [SCREENS.SETTINGS]: 'SETTINGS',
     };
     return this.stack.map((s) => names[s] || s).join(' › ');
   }
@@ -232,6 +257,29 @@ export class TrainingMenuModel {
         }));
       case SCREENS.REVIEW:
         return this.reviewItems();
+      case SCREENS.SETTINGS:
+        return SETTING_ROWS.map((row) => {
+          if (!row.available) {
+            return { id: `setting:${row.key}`, label: row.label, available: false, note: row.note };
+          }
+          if (!this.settingsApi) {
+            return {
+              id: `setting:${row.key}`, label: row.label, available: false,
+              note: 'profile storage unavailable',
+            };
+          }
+          const value = this.settingsApi.getSetting(row.key);
+          return {
+            id: `setting:${row.key}`,
+            label: row.label,
+            // Value first: on a settings row what the player is scanning for
+            // is the current state, not the description.
+            subtitle: `${formatSettingValue(row, value)} — ${row.help}`,
+            action: 'cycleSetting',
+            settingKey: row.key,
+            available: true,
+          };
+        });
       case SCREENS.SAVED_PRESETS: {
         const saved = this.presetsApi ? this.presetsApi.getPresets() : [];
         if (saved.length === 0) {
@@ -379,15 +427,24 @@ export class TrainingMenuModel {
       return null;
     }
     if (item.action === 'freePlay') return { action: 'freePlay' };
+    // Settings rows toggle in place — no sub-screen for a two-value choice.
+    // Returns null so the host just redraws and the player stays put.
+    if (item.action === 'cycleSetting') {
+      this.cycleSetting(item.settingKey);
+      return null;
+    }
     // Legacy drills take a difficulty, not a DrillConfig — passing one would
     // be silently ignored by their factories.
     if (item.action === 'startDrill') return { action: 'start', drill: id, config: null };
 
     if (item.action === 'startPattern') {
+      // An item may pin its own random flag (Rapid Fire in the Drills list);
+      // rows on the Patterns screen inherit how that screen was entered.
+      const random = item.random !== undefined ? !!item.random : this.randomMode;
       return {
         action: 'start',
         config: this.config,
-        options: { pattern: id, random: this.randomMode, hand: this.hand },
+        options: { pattern: id, random, hand: this.hand },
       };
     }
     if (item.action === 'startLadder') {
@@ -421,53 +478,43 @@ export class TrainingMenuModel {
   }
 
   // --- Custom Feed editing --------------------------------------------------
+  //
+  // setField / setZone / cycleField / stepBurst / zone / spinAmountEnabled all
+  // come from FeedConfigModel, so the Machine Play settings screen edits a
+  // config under exactly the same rules.
 
   /**
-   * Set one config field. Always routes through validateConfig, so no control
-   * can put an out-of-range value into the engine even if its own bounds are
-   * wrong — the validator stays the single gate.
+   * Advance one setting to its next legal value and persist it.
+   *
+   * Returns the value actually stored (which store.js may have coerced), or
+   * null when there is nothing to change. Subscribers of the profile store —
+   * notably xrPaddle, which re-binds the paddle on a dominant-hand change —
+   * are notified by the store itself, so nothing here needs to know who cares.
    */
-  setField(key, value) {
-    this.config = validateConfig({ ...this.config, [key]: value });
-    this.selectedPreset = null;  // it's no longer the preset once edited
-    return this.config[key];
-  }
+  cycleSetting(key) {
+    const row = SETTING_ROWS.find((r) => r.key === key);
+    const spec = SETTING_SPECS[key];
+    if (!row || !row.available || !spec) return null;
+    if (!this.settingsApi || typeof this.settingsApi.setSetting !== 'function') return null;
 
-  /** Set the 3×3 placement zone (M1's zone grid). */
-  setZone(zone) {
-    return this.setField('placement', { kind: 'zone', zone }).zone;
-  }
+    const current = this.settingsApi.getSetting(key);
+    let next;
+    if (spec.type === 'enum') {
+      // indexOf < 0 (a value from a newer build) restarts at the first legal
+      // one rather than throwing — same forgiving stance as coerceSetting.
+      const i = spec.values.indexOf(current);
+      next = spec.values[(i + 1) % spec.values.length];
+    } else if (spec.type === 'boolean') {
+      next = !current;
+    } else {
+      // Numbers need a step list to cycle through; none of the live rows are
+      // numeric yet, so refuse rather than inventing an increment.
+      return null;
+    }
 
-  get zone() {
-    return this.config.placement.kind === 'zone' ? this.config.placement.zone : null;
-  }
-
-  /** Step the spin type through its options, for a segment control. */
-  cycleField(key, dir = 1) {
-    const field = CUSTOM_FIELDS.find((f) => f.key === key);
-    if (!field || !field.options) return null;
-    const i = field.options.indexOf(this.config[key]);
-    const next = field.options[
-      ((i + dir) % field.options.length + field.options.length) % field.options.length
-    ];
-    return this.setField(key, next);
-  }
-
-  /** Step burst count through its named stops rather than by ±1. */
-  stepBurst(dir = 1) {
-    const i = BURST_STOPS.indexOf(this.config.burstCount);
-    const from = i < 0 ? 2 : i;   // default to the 20-ball stop
-    const next = BURST_STOPS[Math.min(BURST_STOPS.length - 1, Math.max(0, from + dir))];
-    return this.setField('burstCount', next);
-  }
-
-  /**
-   * Whether the spin controls should be shown at all. M1 says combo exposes ω
-   * sliders; here the simpler rule is that a spin AMOUNT is meaningless with
-   * no spin type, so the renderer dims it.
-   */
-  get spinAmountEnabled() {
-    return this.config.spinType !== 'none';
+    const stored = this.settingsApi.setSetting(key, next);
+    this.message = `${row.label}: ${formatSettingValue(row, stored)}`;
+    return stored;
   }
 
   savePreset(name) {
@@ -491,28 +538,3 @@ function ladderSubtitle(tier) {
   return `${Math.round(s.speedMul * 100)}% pace · ${pace} · scatter ${s.scatter.toFixed(2)} m`;
 }
 
-/** One-line human summary of a config, for list subtitles. */
-export function describeConfig(config) {
-  const c = validateConfig(config);
-  const spin = c.spinType === 'none' ? 'no spin' : `${c.spinType} ${Math.round(c.spinMagnitude)}`;
-  const balls = c.burstCount === INFINITE ? '∞' : c.burstCount;
-  return `${c.speed} m/s · ${spin} · ${c.depth} · ${balls} balls`;
-}
-
-/** Display string for a field's current value, including units. */
-export function formatField(field, config) {
-  const v = config[field.key];
-  switch (field.kind) {
-    case 'toggle': return v ? 'ON' : 'OFF';
-    case 'burst':  return v === INFINITE ? '∞' : String(v);
-    case 'zoneGrid': {
-      const p = config.placement;
-      return p.kind === 'free' ? 'free point' : `zone ${p.zone}`;
-    }
-    case 'slider': {
-      const decimals = field.step < 1 ? (field.step < 0.05 ? 2 : 1) : 0;
-      return `${v.toFixed(decimals)} ${field.unit || ''}`.trim();
-    }
-    default: return String(v);
-  }
-}

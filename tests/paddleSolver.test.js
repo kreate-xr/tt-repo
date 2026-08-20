@@ -267,3 +267,101 @@ describe('solvePaddle — requested spin reaches the ball', () => {
     }
   });
 });
+
+// Sidespin — spin about the VERTICAL axis, curling the ball laterally.
+// Requested via targetSideSpin (payload slot [6] from the engines); imparted
+// as a horizontal tangential brush; the lateral Magnus drift is cancelled by
+// the solver's aim-shift pass, so a feasible result still lands on target.
+describe('solvePaddle — sidespin', () => {
+  function sideSolve(targetSideSpin, difficulty = 'intermediate') {
+    const env = makeEnv();
+    const { contactPos, contactVel, contactSpin } = defaultContact();
+    return {
+      env, contactPos, contactVel, contactSpin,
+      r: solvePaddle({
+        targetX: 0, targetZ: 0.7,
+        targetSpeed: 5.0, targetSpin: 0, targetSideSpin,
+        contactPos, contactVel, contactSpin,
+        difficulty, env,
+      }),
+    };
+  }
+
+  function outgoingSideSpinRps(targetSideSpin) {
+    const { contactPos, contactVel, contactSpin, r } = sideSolve(targetSideSpin);
+    const out = computeImpulse(
+      contactVel.clone(), contactSpin.clone(), contactPos.clone(),
+      r.paddleV.clone(), null, null,
+      r.faceNormal.clone(),
+      0.02, PADDLE_RESTITUTION, SPIN_CAPTURE_GAIN,
+      {},
+    );
+    // Vertical spin component = sidespin.
+    return out.ballW_out.y / (2 * Math.PI);
+  }
+
+  test('omitting targetSideSpin matches an explicit 0 (back-compat)', () => {
+    const env = makeEnv();
+    const { contactPos, contactVel, contactSpin } = defaultContact();
+    const a = solvePaddle({
+      targetX: 0.2, targetZ: 0.8, targetSpeed: 5.0, targetSpin: 8.0,
+      contactPos, contactVel, contactSpin, difficulty: 'intermediate', env,
+    });
+    const b = solvePaddle({
+      targetX: 0.2, targetZ: 0.8, targetSpeed: 5.0, targetSpin: 8.0, targetSideSpin: 0,
+      contactPos, contactVel, contactSpin, difficulty: 'intermediate', env,
+    });
+    expect(a.feasible).toBe(b.feasible);
+    expect(a.paddleV.equals(b.paddleV)).toBe(true);
+    expect(a.faceNormal.equals(b.faceNormal)).toBe(true);
+  });
+
+  test('requested sidespin leaves the bat as vertical-axis spin, sign tracking the request', () => {
+    const plus = outgoingSideSpinRps(8);
+    const minus = outgoingSideSpinRps(-8);
+    expect(Math.abs(plus)).toBeGreaterThan(2);
+    expect(Math.abs(minus)).toBeGreaterThan(2);
+    expect(Math.sign(plus)).toBe(-Math.sign(minus));
+  });
+
+  test('feasible sidespin shots still land on target (aim-shift cancels the curl)', () => {
+    for (const side of [-9, -6, -3, 3, 6, 9]) {
+      const { r } = sideSolve(side);
+      if (r.feasible) {
+        expect(r.landingError).toBeLessThanOrEqual(0.15);
+      }
+    }
+  });
+
+  test('tier sidespin bands stay usably feasible on realistic inputs', () => {
+    // The bands in shotTypeSelector.SIDESPIN_BY_DIFFICULTY promise their
+    // magnitudes converge in the solver "reliably" — this is that number.
+    // Same realistic contact/target shapes as the engine-output test above.
+    const env = makeEnv();
+    const rng = mulberry32(4242);
+    const bands = [
+      ['beginner', 6, 3.0, 1.5],       // tier, |sidespin| max, base speed, speed spread
+      ['intermediate', 9, 7.0, 3.0],
+      ['pro', 11, 7.0, 3.0],
+    ];
+    for (const [difficulty, sideMax, speedBase, speedSpread] of bands) {
+      let feasible = 0;
+      const N = 30;
+      for (let i = 0; i < N; i++) {
+        const r = solvePaddle({
+          targetX: (rng() - 0.5) * 0.8,
+          targetZ: 0.5 + rng() * 0.5,
+          targetSpeed: speedBase + rng() * speedSpread,
+          targetSpin: (rng() - 0.5) * 10,
+          targetSideSpin: (rng() < 0.5 ? -1 : 1) * (2 + rng() * (sideMax - 2)),
+          contactPos: v(0, 0.30, -0.5 - rng() * 0.2),
+          contactVel: v((rng() - 0.5) * 0.4, 0.6 + rng() * 0.6, 1.8 + rng() * 1.2),
+          contactSpin: v(0, 0, 0),
+          difficulty, env,
+        });
+        if (r.feasible) feasible += 1;
+      }
+      expect(feasible / N).toBeGreaterThanOrEqual(0.50);
+    }
+  });
+});

@@ -15,9 +15,11 @@
 //     rooms/{code}/guestCandidates/{auto-id}  ICE candidate JSON
 //
 // Role assignment is atomic via runTransaction:
-//   - room doc missing or no host field   → I become 'host'
-//   - host present, no guest              → I become 'guest'
-//   - both present                        → ROOM_FULL, throw
+//   - connect(code, { create: true })  → I become 'host'; the doc is written
+//     fresh (full overwrite), clearing any stale guest/offer/answer left by
+//     an earlier session on the same code
+//   - connect(code)                    → join: room must exist with a host
+//     (else ROOM_NOT_FOUND) and no guest (else ROOM_FULL); I become 'guest'
 //
 // Public API matches the previous WebSocket client so the rest of the stack
 // (NetworkManager, LobbyManager) is unchanged:
@@ -29,7 +31,7 @@
 
 import {
   doc, collection, addDoc, setDoc, onSnapshot,
-  runTransaction, serverTimestamp,
+  runTransaction, serverTimestamp, deleteDoc, deleteField, updateDoc,
 } from 'firebase/firestore';
 import { getDb, ensureAnonymousAuth } from './firebaseClient.js';
 
@@ -66,7 +68,7 @@ export class SignalingClient {
     }
   }
 
-  async connect(roomCode) {
+  async connect(roomCode, { create = false } = {}) {
     if (this.roomRef) throw new Error('SignalingClient already connected');
     this.room = roomCode;
 
@@ -79,30 +81,33 @@ export class SignalingClient {
     try {
       assignedRole = await runTransaction(db, async (txn) => {
         const snap = await txn.get(this.roomRef);
-        if (!snap.exists()) {
+        if (create) {
+          // Fresh room, full overwrite: room codes are random, so anything
+          // already at this code is leftover from a dead session — wiping the
+          // stale guest/offer/answer fields here is what lets the same code
+          // be reused after a reload or a failed attempt.
           txn.set(this.roomRef, {
             host: { joinedAt: serverTimestamp() },
             createdAt: serverTimestamp(),
           });
           return 'host';
         }
-        const data = snap.data();
-        if (!data.host) {
-          txn.update(this.roomRef, { host: { joinedAt: serverTimestamp() } });
-          return 'host';
-        }
-        if (!data.guest) {
-          txn.update(this.roomRef, { guest: { joinedAt: serverTimestamp() } });
-          return 'guest';
-        }
-        return null; // full
+        // Join: never create a room implicitly. A mistyped code used to make
+        // the guest silently become host of an empty room and hang forever.
+        if (!snap.exists() || !snap.data().host) return 'notFound';
+        if (snap.data().guest) return 'full';
+        txn.update(this.roomRef, { guest: { joinedAt: serverTimestamp() } });
+        return 'guest';
       });
     } catch (err) {
       this._emit('error', err);
       throw err;
     }
 
-    if (!assignedRole) {
+    if (assignedRole === 'notFound') {
+      throw new Error('ROOM_NOT_FOUND');
+    }
+    if (assignedRole === 'full') {
       this._emit('roomFull', {});
       throw new Error('ROOM_FULL');
     }
@@ -181,6 +186,22 @@ export class SignalingClient {
         };
     addDoc(this.myCandidatesRef, payload)
       .catch((err) => this._emit('error', err));
+  }
+
+  // Best-effort cleanup on the way out so the code becomes reusable:
+  //   host  → delete the room doc (peer's snapshot sees it as peerDisconnected)
+  //   guest → vacate the guest slot + stale answer so the host's room can be
+  //           joined again after a failed attempt
+  async deleteRoom() {
+    if (!this.roomRef) return;
+    try { await deleteDoc(this.roomRef); } catch { /* best-effort */ }
+  }
+
+  async leaveRoom() {
+    if (!this.roomRef) return;
+    try {
+      await updateDoc(this.roomRef, { guest: deleteField(), answer: deleteField() });
+    } catch { /* best-effort — room may already be gone */ }
   }
 
   close() {

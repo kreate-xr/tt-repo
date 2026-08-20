@@ -26,8 +26,8 @@
 //   adapter before the FSM-bound listener.
 
 import * as THREE from 'three';
-import { ballModel, paddleModel, tableBox, tableSurfaceY } from '../../scene/models.js';
-import { spawnBallAt } from '../../physics/ball.js';
+import { ballModel, paddleModel, tableBox, tableSurfaceY, netBox } from '../../scene/models.js';
+import { spawnBallAt, paddleFaceCenterWorld } from '../../physics/ball.js';
 import { hudLog } from '../../scene/hud.js';
 import { createShotAdapter, AI_PADDLE_ID } from '../../ai/shotAdapter.js';
 import { AIPaddle } from './aiPaddle.js';
@@ -45,8 +45,12 @@ import { createCrowdAudio } from '../../scene/crowdAudio.js';
 import { createCrowdWave } from '../../scene/crowdWave.js';
 import { createArenaLighting } from '../../scene/arenaLighting.js';
 import { createSponsorBoards } from '../../scene/sponsorBoards.js';
-import { createServeIndicator } from '../../scene/serveIndicator.js';
-import { pulseActive } from '../../xr/haptics.js';
+import { faultRuleText } from '../../scene/faultText.js';
+import { createServeArrow } from '../../scene/serveArrow.js';
+import { createPointBurst } from '../../scene/pointBurst.js';
+import { pulseActive, pulseFoul } from '../../xr/haptics.js';
+import { createNetTouchWatcher } from '../../scene/netTouch.js';
+import { playFoulWhistle } from '../../scene/audio.js';
 
 // usesFeeder on the META (not just the instance) so inGame can skip
 // CONSTRUCTING a legacy Feeder at all for this mode — building one only to
@@ -231,6 +235,14 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
   function onPaddleHit(info) {
     if (!info) return;
     if (info.origin === 'player') {
+      // Scoreboard stats: every player paddle contact counts as a shot hit;
+      // TOP SPEED tracks the fastest outgoing ball speed (km/h) off the
+      // player's paddle. updateBoards / matchStats are defined below with
+      // the scoreboards; both exist long before the first rally fires this.
+      matchStats.shotsHit += 1;
+      const kmh = (info.outSpeed || 0) * 3.6;
+      if (kmh > matchStats.topSpeedKmh) matchStats.topSpeedKmh = kmh;
+      updateBoards({ shotsHit: matchStats.shotsHit, topSpeedKmh: matchStats.topSpeedKmh });
       const rolloutResult = shotAdapter.getLastRollout();
       // Spin-blind read for the AI's initial approach — see READ_LATENCY_MS
       // in aiFSM. Passing it is optional; the FSM falls back to the true
@@ -321,8 +333,9 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
         (target) => fsm.onTargetReceived(target),
       );
     } else if (info.origin === AI_PADDLE_ID) {
-      // AI paddle hits during a serve no longer fire (the ball is launched
-      // directly, not struck). Outside a serve it's a rally return.
+      // AI paddle hits during a serve never fire: the toss contact is
+      // scripted by serve.js and the collider is gated off for that window,
+      // so no paddleHit is emitted. Outside a serve it's a rally return.
       if (server.isFinished()) fsm.onAIContact();
     }
   }
@@ -342,12 +355,19 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
   // V2 §section_6: rally manager owns rally-end detection, ITTF scoring,
   // and next-serve scheduling (both AI and player serves).
   const server = createServer({ paddle, difficulty });
-  // Trigger-armed controller for the player's own serves. Zero external
-  // deps (no XR pose tracking) — the legacy off-hand gate was a leftover
-  // from the old palm-toss version and blocked the controller from ever
-  // arming. Always constructable now.
-  const playerServe = createPlayerServeController();
+  // Player-serve controller. With the xr handle it offers the physical toss
+  // (squeeze off-hand GRIP to hold the ball, release to toss with the hand's
+  // real velocity); the trigger auto-toss stays as the always-available
+  // fallback, so this remains constructable without xr (headless tests).
+  const playerServe = createPlayerServeController({ xr });
   const rallyManager = createRallyManager({ ballEvents, server, playerServe });
+  // Probe is the paddle's face centre, which ball.js already maintains every
+  // frame for collision — no extra pose work, and it's the point that
+  // actually contacts things.
+  const netTouchWatcher = createNetTouchWatcher({
+    getProbe: () => paddleFaceCenterWorld,
+    getNetBox: () => netBox,
+  });
 
   // Floating scoreboard above the net. Seeded from rallyManager's initial
   // state (so the first-serve indicator lights up before any events fire),
@@ -357,7 +377,6 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
   // getBackWallAnchor); other modes leave it null and the scoreboard falls
   // back to its floating position behind the AI baseline.
   const scoreboard = createScoreboard({ config: { bestOf: 5 }, anchor: arenaAnchor });
-  if (scoreboard) scoreboard.update({ currentServer: initialScore.currentServer });
 
   // Stadium-only enhancements. When the player is inside the broadcast-
   // stadium venue, mirror the scoreboard onto the venue's TV / Screen /
@@ -377,7 +396,6 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
         config: { bestOf: 5 },
       });
       if (stadiumScoreboard) {
-        stadiumScoreboard.update({ currentServer: initialScore.currentServer });
         hudLog(`[arena] stadium scoreboard mounted on ${stadiumScoreboard.screenCount} screen(s)`);
       }
     }
@@ -435,6 +453,25 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
     }
   }
 
+  // Single patch point for both scoreboard surfaces (floating/wall panel +
+  // stadium TVs) so every producer below keeps them in sync with one call.
+  function updateBoards(patch) {
+    if (scoreboard) scoreboard.update(patch);
+    if (stadiumScoreboard) stadiumScoreboard.update(patch);
+  }
+  // Match-long stats feeding the SportyXR layout's history + stats rows.
+  // gameHistory holds each finished game's final score in play order.
+  const matchStats = { shotsHit: 0, topSpeedKmh: 0, gameHistory: [] };
+  // TOTAL TIME stat: ticks once a second, frozen at match end (see
+  // onMatchEnd) so the final board shows the match duration. One canvas
+  // re-render per surface per second — cheap relative to VR frame budget.
+  const matchStartMs = performance.now();
+  const clockTimer = setInterval(() => {
+    updateBoards({ elapsedMs: performance.now() - matchStartMs });
+  }, 1000);
+  // Seed the first-serve indicator so it lights before any events fire.
+  updateBoards({ currentServer: initialScore.currentServer });
+
   // Helper: is EITHER side one point away from winning the match with the
   // CURRENT score state? Called right after a point is scored to decide
   // whether to pulse the ceiling ring for the upcoming point. bestOf 5 =>
@@ -449,15 +486,38 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
     return playerMP || aiMP;
   }
 
-  // Between-point "READY" indicator. Shown during the 1200ms window that
-  // rallyManager already inserts between point-end and next-serve, so the
-  // player has visible feedback that a serve is imminent instead of dead time.
-  const serveIndicator = createServeIndicator();
+  // On-table serve cue: pulsing chevrons on the player's half whenever
+  // it's their serve, pointing toward the net (see onServeRequested / launch
+  // below for the show/hide lifecycle).
+  const serveArrow = createServeArrow();
+  // Over-net "+1" / "FOUL" flash at the moment a point is called; the
+  // scoreboard and HUD log carry the detail.
+  const pointBurst = createPointBurst();
+
+  // Toss went up (either path: off-hand grip release OR trigger auto-toss) —
+  // the serve prompt has done its job. This subscription is the single hide
+  // point; the launch() wrapper below must not duplicate it because the
+  // grip-release path never goes through launch() at all.
+  playerServe.onLaunch(() => {
+    if (serveArrow) serveArrow.hide();
+  });
 
   rallyManager.on('onPointScored', (e) => {
     hudLog(`[AI Match] point ${e.winner} (${e.reason}): P${e.playerScore} - AI${e.aiScore}`);
-    if (scoreboard) scoreboard.update({ playerScore: e.playerScore, aiScore: e.aiScore });
-    if (stadiumScoreboard) stadiumScoreboard.update({ playerScore: e.playerScore, aiScore: e.aiScore });
+    updateBoards({ playerScore: e.playerScore, aiScore: e.aiScore });
+    // Instant over-net flash where the point just happened — a brief burst
+    // under the match-end celebration is fine.
+    if (pointBurst) pointBurst.burst({ winner: e.winner, foul: e.foul });
+    // Fouls the PLAYER committed get an immediate tactile call, fired from
+    // inside the offending contact's own event — the buzz lands while the
+    // paddle is still moving, so the rule attaches to the action that broke
+    // it. The HUD log's rule explanation is there when the player goes
+    // looking for why.
+    if (e.foul === 'player') {
+      pulseFoul();
+      playFoulWhistle();
+      hudLog(`[FOUL] ${faultRuleText(e.reason, e.detail)}`);
+    }
     // Crowd reaction. Escalate intensity as the game gets closer:
     //   deuce (≥10-10) or match point → 'big'
     //   game point (server one from taking the game) → 'medium'
@@ -485,19 +545,10 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
       if (!s.matchOver && isEitherSideAtMatchPoint(s.playerGames, s.aiGames, s.playerScore, s.aiScore)) {
         arenaLighting.pulseMatchPoint();
       }
-    }
-    // Point ended → next serve is scheduled for NEXT_SERVE_DELAY_MS from now.
-    // Show the "READY" panel with the server subtitle for that window.
-    // Defer via microtask because rotation & match-end fire synchronously
-    // right after this in the same finishRally() call — we need currentServer
-    // to reflect the ROTATED value and to skip showing if the match just
-    // ended. See rallyManager.js:167 (finishRally) for the emit order.
-    if (serveIndicator) {
-      queueMicrotask(() => {
-        const s = rallyManager.getScore();
-        if (s.matchOver) return;
-        serveIndicator.showReady(s.currentServer);
-      });
+      // Peripheral companion to the table wash: one soft swell in the
+      // winner's color. Skipped at match end, where celebrateMatch() takes
+      // over the fixtures with something much bigger.
+      if (!s.matchOver) arenaLighting.pulsePoint(e.winner);
     }
     // Feed the score event into the worker's momentum model. Momentum then
     // scales exploit factor and biases shot-type weights on the next
@@ -512,22 +563,19 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
     if (fsm && fsm.onPointResult) fsm.onPointResult({ winner: e.winner });
   });
   rallyManager.on('onServerChange', (e) => {
-    if (scoreboard) scoreboard.update({ currentServer: e.currentServer });
-    if (stadiumScoreboard) stadiumScoreboard.update({ currentServer: e.currentServer });
+    updateBoards({ currentServer: e.currentServer });
   });
   rallyManager.on('onGameEnd', (e) => {
     hudLog(`[AI Match] game ${e.winner}: games P${e.playerGames} - AI${e.aiGames}`);
-    if (scoreboard) scoreboard.update({
+    // Record the finished game's final score for the GAME 1..N history row.
+    // slice() so each board holds an immutable snapshot, not our live array.
+    matchStats.gameHistory.push({ playerScore: e.playerScore, aiScore: e.aiScore });
+    updateBoards({
       playerGames: e.playerGames,
       aiGames: e.aiGames,
       playerScore: 0,
       aiScore: 0,
-    });
-    if (stadiumScoreboard) stadiumScoreboard.update({
-      playerGames: e.playerGames,
-      aiGames: e.aiGames,
-      playerScore: 0,
-      aiScore: 0,
+      gameHistory: matchStats.gameHistory.slice(),
     });
     // Game-end warrants a big cheer on the winner's side (bigger than a
     // regular point). Scattered applause too — the whole arena
@@ -544,6 +592,11 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
   });
   rallyManager.on('onMatchEnd', (e) => {
     hudLog(`[AI Match] MATCH WON BY ${e.winner.toUpperCase()}: ${e.aiGames}-${e.playerGames}`);
+    // Freeze the TOTAL TIME stat at the exact match duration. onGameEnd for
+    // the deciding game already fired (rallyManager emits it first), so the
+    // history row is complete by now.
+    clearInterval(clockTimer);
+    updateBoards({ elapsedMs: performance.now() - matchStartMs });
     const banner = e.winner === 'player' ? 'YOU WIN!' : 'AI WINS';
     if (scoreboard) scoreboard.setMatchOverBanner(banner);
     if (stadiumScoreboard) stadiumScoreboard.setMatchOverBanner(banner);
@@ -560,16 +613,19 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
         if (crowdWave) crowdWave.startWave({ laps: 2, direction: 'cw' });
       }, 700);
     }
-    // Match's over — cancel any in-flight READY that onPointScored just
-    // scheduled for match point.
-    if (serveIndicator) serveIndicator.hide();
+    // Match's over — retire the serve cue.
+    if (serveArrow) serveArrow.hide();
+  });
+  // Net-cord serve that still landed good — ITTF let, replayed with no
+  // point.
+  rallyManager.on('onLet', (e) => {
+    hudLog(`[AI Match] LET — net-cord serve, replaying (server=${e.server})`);
   });
   // Fires at the end of the NEXT_SERVE_DELAY_MS window. For AI serves the
-  // ball is about to spawn automatically → fade the panel out. For player
-  // serves the controller has just been armed and is waiting on a trigger
-  // pull → transition the panel to the "YOUR SERVE / PULL TRIGGER" state
-  // (stays visible until launch() hides it) and buzz the paddle-hand as
-  // an attention cue.
+  // ball is about to spawn automatically. For player serves the controller
+  // has just been armed and is waiting on a trigger pull → show the on-table
+  // arrow (stays visible until launch() hides it) and buzz the paddle-hand
+  // as an attention cue.
   rallyManager.on('onServeRequested', (e) => {
     // Crowd quiets down as the server steps up — natural broadcast
     // pattern (cheer after a point → hush before the next serve). Fades
@@ -578,20 +634,15 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
     // start anthem the first time this fires, which is exactly the
     // right feel (crowd settles as the umpire calls play).
     if (crowdAudio) crowdAudio.quietDown();
-    if (!serveIndicator) return;
     if (e.server === 'player') {
-      serveIndicator.showAwaitingTrigger();
+      if (serveArrow) serveArrow.show();
       pulseActive(0.6, 100);
     } else {
-      serveIndicator.hide();
+      if (serveArrow) serveArrow.hide();
     }
   });
   // Kick off the first serve.
   rallyManager.start();
-  // rallyManager.start() calls scheduleNextServe internally, so the initial
-  // serve also runs through the same NEXT_SERVE_DELAY_MS window. Show READY
-  // for it too, with the initial server name.
-  if (serveIndicator) serveIndicator.showReady(rallyManager.getScore().currentServer);
 
   // --- Drill interface -----------------------------------------------------
   function update(dt) {
@@ -614,11 +665,16 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
       return;
     }
     shotAdapter.sampleEachFrame();
-    // Palm-toss preview + flick detection runs independently of AI serve / FSM
-    // — it only produces output while armed (i.e. the player is currently the
-    // server). Cheap when idle.
+    // Off-hand grip poll for the physical serve toss. Runs independently of
+    // AI serve / FSM — it only does work while armed (i.e. the player is
+    // currently the server) or mid-hold. Cheap when idle.
     if (playerServe) playerServe.update(dt);
-    if (serveIndicator) serveIndicator.update(dt);
+    if (serveArrow) serveArrow.update(dt);
+    if (pointBurst) pointBurst.update(dt);
+    // ITTF Law 2.10: touching the net assembly while the ball is in play.
+    // Nothing in the ball's event stream can see this one, so it's watched
+    // here. rallyManager ignores the report unless a rally is actually live.
+    if (netTouchWatcher.update()) rallyManager.reportNetTouch('player');
     // V2 §section_5: when the server is active, it owns the paddle (the
     // main FSM stays IDLE). Otherwise normal rally flow.
     if (!server.isFinished()) {
@@ -643,13 +699,15 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
     // to it instead of calling worker.terminate() directly.
     failureHandler.dispose();
     rallyManager.dispose();
+    clearInterval(clockTimer);
     if (scoreboard) scoreboard.dispose();
     if (stadiumScoreboard) stadiumScoreboard.dispose();
     if (crowdAudio) crowdAudio.dispose();
     if (crowdWave) crowdWave.dispose();
     if (arenaLighting) arenaLighting.dispose();
     if (sponsorBoards) sponsorBoards.dispose();
-    if (serveIndicator) serveIndicator.dispose();
+    if (serveArrow) serveArrow.dispose();
+    if (pointBurst) pointBurst.dispose();
     server.dispose();
     if (playerServe) playerServe.dispose();
     shotAdapter.dispose();
@@ -662,15 +720,13 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, arenaAnchor
 
   // Exposed to inGame.js's handleTrigger — when the drill is active and no
   // panel is being hovered, any trigger press routes here. Delegated to the
-  // player-serve controller, which no-ops unless it's armed for a serve.
-  // launch() returns true only when the arm-state was consumed and a ball
-  // was actually spawned — that's the moment to fade the "YOUR SERVE" panel
-  // out. Idle trigger pulls (paddle-hand poke gestures mid-rally) still get
-  // no-oped by playerServe.launch() and leave the panel state alone.
+  // player-serve controller, which no-ops unless it's armed for a serve (and
+  // not already holding the ball in the off-hand). Arrow hiding lives in the
+  // playerServe.onLaunch subscription above, which fires for BOTH toss
+  // paths. Idle trigger pulls (paddle-hand poke gestures mid-rally) still get
+  // no-oped by playerServe.launch() and leave the arrow state alone.
   function launch() {
-    if (!playerServe) return;
-    const launched = playerServe.launch();
-    if (launched && serveIndicator) serveIndicator.hide();
+    if (playerServe) playerServe.launch();
   }
 
   return {

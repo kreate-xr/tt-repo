@@ -5,7 +5,6 @@ import {
   setBallSquash, updateBallSquashAmount, resetBallSquash,
 } from '../scene/models.js';
 import { playBounceSound, playPaddleHitSound, playPaddleEdgeSound, updateSwingWhoosh, updateBallRoll } from '../scene/audio.js';
-import { updateBallTrail, resetBallTrail } from '../scene/ballTrail.js';
 import { updateBallShadow, resetBallShadow } from '../scene/ballShadow.js';
 import { updateBallGhost, resetBallGhost } from '../scene/ballGhost.js';
 import { SELF_TEST, hudLog } from '../scene/hud.js';
@@ -14,12 +13,12 @@ import { computeImpulse } from './impulse.js';
 import { pulseActive as hapticsPulseActive, pulseImpact as hapticsPulseImpact, pulseSwing } from '../xr/haptics.js';
 import { shouldSuppressContact as trackingShouldSuppressContact } from '../xr/trackingLossGuard.js';
 import { recordHit as recordContactLogHit } from '../xr/contactLog.js';
-import { integrateFlightStep } from './rollout.js';
+import { integrateFlightStep, applyTableBounce } from './rollout.js';
 import {
   SPIN_CAPTURE_GAIN,
-  TABLE_SPIN_GAIN, TABLE_LINEAR_FRICTION, TABLE_SIDESPIN_KICK,
   NET_NORMAL_RESTITUTION, NET_TANGENT_DAMP, NET_SPIN_DAMP,
   NET_TOP_CORD_RESTITUTION, NET_TOP_CORD_TANGENT_KEEP, NET_TOP_CORD_LATERAL_JITTER,
+  NET_HIT_COOLDOWN,
   PADDLE_RESTITUTION, HIT_COOLDOWN, FLOOR_Y,
   FLOOR_LEVEL_Y, FLOOR_RESTITUTION, FLOOR_FRICTION, FLOOR_SPIN_DAMP,
   TABLE_EDGE_SPIN_DAMP, TABLE_EDGE_COR_SCALE,
@@ -29,11 +28,13 @@ import {
   HAPTIC_FLOOR, HAPTIC_MAX_SPEED, HAPTIC_DURATION_MIN_MS, HAPTIC_DURATION_MAX_MS,
   HAPTIC_BOUNCE_SCALE,
   SWING_HAPTIC_THRESHOLD, SWING_HAPTIC_MAX_SPEED, SWING_HAPTIC_MAX_INTENSITY, SWING_HAPTIC_PULSE_MS,
+  SWING_HAPTIC_CURVE,
   PADDLE_CONTACT_SPEED_CAP, PADDLE_ANGULAR_CONTRIBUTION,
   PADDLE_EDGE_RESTITUTION, PADDLE_EDGE_SPIN_SCALE, PADDLE_EDGE_NORMAL_JITTER_RAD,
   SWEET_SPOT_HAPTIC_BOOST,
   paddleRestitution, tableRestitution, sweetSpotFactor,
 } from './constants.js';
+import { hapticWeightEnvelope, audioWeightShape } from './paddleWeight.js';
 
 // Impulse tuning applied only to the local player's collisions — represents
 // the biomechanical limits of a real arm + paddle. AI paddles have their own
@@ -129,6 +130,44 @@ function _jitterNormalInCone(n, coneRad, out) {
 const controllerWorldPos = new THREE.Vector3();
 const controllerWorldQuat = new THREE.Quaternion();
 const prevControllerWorldQuat = new THREE.Quaternion();
+
+// Raw (unsmoothed) paddle pose — the velocity measurement source when the
+// caller provides opts.getRawPose (xrPaddle.getRawPaddlePose). The anchor
+// passed as xrController is EMA-smoothed for pseudo-haptic weight
+// (PADDLE_POS/ROT_SMOOTHING), and finite-differencing a smoothed pose
+// low-passes the velocity estimate — which attenuated exactly the one-frame
+// wrist-snap peaks that generate brush spin, the same signal the median
+// filter above deliberately exempts angular velocity to protect. Contact
+// GEOMETRY (face center/normal, swept collision) still uses the smoothed
+// anchor so physics collides with what the player sees; only the velocity
+// finite-diff reads the raw pose. Raw and smoothed poses freeze together
+// during tracking loss (see xrPaddle.js), so the raw diff can't spike on
+// resume.
+const _rawPosePos = new THREE.Vector3();
+const _rawPoseQuat = new THREE.Quaternion();
+const _rawFaceCenter = new THREE.Vector3();
+const prevRawFaceCenter = new THREE.Vector3();
+const prevRawPoseQuat = new THREE.Quaternion();
+let hadRawPose = false;
+
+// Ceiling on a single flight-integration step. The frame tick divides its dt
+// into equal substeps no larger than this (90 Hz frame → 2 substeps, 72 Hz
+// → 3), so integration fidelity is the same at every display rate and closer
+// to the AI's rollout presets (DT_PRESETS.VERIFY=3 ms / INTERCEPT=5 ms).
+const MAX_FLIGHT_STEP = 1 / 180;
+
+// Per-frame scratch for tickPhysics. This function runs on the render hot
+// path every XR frame — it must not allocate (GC pauses on Quest's mobile
+// heap read as dropped frames, and the ball is where a dropped frame is
+// seen). Same rule rollout.js already follows for the shared integrator.
+const _dqScratch = new THREE.Quaternion();
+const _qInvScratch = new THREE.Quaternion();
+const _spinAxis = new THREE.Vector3();
+const _spinDq = new THREE.Quaternion();
+const _prevBallPos = new THREE.Vector3();
+const _floorNegYR = new THREE.Vector3();
+const _floorSurfVel = new THREE.Vector3();
+const _floorSlip = new THREE.Vector3();
 const _tableSquashNormal = new THREE.Vector3(0, 1, 0);
 export const paddleFaceCenterWorld = new THREE.Vector3();
 export const paddleFaceNormalWorld = new THREE.Vector3();
@@ -137,6 +176,10 @@ const prevPaddleFaceNormal = new THREE.Vector3(0, 1, 0);
 let hadControllerPos = false;
 let hadControllerQuat = false;
 let lastHitTime = 0;
+// -Infinity, not 0: clockTime is an arbitrary-origin clock, so a 0 sentinel
+// would swallow the first real net contact of any ball spawned within
+// NET_HIT_COOLDOWN of clock start.
+let lastNetHitTime = -Infinity;
 let stationaryTime = 0;
 
 // Previous-frame ball position, used as the "pre" sample for swept paddle
@@ -171,11 +214,19 @@ const aiPaddles = [];
  * normal, plus the paddle's linear velocity (m/s). Returns a handle the
  * caller passes back to unregisterAIPaddle on dispose.
  *
- * @param {{getFace: () => {center: THREE.Vector3, normal: THREE.Vector3, velocity: THREE.Vector3}, hitRadius?: number, id?: string}} cfg
+ * An optional `isActive()` predicate lets the owner temporarily take the
+ * paddle out of the collision set without unregistering it. The AI's serve
+ * uses this: during the toss the ball is deliberately flown INTO the paddle
+ * and the contact is scripted, so the swept-disc impulse must not also fire.
+ * Pose tracking (prevCenter/prevNormal) keeps updating while inactive, so
+ * re-activating never produces a stale one-frame sweep.
+ *
+ * @param {{getFace: () => {center: THREE.Vector3, normal: THREE.Vector3, velocity: THREE.Vector3}, hitRadius?: number, id?: string, isActive?: () => boolean}} cfg
  */
 export function registerAIPaddle(cfg) {
   const entry = {
     getFace: cfg.getFace,
+    isActive: cfg.isActive ?? null,
     hitRadius: cfg.hitRadius ?? paddleHitRadius,
     id: cfg.id ?? 'ai',
     prevCenter: new THREE.Vector3(),
@@ -234,11 +285,27 @@ export function clearListeners() {
 export function resetPaddleTracking() {
   hadControllerPos = false;
   hadControllerQuat = false;
+  hadRawPose = false;
   paddleAngularVelocity.set(0, 0, 0);
   // Drop stale linear-velocity median-filter samples so the first frame
   // after resume isn't filtered against a stale v from before the disconnect.
   _paddleSampleIdx = 0;
   _paddleSampleCount = 0;
+}
+
+// Silently remove the live ball. Used by match flow when the point has been
+// DECIDED but the old ball is still rolling/bouncing: play must visibly stop
+// so the player isn't rallying a dead ball into the next serve window. Emits
+// no ballLost — the rally is already resolved and a stale lost event would
+// double-book it.
+export function despawnBall() {
+  if (!ballModel) return;
+  ballModel.visible = false;
+  ballVelocity.set(0, 0, 0);
+  ballAngularVelocity.set(0, 0, 0);
+  stationaryTime = 0;
+  resetBallShadow();
+  resetBallGhost();
 }
 
 export function spawnBallAt(pos, velocity, angularVelocity) {
@@ -249,16 +316,16 @@ export function spawnBallAt(pos, velocity, angularVelocity) {
   resetBallSquash();
   ballModel.visible = true;
   ballVelocity.copy(velocity);
-  ballAngularVelocity.copy(angularVelocity || new THREE.Vector3());
+  if (angularVelocity) ballAngularVelocity.copy(angularVelocity);
+  else ballAngularVelocity.set(0, 0, 0);
   lastHitTime = 0;
+  lastNetHitTime = -Infinity;
   stationaryTime = 0;
   squashUntil = 0;
   lastBallPos.copy(pos);
   hadBallPos = false;
-  // Drop the motion trail so a fast previous life doesn't leave a streak
-  // hanging in space at the new spawn point. Same reasoning for the blob
-  // shadow — hide it until the next tickPhysics places it under the ball.
-  resetBallTrail();
+  // Hide the blob shadow until the next tickPhysics places it under the ball,
+  // so a fast previous life doesn't leave one hanging at the old position.
   resetBallShadow();
   resetBallGhost();
 }
@@ -394,13 +461,17 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
       .addScaledVector(result.reflectNormal, ballRadius + 0.005);
 
     const intensity = Math.min(impactSpeed / HAPTIC_MAX_SPEED, 1.0);
+    // Blade-weight shaping for the contact sound. Only the local player's
+    // paddle carries a weight setting — the opponent's bat is not in anyone's
+    // hand here, so AI / remote contacts stay at the neutral shape.
+    const weightShape = ctx.origin === 'player' ? audioWeightShape() : undefined;
     // Edge strikes get the sharp "clack" variant. Face hits keep the
     // rubber-plus-thud sound. Both spatialized at the contact point so the
     // hall reverb pans/decays from the paddle face, not from listener origin.
     if (isEdgeStrike) {
-      playPaddleEdgeSound(Math.min(swingSpeed / 3, 1.0), intensity, ctx.currCenter);
+      playPaddleEdgeSound(Math.min(swingSpeed / 3, 1.0), intensity, ctx.currCenter, weightShape);
     } else {
-      playPaddleHitSound(Math.min(swingSpeed / 3, 1.0), intensity, ctx.currCenter);
+      playPaddleHitSound(Math.min(swingSpeed / 3, 1.0), intensity, ctx.currCenter, weightShape);
     }
 
     // Haptic pulse — only fire on the local player's paddle. Remote / AI hits
@@ -418,7 +489,10 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
       const hapticIntensity = Math.min(1, Math.max(HAPTIC_FLOOR, intensity) * hapticBoost);
       const hapticDuration =
         HAPTIC_DURATION_MIN_MS + (HAPTIC_DURATION_MAX_MS - HAPTIC_DURATION_MIN_MS) * intensity;
-      hapticsPulseImpact(hapticIntensity, hapticDuration);
+      // Blade weight scales amplitude and duration — the only two axes WebXR
+      // gives us. Neutral weight passes both through unchanged.
+      const env = hapticWeightEnvelope(hapticIntensity, hapticDuration);
+      hapticsPulseImpact(env.intensity, env.durationMs);
 
       // Visual paddle kick-back — restores pseudo-haptic mass cue without
       // touching the collision pose. See xrPaddle.triggerPaddleRecoil.
@@ -476,6 +550,10 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
 
     emit('paddleHit', {
       origin: ctx.origin, swingSpeed, impactSpeed, spinType, spinMag, deltaOmega,
+      // Outgoing ball speed (m/s) after the impulse — what a broadcast
+      // "shot speed" readout shows. impactSpeed is only the normal-axis
+      // approach speed, so it under-reads real shot pace.
+      outSpeed: impulse.ballV_out.length(),
       edge: isEdgeStrike,
       contactLocal,
       contactRadius: result.radialDist,
@@ -518,6 +596,12 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
 // can trigger an ownership-handoff via the onPaddleHit event.
 export function tickPhysics(dt, xrController, clockTime, opts = {}) {
   const ballOwned = opts.ballOwned !== false;
+  // Velocity measurement point for this frame — raw face center when
+  // opts.getRawPose delivered a pose, else the smoothed anchor's face
+  // center. Function-scoped because the player collision ctx (pivot) and
+  // the end-of-tick bookkeeping both need it outside the tracking block.
+  let velFaceCenter = paddleFaceCenterWorld;
+  let rawSampled = false;
   // --- Paddle tracking ---
   if (xrController) {
     // NOTE (P13): xrController here is the smoothed paddleAnchor (see
@@ -552,9 +636,33 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       }
     }
 
-    if (hadControllerPos && dt > 0) {
+    // Pick the velocity measurement source. The anchor pose above is EMA-
+    // smoothed (pseudo-haptic weight) — finite-differencing it low-passes
+    // the velocity and shaves the one-frame brush peaks that generate spin.
+    // When the caller supplies the raw calibrated pose, measure velocities
+    // there instead; contact geometry stays on the smoothed anchor. See the
+    // _rawPosePos block at module scope for the full rationale.
+    let velQuat = controllerWorldQuat;
+    let velPrevCenter = prevPaddleFaceCenter;
+    let velPrevQuat = prevControllerWorldQuat;
+    let haveVelPrev = hadControllerPos;
+    let haveVelPrevQuat = hadControllerQuat;
+    if (opts.getRawPose && opts.getRawPose(_rawPosePos, _rawPoseQuat)) {
+      _rawFaceCenter.copy(paddleFaceOffset)
+        .applyQuaternion(_rawPoseQuat)
+        .add(_rawPosePos);
+      velFaceCenter = _rawFaceCenter;
+      velQuat = _rawPoseQuat;
+      velPrevCenter = prevRawFaceCenter;
+      velPrevQuat = prevRawPoseQuat;
+      haveVelPrev = hadRawPose;
+      haveVelPrevQuat = hadRawPose;
+      rawSampled = true;
+    }
+
+    if (haveVelPrev && dt > 0) {
       // Raw per-frame delta, then median-of-3 filtered into paddleVelocity.
-      _rawPaddleVel.subVectors(paddleFaceCenterWorld, prevPaddleFaceCenter).divideScalar(dt);
+      _rawPaddleVel.subVectors(velFaceCenter, velPrevCenter).divideScalar(dt);
       _pushAndMedian(_velSamples, _rawPaddleVel, paddleVelocity);
 
       // Paddle angular velocity in world space, derived from Δq = q_curr * q_prev⁻¹.
@@ -563,8 +671,9 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       // reflection — otherwise the ball reflects as if the paddle were stationary.
       // Unfiltered: a brush stroke's peak ω lasts ~1 frame and the linear-vel
       // median-of-3 would discard it (see comment at _velSamples above).
-      if (hadControllerQuat) {
-        const dq = controllerWorldQuat.clone().multiply(prevControllerWorldQuat.clone().invert());
+      if (haveVelPrevQuat) {
+        const dq = _dqScratch.copy(velQuat)
+          .multiply(_qInvScratch.copy(velPrevQuat).invert());
         if (dq.w < 0) { dq.x = -dq.x; dq.y = -dq.y; dq.z = -dq.z; dq.w = -dq.w; }
         const w = Math.min(1, Math.max(-1, dq.w));
         const angle = 2 * Math.acos(w);
@@ -584,14 +693,27 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
 
       // Weight cues that fire only during motion — no visual lag, but the
       // player feels resistance (haptic buzz) and hears air being cut (whoosh).
-      // Filtered velocity feeds these too — bonus: fewer whoosh glitches on
-      // tracking noise at rest.
-      const swingSpeed = paddleVelocity.length();
+      //
+      // RAW velocity, not the median-of-3 filtered one. This is the same reason
+      // angular velocity above is left unfiltered: a wrist jerk's peak lasts
+      // about one frame, and median-of-3 is precisely the filter that discards
+      // a one-frame spike. Feeding it the filtered value meant the harder and
+      // faster you flicked, the less of the swing the cues saw — so the blade
+      // swept a big visible arc (2:1 lever ratio about the grip) while the hand
+      // felt and heard nothing. That sensory contradiction is what reads as the
+      // blade not really being attached; it is also the whole of "the paddle
+      // has no weight". Inertia is felt DURING the swing, not at contact.
+      //
+      // Noise is handled by SWING_HAPTIC_THRESHOLD instead: at rest the raw
+      // value sits far below it, and the cost of a stray one-frame spike is a
+      // 22 ms buzz, which is much cheaper than losing every jerk.
+      const swingSpeed = _rawPaddleVel.length();
       updateSwingWhoosh(swingSpeed);
       pulseSwing(
         swingSpeed,
         SWING_HAPTIC_THRESHOLD, SWING_HAPTIC_MAX_SPEED,
         SWING_HAPTIC_MAX_INTENSITY, SWING_HAPTIC_PULSE_MS,
+        SWING_HAPTIC_CURVE,
       );
     }
   } else {
@@ -604,7 +726,7 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
     // Owner-only integration. Non-owner had ballModel.position written by the
     // multiplayer drill before this call, so prev (last frame) → curr (this
     // frame) is the remote-driven displacement we collide against.
-    const prevBallPos = hadBallPos ? lastBallPos.clone() : ballModel.position.clone();
+    const prevBallPos = _prevBallPos.copy(hadBallPos ? lastBallPos : ballModel.position);
 
     if (ballOwned) {
       // Visual spin rotation — reads ω before stepBallFlight damps it. Spin
@@ -615,9 +737,9 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       if (ballAngularVelocity.lengthSq() > 1e-4) {
         const omega = ballAngularVelocity.length();
         if (omega > 0.01) {
-          const axis = ballAngularVelocity.clone().multiplyScalar(1 / omega);
-          const dq = new THREE.Quaternion().setFromAxisAngle(axis, omega * dt);
-          ballModel.quaternion.premultiply(dq);
+          _spinAxis.copy(ballAngularVelocity).multiplyScalar(1 / omega);
+          _spinDq.setFromAxisAngle(_spinAxis, omega * dt);
+          ballModel.quaternion.premultiply(_spinDq);
         }
       }
 
@@ -625,10 +747,17 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       // position advance. rollout.js used to MIRROR this block; now it IS
       // this block — live physics and every predictive path (AI rollout,
       // preview, multiplayer dead reckoning) share one integrator.
-      integrateFlightStep(ballModel.position, ballVelocity, ballAngularVelocity, dt);
+      //
+      // Integrated in equal substeps capped at MAX_FLIGHT_STEP. The collision
+      // blocks below are untouched by this: they all sweep prevBallPos → the
+      // post-step position across the WHOLE frame, so substepping refines the
+      // trajectory without changing how contacts are detected.
+      const nSub = dt > MAX_FLIGHT_STEP ? Math.ceil(dt / MAX_FLIGHT_STEP) : 1;
+      const hSub = dt / nSub;
+      for (let i = 0; i < nSub; i++) {
+        integrateFlightStep(ballModel.position, ballVelocity, ballAngularVelocity, hSub);
+      }
     }
-
-    const ballBottom = ballModel.position.y - ballRadius;
 
     // --- Paddle-ball collision (player) ---
     // P13 §C7: suppress player-paddle contacts for up to 100 ms after the
@@ -645,10 +774,11 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
         velocity: paddleVelocity,
         angularVelocity: paddleAngularVelocity,
         // Face-center reference for the ω×r term. paddleVelocity is the
-        // finite-diff of paddleFaceCenterWorld, so the offset must be from
-        // face center (not the controller grip) or the wrist-rotation
-        // contribution gets double-counted.
-        pivot: paddleFaceCenterWorld,
+        // finite-diff of velFaceCenter (raw face center when opts.getRawPose
+        // is live, smoothed otherwise), so the pivot must be that SAME point
+        // (not the controller grip, and not the other pose's face center) or
+        // the wrist-rotation contribution gets double-counted.
+        pivot: velFaceCenter,
         hitRadius: paddleHitRadius,
         getLastHit: () => lastHitTime,
         setLastHit: (t) => { lastHitTime = t; },
@@ -658,7 +788,7 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
     // --- Paddle-ball collision (AI opponent paddles) ---
     for (const ap of aiPaddles) {
       const face = ap.getFace();
-      if (ap.hadState) {
+      if (ap.hadState && (!ap.isActive || ap.isActive())) {
         tryPaddleCollision({
           origin: ap.id,
           prevCenter: ap.prevCenter,
@@ -704,25 +834,37 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
         if (tEnter > tExit) { miss = true; break; }
       }
       if (!miss && hitAxis && tEnter >= 0 && tEnter <= 1) {
-        ballModel.position.x = prevBallPos.x + dirX * tEnter;
-        ballModel.position.y = prevBallPos.y + dirY * tEnter;
-        ballModel.position.z = prevBallPos.z + dirZ * tEnter;
-
-        // Push center a hair outside the entry face so next frame's segment
-        // doesn't start on the boundary and re-trigger the slab test at tEnter=0.
-        // Without this, a top-of-net hit compounds NET_TANGENT_DAMP each frame
-        // and the ball freezes on the net cord instead of rolling over.
-        const NET_ESCAPE_EPS = 1e-4;
+        // Resolve only the hit axis: snap to the entry face plus an escape
+        // margin, keeping the frame's tangential advance so the ball slides
+        // along the face (rewinding all three axes to tEnter discarded most
+        // of each frame's horizontal travel on shallow re-contacts, pinning
+        // the ball on the cord instead of letting it dribble over).
+        // The margin must beat next frame's motion or the segment re-enters
+        // the slab immediately; a fixed 1e-4 loses to a single 90 Hz gravity
+        // step (~1.2 mm), so scale with the frame's displacement on the hit
+        // axis, floored at 1 mm.
+        //
+        // One physical contact spans several frames of residual overlap, so
+        // the velocity response, spin damp, sound, and netHit event fire only
+        // once per NET_HIT_COOLDOWN — position is still corrected on every
+        // frame so the ball can never tunnel through the net.
+        const freshHit = (clockTime - lastNetHitTime) > NET_HIT_COOLDOWN;
         if (hitAxis === 'z') {
-          ballVelocity.z *= -NET_NORMAL_RESTITUTION;
-          ballVelocity.x *= NET_TANGENT_DAMP;
-          ballVelocity.y *= NET_TANGENT_DAMP;
-          ballModel.position.z += (dirZ >= 0 ? -NET_ESCAPE_EPS : NET_ESCAPE_EPS);
+          const eps = Math.max(1e-3, Math.abs(dirZ) * 0.5);
+          ballModel.position.z = dirZ >= 0 ? netBox.min.z - eps : netBox.max.z + eps;
+          if (freshHit) {
+            ballVelocity.z *= -NET_NORMAL_RESTITUTION;
+            ballVelocity.x *= NET_TANGENT_DAMP;
+            ballVelocity.y *= NET_TANGENT_DAMP;
+          }
         } else if (hitAxis === 'x') {
-          ballVelocity.x *= -NET_NORMAL_RESTITUTION;
-          ballVelocity.y *= NET_TANGENT_DAMP;
-          ballVelocity.z *= NET_TANGENT_DAMP;
-          ballModel.position.x += (dirX >= 0 ? -NET_ESCAPE_EPS : NET_ESCAPE_EPS);
+          const eps = Math.max(1e-3, Math.abs(dirX) * 0.5);
+          ballModel.position.x = dirX >= 0 ? netBox.min.x - eps : netBox.max.x + eps;
+          if (freshHit) {
+            ballVelocity.x *= -NET_NORMAL_RESTITUTION;
+            ballVelocity.y *= NET_TANGENT_DAMP;
+            ballVelocity.z *= NET_TANGENT_DAMP;
+          }
         } else {
           // hitAxis === 'y'. Top-cord hit (dirY < 0, ball descending onto the
           // top edge) is a physically distinct event from a bottom-face hit —
@@ -730,40 +872,82 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
           // preserves horizontal drift and adds a small unpredictable lateral
           // deflection. This is the classic "let ball" dribble-over moment.
           const isTopCord = dirY < 0;
-          if (isTopCord) {
-            ballVelocity.y *= -NET_TOP_CORD_RESTITUTION;
-            ballVelocity.x *= NET_TOP_CORD_TANGENT_KEEP;
-            ballVelocity.z *= NET_TOP_CORD_TANGENT_KEEP;
-            // Random horizontal impulse — cord tension asymmetry and finite-
-            // diameter geometry produce a small unpredictable sideways kick.
-            // Uniform azimuth, fixed magnitude — this is a stylized effect,
-            // not a full cord-dynamics simulation.
-            const azimuth = Math.random() * Math.PI * 2;
-            ballVelocity.x += NET_TOP_CORD_LATERAL_JITTER * Math.cos(azimuth);
-            ballVelocity.z += NET_TOP_CORD_LATERAL_JITTER * Math.sin(azimuth);
-          } else {
-            ballVelocity.y *= -NET_NORMAL_RESTITUTION;
-            ballVelocity.x *= NET_TANGENT_DAMP;
-            ballVelocity.z *= NET_TANGENT_DAMP;
+          const eps = Math.max(1e-3, Math.abs(dirY) * 0.5);
+          ballModel.position.y = dirY >= 0 ? netBox.min.y - eps : netBox.max.y + eps;
+          if (freshHit) {
+            if (isTopCord) {
+              ballVelocity.y *= -NET_TOP_CORD_RESTITUTION;
+              ballVelocity.x *= NET_TOP_CORD_TANGENT_KEEP;
+              ballVelocity.z *= NET_TOP_CORD_TANGENT_KEEP;
+              // Random horizontal impulse — cord tension asymmetry and finite-
+              // diameter geometry produce a small unpredictable sideways kick.
+              // Uniform azimuth, fixed magnitude — this is a stylized effect,
+              // not a full cord-dynamics simulation.
+              const azimuth = Math.random() * Math.PI * 2;
+              ballVelocity.x += NET_TOP_CORD_LATERAL_JITTER * Math.cos(azimuth);
+              ballVelocity.z += NET_TOP_CORD_LATERAL_JITTER * Math.sin(azimuth);
+              // Micro-bounce cutoff (same idea as the table's): a sub-5 cm/s
+              // rebound can't clear the escape margin anyway — rest on the
+              // cord and let gravity plus horizontal drift carry the ball off.
+              if (Math.abs(ballVelocity.y) < 0.05) ballVelocity.y = 0;
+            } else {
+              ballVelocity.y *= -NET_NORMAL_RESTITUTION;
+              ballVelocity.x *= NET_TANGENT_DAMP;
+              ballVelocity.z *= NET_TANGENT_DAMP;
+            }
           }
-          ballModel.position.y += (dirY >= 0 ? -NET_ESCAPE_EPS : NET_ESCAPE_EPS);
         }
-        ballAngularVelocity.multiplyScalar(NET_SPIN_DAMP);
-
-        playBounceSound(0.2, ballModel.position);
-        if (SELF_TEST) hudLog(`[NET HIT] axis=${hitAxis} t=${tEnter.toFixed(2)}`);
-        emit('netHit', { axis: hitAxis });
+        if (freshHit) {
+          lastNetHitTime = clockTime;
+          ballAngularVelocity.multiplyScalar(NET_SPIN_DAMP);
+          playBounceSound(0.2, ballModel.position);
+          if (SELF_TEST) hudLog(`[NET HIT] axis=${hitAxis} t=${tEnter.toFixed(2)}`);
+          emit('netHit', { axis: hitAxis });
+        }
       }
     }
 
     // --- Bounce off table surface ---
+    // Computed here, after paddle/net resolution, so the bounce test sees the
+    // ball where those blocks actually left it, not its pre-collision height.
+    const ballBottom = ballModel.position.y - ballRadius;
+    // Interpolate the surface-crossing point from last frame's position and
+    // judge in/out THERE, not at the post-step position. At 90 Hz a smash
+    // carries ~15 cm of horizontal travel per frame, so testing the AABB at
+    // the post-step position called every landing late by up to that much —
+    // and a legitimately-in deep ball could cross the surface just inside
+    // the baseline, be sampled past it, fail the AABB test, and be scored
+    // out. rolloutToSurfacePlane already interpolates for prediction; this
+    // brings live physics into agreement at exactly the margin where deep
+    // calls happen. Falls back to the post-step position when the previous
+    // sample doesn't straddle the plane (spawn frame, or a paddle hit moved
+    // the ball below the surface within a single frame).
+    let bounceX = ballModel.position.x;
+    let bounceZ = ballModel.position.z;
+    if (hadBallPos && ballBottom <= tableSurfaceY) {
+      const prevBottom = prevBallPos.y - ballRadius;
+      if (prevBottom > tableSurfaceY) {
+        const span = prevBottom - ballBottom;
+        const frac = span > 1e-9 ? (prevBottom - tableSurfaceY) / span : 0;
+        bounceX = prevBallPos.x + (ballModel.position.x - prevBallPos.x) * frac;
+        bounceZ = prevBallPos.z + (ballModel.position.z - prevBallPos.z) * frac;
+      }
+    }
     if (ballOwned && tableBox &&
         ballBottom <= tableSurfaceY &&
-        ballModel.position.x >= tableBox.min.x && ballModel.position.x <= tableBox.max.x &&
-        ballModel.position.z >= tableBox.min.z && ballModel.position.z <= tableBox.max.z &&
+        bounceX >= tableBox.min.x && bounceX <= tableBox.max.x &&
+        bounceZ >= tableBox.min.z && bounceZ <= tableBox.max.z &&
         ballVelocity.y < 0) {
       ballModel.position.y = tableSurfaceY + ballRadius;
-      const bounceImpact = Math.abs(ballVelocity.y);
+      // Bounce response — speed-dependent COR, spin-coupled friction,
+      // sidespin lateral kick, micro-bounce settle — is the shared
+      // implementation in rollout.js. applyTableBounce IS the block that
+      // used to live inline here (moved for the same reason as
+      // integrateFlightStep: live physics and every predictive path must
+      // ride one implementation), and unlike the old inline copy it is
+      // allocation-free. Returns |v_y| BEFORE the reflection, which drives
+      // sound, haptic, and squash intensity consistently.
+      const bounceImpact = applyTableBounce(ballVelocity, ballAngularVelocity, ballRadius);
       const bounceIntensity = Math.min(bounceImpact / 5, 1.0);
       playBounceSound(bounceIntensity, ballModel.position);
       // Light haptic so the table has felt presence — scaled below paddle hits
@@ -780,63 +964,10 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
         squashPeakAmount = SQUASH_AMOUNT * bounceIntensity;
         setBallSquash(_tableSquashNormal, squashPeakAmount);
       }
-      // Speed-dependent table COR — soft drops bounce lively (~0.88), hard
-      // slams die on the table (~0.62). Evaluated at |v_y| BEFORE the
-      // reflection so the same bounceImpact drives sound, haptic, and COR
-      // consistently.
-      ballVelocity.y *= -tableRestitution(bounceImpact);
 
-      // Spin-coupled friction with the table.
-      const surfaceFromSpinTable = new THREE.Vector3()
-        .crossVectors(ballAngularVelocity, new THREE.Vector3(0, -ballRadius, 0));
-      const slipTangentTable = ballVelocity.clone().add(surfaceFromSpinTable).negate();
-      slipTangentTable.y = 0;
-
-      ballVelocity.x += slipTangentTable.x * TABLE_LINEAR_FRICTION;
-      ballVelocity.z += slipTangentTable.z * TABLE_LINEAR_FRICTION;
-
-      const deltaOmegaTable = new THREE.Vector3()
-        .crossVectors(slipTangentTable, new THREE.Vector3(0, 1, 0))
-        .multiplyScalar(TABLE_SPIN_GAIN);
-      ballAngularVelocity.add(deltaOmegaTable);
-
-      // Sidespin lateral kick — see constants.js:TABLE_SIDESPIN_KICK for the
-      // physics rationale. Rigid-ball ω × r at bottom = 0 for pure ω_y so the
-      // spin-friction math above transfers no lateral velocity from vertical
-      // sidespin; real ping-pong shows a small kick from finite-patch contact
-      // dynamics that we approximate here. Direction = perpendicular to the
-      // ball's horizontal velocity, matching the sense Magnus is already
-      // curving the ball (so kick and drift stack rather than fight).
-      //
-      // Gate on bounceImpact so residual low-energy hops don't fire kicks.
-      // The physical mechanism (finite deformable patch) requires meaningful
-      // contact force. Without this gate the kick fires on every marginal
-      // rebound, and because each kick is perpendicular to the ball's current
-      // horizontal velocity, repeated firings act as a centripetal force —
-      // the ball spirals in circles on the table instead of settling.
-      // Linear ramp from 0 at impact=0 to full kick at impact=SIDESPIN_KICK_IMPACT_SCALE.
-      if (TABLE_SIDESPIN_KICK > 0 && Math.abs(ballAngularVelocity.y) > 0.01 && bounceImpact > 0.3) {
-        const hvLenSq = ballVelocity.x * ballVelocity.x + ballVelocity.z * ballVelocity.z;
-        if (hvLenSq > 0.01) {
-          const invLen = 1 / Math.sqrt(hvLenSq);
-          // Rotating (v_x, v_z) by −90° in the horizontal plane gives
-          // (v_z, −v_x). For hv in +Z that's +X, i.e. R-spin (ω_y > 0)
-          // kicks the ball to the player's right — same direction Magnus
-          // is already curling it.
-          const perpX =  ballVelocity.z * invLen;
-          const perpZ = -ballVelocity.x * invLen;
-          const impactScale = Math.min(1, bounceImpact / 1.5);
-          const kickMag = ballAngularVelocity.y * TABLE_SIDESPIN_KICK * impactScale;
-          ballVelocity.x += kickMag * perpX;
-          ballVelocity.z += kickMag * perpZ;
-        }
-      }
-
-      if (Math.abs(ballVelocity.y) < 0.05) {
-        ballVelocity.y = 0;
-      }
-
-      emit('tableBounce', { x: ballModel.position.x, z: ballModel.position.z, impactSpeed: bounceImpact });
+      // Report the interpolated crossing point — it is where the ball
+      // physically met the table, and it's what scoring/stats should judge.
+      emit('tableBounce', { x: bounceX, z: bounceZ, impactSpeed: bounceImpact });
     }
 
     // --- Table edge ("edge ball") — spec P8 ---
@@ -941,12 +1072,12 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       ballVelocity.y *= -FLOOR_RESTITUTION;
 
       // Spin coupling: mirror of the table math but with FLOOR_FRICTION.
-      const surfaceFromSpinFloor = new THREE.Vector3()
-        .crossVectors(ballAngularVelocity, new THREE.Vector3(0, -ballRadius, 0));
-      const slipTangentFloor = ballVelocity.clone().add(surfaceFromSpinFloor).negate();
-      slipTangentFloor.y = 0;
-      ballVelocity.x += slipTangentFloor.x * FLOOR_FRICTION;
-      ballVelocity.z += slipTangentFloor.z * FLOOR_FRICTION;
+      _floorNegYR.set(0, -ballRadius, 0);
+      _floorSurfVel.crossVectors(ballAngularVelocity, _floorNegYR);
+      _floorSlip.copy(ballVelocity).add(_floorSurfVel).negate();
+      _floorSlip.y = 0;
+      ballVelocity.x += _floorSlip.x * FLOOR_FRICTION;
+      ballVelocity.z += _floorSlip.z * FLOOR_FRICTION;
 
       // Floor kills spin harder than the table (bare concrete/wood is less
       // grippy than rubber, and there's no re-launch to preserve it for).
@@ -1010,18 +1141,10 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       }
     }
 
-    // Motion trail — fed the current world position + speed AFTER all
-    // collisions have resolved. Works identically for owner and non-owner:
-    // the non-owner's ballModel.position was already written by the network
-    // drill, and ballVelocity is either the freshly integrated value (owner)
-    // or the last-received remote velocity (non-owner). Threshold-gated
-    // inside updateBallTrail so slow rallies don't get any streak.
-    updateBallTrail(ballModel.position, ballVelocity.length());
-
     // Blob shadow — depth cue for the ball above the table. Follows XZ,
-    // fades/shrinks with height. Same call-site rationale as the trail:
-    // works for both owner and network non-owner because ballModel.position
-    // was already written by whichever path is active.
+    // fades/shrinks with height. Fed AFTER all collisions have resolved, and
+    // works identically for owner and network non-owner because
+    // ballModel.position was already written by whichever path is active.
     updateBallShadow(ballModel.position);
     updateBallGhost(ballModel.position);
 
@@ -1057,5 +1180,15 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
     prevControllerWorldQuat.copy(controllerWorldQuat);
     hadControllerPos = true;
     hadControllerQuat = true;
+    // Raw-pose history is valid only when this frame actually sampled one;
+    // dropping it on a gap forces a passthrough frame instead of a finite
+    // diff across the gap when the raw source comes back.
+    if (rawSampled) {
+      prevRawFaceCenter.copy(_rawFaceCenter);
+      prevRawPoseQuat.copy(_rawPoseQuat);
+      hadRawPose = true;
+    } else {
+      hadRawPose = false;
+    }
   }
 }

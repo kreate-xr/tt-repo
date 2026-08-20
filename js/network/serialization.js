@@ -26,6 +26,13 @@ export const PacketType = Object.freeze({
   NET_HIT:            'NET_HIT',
   BALL_LOST:          'BALL_LOST',
   SCORE_UPDATE:       'SCORE_UPDATE',
+  // Rally verdict from the ball owner: { rallySeq, winner:
+  // 'host'|'guest'|null, reason }. Both peers run the same deterministic
+  // match transition; rallySeq (the sender's pre-apply rally counter) dedupes
+  // crossed/duplicate verdicts. NOT named `seq` — NetworkManager.sendEvent
+  // stamps the transport sequence number into `seq` in place, so a payload
+  // field of that name would be silently clobbered before encoding.
+  RALLY_END:          'RALLY_END',
   RECONCILIATION:     'RECONCILIATION',
   THERMAL_STATE:      'THERMAL_STATE',
   PLAYER_PAUSED:      'PLAYER_PAUSED',

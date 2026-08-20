@@ -391,9 +391,14 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       tableBox, tableSurfaceY, ballRadius,
       tableCenterZ: tableCenterZ(),
     };
+    // Payload [6] (sidespin, rps) is emitted by all three engines; the
+    // worker-timeout fallback payload is shorter, so default to a flat ball.
+    const sideSpin = (targetPayload.length > 6 && Number.isFinite(targetPayload[6]))
+      ? targetPayload[6]
+      : 0;
     let solverResult = solvePaddle({
       targetX: targetPayload[0], targetZ: targetPayload[1],
-      targetSpeed: speed, targetSpin: spin,
+      targetSpeed: speed, targetSpin: spin, targetSideSpin: sideSpin,
       contactPos: intent.predictedContact,
       contactVel: intent.predictedContactBallVel,
       contactSpin: intent.predictedContactBallSpin,

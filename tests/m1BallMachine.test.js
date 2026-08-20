@@ -95,7 +95,8 @@ describe('unplayable config', () => {
   // 2 m/s cannot clear the net to any placement: max ballistic range is
   // v²/g ≈ 0.4 m. Every feed is refused.
   const impossible = () => validateConfig({
-    ...QUICK_FEED.Warmup.config, speed: 2, depth: 'deep',
+    ...QUICK_FEED.Warmup.config, speed: 2,
+    placement: { kind: 'zone', zone: 8 }, depth: 'deep',
     feedOrigin: 'center-far', burstCount: INFINITE,
   });
 
@@ -240,6 +241,121 @@ describe('blade contact recording (M7 heatmap input)', () => {
     run(drill, 3);
     for (let i = 0; i < 3; i++) events.hit.forEach((f) => f(hitWith(0, -0.025)));
     expect(drill.getLog().meanContactOffset().y).toBeLessThan(0);
+    drill.dispose();
+  });
+});
+
+describe('rapid fire: the machine sweeps between feed origins', () => {
+  // Rapid Fire's beat is the configured interval doubled (pattern paceMul 2),
+  // so interval 2.0 → one ball per second.
+  const rapidConfig = () => validateConfig({
+    ...QUICK_FEED.Warmup.config, speed: 8, interval: 2.0, burstCount: INFINITE,
+  });
+
+  test('balls launch from both wings, all from behind the far rail', () => {
+    const drill = createM1BallMachineDrill({
+      config: rapidConfig(), ballEvents: makeEvents(), pattern: 'rapidFire',
+    });
+    run(drill, 15);
+    expect(spawned.length).toBeGreaterThanOrEqual(4);
+    const xs = spawned.map(([pos]) => pos.x);
+    // The sweep origins sit at ±0.6·halfWidth ≈ ±0.46; seeing both signs
+    // proves the per-feed origin actually reached the solver.
+    expect(Math.min(...xs)).toBeLessThan(-0.3);
+    expect(Math.max(...xs)).toBeGreaterThan(0.3);
+    for (const [pos] of spawned) expect(pos.z).toBeLessThan(-1.37);
+    drill.dispose();
+  });
+
+  test('the machine glides toward the next origin instead of teleporting', () => {
+    const drill = createM1BallMachineDrill({
+      config: rapidConfig(), ballEvents: makeEvents(), pattern: 'rapidFire',
+    });
+    // The drill snaps the figure to ball 0's origin (L-far, −x) at creation.
+    expect(drill.figure.group.position.x).toBeLessThan(-0.3);
+
+    // Track the figure between updates: after feeds start, its x must pass
+    // through intermediate values on the way to the next origin — a teleport
+    // would jump 0.46 m in a single 20 ms frame.
+    let maxFrameStep = 0;
+    let prevX = drill.figure.group.position.x;
+    for (let i = 0; i < 15 / 0.02; i++) {
+      drill.update(0.02);
+      const x = drill.figure.group.position.x;
+      maxFrameStep = Math.max(maxFrameStep, Math.abs(x - prevX));
+      prevX = x;
+    }
+    expect(drill.getSnapshot().fed).toBeGreaterThanOrEqual(4);
+    // beginSwing's authoritative aim() snap absorbs only residual travel, so
+    // no frame should move anywhere near a full origin hop.
+    expect(maxFrameStep).toBeLessThan(0.2);
+    drill.dispose();
+  });
+
+  test('feeds on the beat even while a ball is still in play', () => {
+    // The wait this removes: every other drill holds the next feed until the
+    // previous ball clears, so the cadence was really "ball lifetime", not
+    // the interval. Rapid Fire recycles the ball on the beat instead.
+    const { ballModel } = require('../js/scene/models.js');
+    ballModel.visible = true;   // a ball that never clears
+    try {
+      const drill = createM1BallMachineDrill({
+        config: rapidConfig(), ballEvents: makeEvents(), pattern: 'rapidFire',
+      });
+      run(drill, 10);
+      // 1 s beat → ~10 feeds in 10 s; anything close proves the gate is open.
+      expect(drill.getSnapshot().fed).toBeGreaterThanOrEqual(6);
+      drill.dispose();
+      ballModel.visible = true;   // dispose() hides the ball — re-pin it
+
+      // Control: a plain drill still waits for the ball to clear.
+      const plain = createM1BallMachineDrill({
+        config: rapidConfig(), ballEvents: makeEvents(),
+      });
+      run(plain, 10);
+      expect(plain.getSnapshot().fed).toBe(0);
+      plain.dispose();
+    } finally {
+      ballModel.visible = false;
+    }
+  });
+
+  test('a fixed-origin pattern still feeds from one spot', () => {
+    const drill = createM1BallMachineDrill({
+      config: rapidConfig(), ballEvents: makeEvents(), pattern: 'falkenberg',
+    });
+    run(drill, 12);
+    const xs = spawned.map(([pos]) => pos.x);
+    expect(spawned.length).toBeGreaterThan(1);
+    for (const x of xs) expect(x).toBeCloseTo(xs[0], 6);
+    drill.dispose();
+  });
+
+  test('a plain (no-pattern) drill is unaffected by the preview wiring', () => {
+    const drill = createM1BallMachineDrill({
+      config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
+      ballEvents: makeEvents(),
+    });
+    run(drill, 8);
+    expect(drill.getSnapshot().fed).toBeGreaterThan(0);
+    expect(drill.getSnapshot().skipped).toBe(0);
+    drill.dispose();
+  });
+
+  test('rapid fire survives a ladder tier change mid-run', () => {
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({
+      config: rapidConfig(), ballEvents: events,
+      pattern: 'rapidFire', ladderTier: 'bronze',
+    });
+    // Return every ball so the ladder promotes after its 20-ball window.
+    for (let i = 0; i < 30 / 0.02; i++) {
+      drill.update(0.02);
+      events.firePaddleHit();
+    }
+    const snap = drill.getSnapshot();
+    expect(snap.fed).toBeGreaterThan(20);
+    expect(snap.tier).not.toBe('bronze');   // promoted without throwing
     drill.dispose();
   });
 });

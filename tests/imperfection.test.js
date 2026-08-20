@@ -40,17 +40,19 @@ function mulberry32(seed) {
 // --- Constants pinned by spec ----------------------------------------------
 
 describe('Imperfection constants match spec', () => {
-  test('base miss rates: 0.18 / 0.05 / 0.03 (international retune)', () => {
+  test('base miss rates: 0.12 / 0.05 / 0.03 (long-rally retune)', () => {
     // Original spec values (0.15/0.08/0.03) were too clean; first bump
     // (0.22/0.12/0.06) combined with the shaken multiplier cascaded into
     // visible shanks on routine returns. Settled at 0.18/0.10/0.04 with a
     // milder shaken multiplier (1.15) and honest misses no longer
     // triggering shaken. See imperfection.js for full rationale.
     //
-    // Upper tiers then dropped again for the international re-tune —
-    // per-stroke error at that level is ~3-6%, not 10%. These are BASE rates;
+    // Upper tiers then dropped for the international re-tune (per-stroke
+    // error at that level is ~3-6%, not 10%), and beginner dropped
+    // 0.18 → 0.12 for the long-rally retune — CLUB is the practice-partner
+    // tier and its job is to keep the ball alive. These are BASE rates;
     // scaleMissRateForSituation is what makes them read as a real player.
-    expect(MISS_RATE_BY_DIFFICULTY.beginner).toBeCloseTo(0.18, 10);
+    expect(MISS_RATE_BY_DIFFICULTY.beginner).toBeCloseTo(0.12, 10);
     expect(MISS_RATE_BY_DIFFICULTY.intermediate).toBeCloseTo(0.05, 10);
     expect(MISS_RATE_BY_DIFFICULTY.pro).toBeCloseTo(0.03, 10);
   });

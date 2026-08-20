@@ -21,7 +21,7 @@ import {
 } from '../../../scene/models.js';
 import { spawnBallAt } from '../../../physics/ball.js';
 import { playMenuHoverTick } from '../../../scene/audio.js';
-import { FeedEngine } from '../feedEngine.js';
+import { FeedEngine, originPosition } from '../feedEngine.js';
 import { ServerFigure } from '../serverFigure.js';
 import { BallMachineFigure, LAUNCH_LEAD_SEC } from '../ballMachineFigure.js';
 import { validateConfig, INFINITE } from '../drillConfig.js';
@@ -58,7 +58,16 @@ export function createM1BallMachineDrill({
   stats, ballEvents, config, seed,
   // M2: a pattern turns the same feeder into a sequenced drill. `ladderTier`
   // starts the progression at a tier; the ladder then moves it per 20 balls.
-  pattern = null, random = false, hand = 'R', paceMul = 1, ladderTier = null,
+  // paceMul: null lets a pattern's own default pace apply (PatternRunner
+  // falls back to pattern.paceMul); an explicit value overrides it.
+  pattern = null, random = false, hand = 'R', paceMul = null, ladderTier = null,
+  // Per-ball verdict, fired once the drill has decided whether a ball was
+  // returned or missed. Machine Play builds its fail states and score on this
+  // rather than inferring them from getSnapshot(): a ball in flight is
+  // counted as fed but not yet returned, so any difference of counters reads
+  // as a phantom miss for exactly as long as the ball is airborne — which is
+  // enough to end a Survival run on the very first feed.
+  onOutcome = null,
 } = {}) {
   const env = buildEnv();
   const baseCfg = validateConfig(config || QUICK_FEED.Warmup.config);
@@ -90,6 +99,18 @@ export function createM1BallMachineDrill({
   };
   runner = buildRunner();
 
+  // Glide the machine toward the NEXT ball's origin (Rapid Fire's sweep).
+  // Safe to call speculatively: PatternRunner.configFor is memoized per index,
+  // so this preview, the HUD's describeNext and the engine's eventual
+  // configProvider call all see the same step without draining the rng.
+  const previewNextOrigin = (immediate = false) => {
+    if (!runner || engine.finished) return;
+    figure.glideTo(originPosition(runner.configFor(engine.fedCount), env), { immediate });
+  };
+  // At drill start, snap to ball 0's origin rather than gliding in from
+  // wherever the group was built.
+  previewNextOrigin(true);
+
   // M7's analytics sink. Separate from xr/contactLog.js, which clears on any
   // calibration change (migration-plan D5).
   const log = new EventLog({ drillId: M1_BALL_MACHINE.id });
@@ -110,6 +131,14 @@ export function createM1BallMachineDrill({
   // vectors, and the screen only ever shows the most recent handful.
   const recentContacts = [];
 
+  // A host callback must never take the drill down with it: these fire from
+  // inside the physics tick's paddle-hit emit, where a throw would abort the
+  // rest of the frame's collision handling.
+  const emitOutcome = (payload) => {
+    if (!onOutcome) return;
+    try { onOutcome(payload); } catch (e) { console.error('onOutcome threw:', e); }
+  };
+
   // Feed one ball's verdict to the ladder. A tier change rebuilds the runner
   // so the new difficulty takes effect on the very next ball rather than at
   // some later boundary the player cannot perceive.
@@ -122,6 +151,9 @@ export function createM1BallMachineDrill({
       const next = validateConfig(ladder.applyTo(baseCfg));
       engine.setConfig(next);
       if (pattern) runner = buildRunner();
+      // The rebuilt runner may pick a different next step (random mode), so
+      // re-arm the glide to keep machine and ball agreeing.
+      previewNextOrigin();
     }
   };
 
@@ -135,6 +167,12 @@ export function createM1BallMachineDrill({
       spin: lastFeed ? lastFeed.config.spinType : null,
     });
     if (stats && stats.recordMiss) stats.recordMiss();
+    emitOutcome({
+      result: 'miss',
+      zone: lastFeed && lastFeed.config.placement ? lastFeed.config.placement.zone ?? null : null,
+      spin: lastFeed ? lastFeed.config.spinType : null,
+      streak: 0,
+    });
   };
 
   engine.onFeed((feed) => {
@@ -150,6 +188,12 @@ export function createM1BallMachineDrill({
     if (!feed.feasible) infeasibleCount++;
     if (feed.reachClamped) clampedCount++;
     log.recordFeed(feed, fed);
+
+    // Start travelling toward the next ball's origin now — BEFORE the
+    // infeasible early-return, so a skipped feed still re-arms the glide.
+    // The target is inert until this feed's spin-up ends, so ordering
+    // relative to beginSwing below doesn't matter.
+    previewNextOrigin();
 
     // Never launch a shot the solver's own forward verification says cannot
     // work: an infeasible feed pitches on the MACHINE's half and never
@@ -239,6 +283,12 @@ export function createM1BallMachineDrill({
         rallyLength: streak,
       });
       if (stats && stats.recordReturn) stats.recordReturn();
+      emitOutcome({
+        result: 'returned',
+        zone: lastFeed && lastFeed.config.placement ? lastFeed.config.placement.zone ?? null : null,
+        spin: lastFeed ? lastFeed.config.spinType : null,
+        streak,
+      });
     }
   };
 
@@ -257,6 +307,9 @@ export function createM1BallMachineDrill({
     // render on the far side.
     usesFeeder: false,
 
+    // Exposed so tests can observe the machine's glide between feeds.
+    figure,
+
     update(dt) {
       // The log's clock is driven by the same dt the physics uses, so a
       // session stays reproducible and headless runs stay comparable.
@@ -265,7 +318,13 @@ export function createM1BallMachineDrill({
       // Hold the next feed until the figure has finished its swing AND the
       // previous ball has cleared. Replaces the legacy feeder's inline
       // ballModel.visible check — the engine itself stays scene-free.
-      engine.update(dt, () => figure.isIdle && !(ballModel && ballModel.visible));
+      //
+      // A nonstop pattern (Rapid Fire) skips the ball-clear wait: the next
+      // feed comes on the interval beat like a real machine, recycling the
+      // single ball model. Miss accounting is unaffected — an unreturned
+      // ball is charged at the NEXT feed, launched or recycled alike.
+      const nonstop = !!(runner && runner.pattern && runner.pattern.nonstop);
+      engine.update(dt, () => figure.isIdle && (nonstop || !(ballModel && ballModel.visible)));
       if (figure.isIdle && !(ballModel && ballModel.visible)) figure.showHeldBall(true);
     },
 

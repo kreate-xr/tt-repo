@@ -78,6 +78,11 @@ export class AIPaddle {
     this.velocityWorld   = new THREE.Vector3();
     this._prevCenter = new THREE.Vector3();
     this._hasPrev = false;
+    // Collision gate. False during the serve toss, where the ball is flown
+    // straight into the paddle on purpose and the contact is scripted by
+    // serve.js — letting the swept disc ALSO resolve it would double-hit
+    // the ball with an unplanned impulse. See setCollisionEnabled.
+    this._collisionEnabled = true;
 
     this._buildVisual();
 
@@ -90,6 +95,7 @@ export class AIPaddle {
     this.handle = registerAIPaddle({
       id: AI_PADDLE_ID,
       hitRadius: HIT_RADIUS,
+      isActive: () => this._collisionEnabled,
       getFace: () => ({
         center: this.faceCenterWorld,
         normal: this.faceNormalWorld,
@@ -134,6 +140,15 @@ export class AIPaddle {
   // neutral pose).
   refreshReadyPose() {
     this.readyPose = this._computeReadyPose();
+  }
+
+  // Take this paddle in/out of the physics collision set without
+  // unregistering it. Only serve.js uses this today (toss window + the
+  // frames right after the scripted strike, while the ball is still inside
+  // the hit radius on its way out). Always restored to true when the serve
+  // sub-FSM returns to IDLE.
+  setCollisionEnabled(enabled) {
+    this._collisionEnabled = !!enabled;
   }
 
   // --- Drive ----------------------------------------------------------------

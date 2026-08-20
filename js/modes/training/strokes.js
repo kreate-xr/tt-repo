@@ -16,6 +16,8 @@
 // reports a confidence so a marginal contact can be scored as "unclear"
 // rather than silently attributed to whichever band it fell nearest.
 
+import { zoneForDepth } from './drillConfig.js';
+
 export const STROKES = Object.freeze({
   PUSH: 'push',
   DRIVE: 'drive',
@@ -155,7 +157,13 @@ export const STROKE_FEEDS = Object.freeze({
 export function strokeFeedConfig(base, stroke) {
   const over = STROKE_FEEDS[stroke];
   if (!over) return base;
-  return { ...base, ...over };
+  // The zone row is authoritative for landing depth, so the feed's depth has
+  // to be folded into the zone. Keep the base's column (wing) if it has one.
+  const col = base?.placement?.kind === 'zone' ? (base.placement.zone - 1) % 3 : 1;
+  return {
+    ...base, ...over,
+    placement: { kind: 'zone', zone: zoneForDepth(over.depth, col) },
+  };
 }
 
 // --- Footwork ---------------------------------------------------------------

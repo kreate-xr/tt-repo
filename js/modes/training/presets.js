@@ -27,36 +27,40 @@ const preset = (label, over) => ({ label, config: validateConfig(over) });
 export const QUICK_FEED = {
   Warmup: preset('Warmup', {
     speed: 6, spinType: 'none', spinMagnitude: 0,
-    depth: 'half-long', interval: 2.5, burstCount: 20,
+    placement: { kind: 'zone', zone: 5 }, depth: 'half-long',
+    interval: 2.5, burstCount: 20,
   }),
 
   FHTopspin: preset('FH topspin', {
     speed: 9, spinType: 'top', spinMagnitude: 120,
-    placement: { kind: 'zone', zone: 6 }, depth: 'deep',
+    placement: { kind: 'zone', zone: 9 }, depth: 'deep',
     interval: 2.0, burstCount: 20,
   }),
 
   BHTopspin: preset('BH topspin', {
     speed: 9, spinType: 'top', spinMagnitude: 120,
-    placement: { kind: 'zone', zone: 4 }, depth: 'deep',
+    placement: { kind: 'zone', zone: 7 }, depth: 'deep',
     interval: 2.0, burstCount: 20,
   }),
 
   BackspinPush: preset('Backspin push', {
     speed: 7, spinType: 'back', spinMagnitude: 110,
-    depth: 'short', arc: 'flat', feedOrigin: 'center-far',
+    placement: { kind: 'zone', zone: 2 }, depth: 'short',
+    arc: 'flat', feedOrigin: 'center-far',
     interval: 2.2, burstCount: 20,
   }),
 
   RandomLight: preset('Random light', {
     speed: 7, spinType: 'none', spinMagnitude: 0,
-    scatterSigma: 0.2, depth: 'deep',
+    scatterSigma: 0.2,
+    placement: { kind: 'zone', zone: 8 }, depth: 'deep',
     interval: 2.0, burstCount: 20,
   }),
 
   SmashSetup: preset('Smash setup', {
     speed: 8, spinType: 'top', spinMagnitude: 90,
-    arc: 'lob', depth: 'half-long',
+    arc: 'lob',
+    placement: { kind: 'zone', zone: 5 }, depth: 'half-long',
     interval: 2.6, burstCount: 20,
   }),
 };

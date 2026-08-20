@@ -108,6 +108,59 @@ describe('resolvePaddleTablePenetration — side-face penetration', () => {
   });
 });
 
+describe('resolvePaddleTablePenetration — maxPush bound (player-held paddle)', () => {
+  // The delta is applied to paddleAnchor.position, which translates the bat
+  // away from the hand holding it. Unbounded, a hand driven deep through the
+  // felt shoved the rendered paddle a full penetration depth off the grip —
+  // the same detachment artifact that got the translational recoil removed.
+  const BUDGET = 0.01;
+
+  test('a deep penetration is capped at the budget, not the full depth', () => {
+    const out = v(0, 0, 0);
+    // Face center 30 cm below the felt, mid-table: the unbounded push is huge.
+    resolvePaddleTablePenetration(v(0, 0.70, 0), v(0, 1, 0), R, HT, refTableBox(), out);
+    const unbounded = out.length();
+    expect(unbounded).toBeGreaterThan(0.25);
+
+    resolvePaddleTablePenetration(
+      v(0, 0.70, 0), v(0, 1, 0), R, HT, refTableBox(), out, BUDGET,
+    );
+    expect(out.length()).toBeCloseTo(BUDGET, 9);
+  });
+
+  test('direction is preserved when the bound bites', () => {
+    const unbounded = v(0, 0, 0);
+    const bounded = v(0, 0, 0);
+    resolvePaddleTablePenetration(v(0, 0.70, 0), v(0, 1, 0), R, HT, refTableBox(), unbounded);
+    resolvePaddleTablePenetration(
+      v(0, 0.70, 0), v(0, 1, 0), R, HT, refTableBox(), bounded, BUDGET,
+    );
+    const cos = unbounded.clone().normalize().dot(bounded.clone().normalize());
+    expect(cos).toBeCloseTo(1, 9);
+  });
+
+  test('a grazing contact is under the bound and resolves in full', () => {
+    // 3 mm of dip — the common case. Must not be altered by the clamp.
+    const free = v(0, 0, 0);
+    const capped = v(0, 0, 0);
+    resolvePaddleTablePenetration(v(0, 1.012, 0), v(0, 1, 0), R, HT, refTableBox(), free);
+    resolvePaddleTablePenetration(
+      v(0, 1.012, 0), v(0, 1, 0), R, HT, refTableBox(), capped, BUDGET,
+    );
+    expect(free.length()).toBeGreaterThan(0);
+    expect(free.length()).toBeLessThan(BUDGET);
+    expect(capped.length()).toBeCloseTo(free.length(), 9);
+  });
+
+  test('omitting maxPush leaves AI / remote paddles unbounded', () => {
+    // Nobody's hand holds those, so there is nothing to detach from and clean
+    // non-clipping is the better look. Default must stay Infinity.
+    const out = v(0, 0, 0);
+    resolvePaddleTablePenetration(v(0, 0.70, 0), v(0, 1, 0), R, HT, refTableBox(), out);
+    expect(out.length()).toBeGreaterThan(0.25);
+  });
+});
+
 describe('resolvePaddleTablePenetration — output vector reuse', () => {
   test('out vector is zeroed at the start of each call, not accumulated', () => {
     const out = v(100, 100, 100);

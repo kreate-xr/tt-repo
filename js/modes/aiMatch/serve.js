@@ -17,33 +17,55 @@
 // archetypes. That is deliberate (a beginner has one serve), but this comment
 // used to read as though stance and swing variety applied at every tier.
 //
-// FSM sub-states unchanged:
+// FSM sub-states:
 //   PRE_SERVE   — paddle moves to a serve-ready pose over 400ms (position
-//                 now varies by archetype).
-//   SERVE_SWING — ball launched directly (spawnBallAt) with solver-computed
-//                 velocity/spin. Paddle plays a cosmetic swing whose target
-//                 pose is chosen from the archetype's swing kinematics.
+//                 varies by archetype).
+//   TOSS        — the ball is spawned beside the paddle with a near-vertical
+//                 velocity and flies FREELY under the live physics constants,
+//                 so the player actually sees it rise. Meanwhile the paddle
+//                 draws back and then accelerates into the predicted contact
+//                 point. Ends when the ball descends through contact height.
+//   SERVE_SWING — the strike already happened on the TOSS→SERVE_SWING edge;
+//                 this is the follow-through, 150ms, target pose chosen from
+//                 the archetype's swing kinematics.
 //   POST_SERVE  — recovery back to ready pose over 300ms; hands off.
 //
-// Earlier toss-then-hit design tried to coordinate three independent
-// timelines (ball, paddle, swept-disc collision) on a few-cm / few-ms
-// budget and routinely missed. The launch-then-swing approach sidesteps
-// that — the ball is already 3m/s away by the time the paddle's cosmetic
-// motion begins, so they never meet.
+// Why the strike is SCRIPTED, not a real swept-disc collision:
+//
+// An earlier toss-then-hit design let the physics collision resolve the
+// serve. Coordinating three independent timelines (ball, paddle, swept-disc
+// contact) on a few-cm / few-ms budget routinely missed, and a missed serve
+// contact is a dead rally. So the ball's flight during TOSS is real and
+// visible, but at contact we do NOT rely on the impulse: the AI paddle is
+// gated out of the collision set for the whole toss window
+// (paddle.setCollisionEnabled(false)), and on the strike frame we solve from
+// the ball's ACTUAL position/velocity and write the outgoing velocity+spin
+// directly. That keeps every guarantee the old launch-then-swing path had
+// (placement, spin, net clearance) while making the serve readable.
+//
+// The outgoing trajectory is a TWO-BOUNCE serve (ITTF): the ball must strike
+// the AI's own half first, then clear the net and land at the archetype's
+// target on the player's half. solveTwoBounceServe below finds that launch by
+// searching leg-1 flight times over the closed-form serveBallistic solve and
+// verifying each candidate through the shared physics integrator (drag,
+// Magnus, real table-bounce response). The rally manager faults serves that
+// skip the own-half bounce, so this is a rules requirement, not a garnish.
+//
+// The gate stays closed until the outgoing ball is clear of the hit radius,
+// otherwise the follow-through would immediately re-hit its own serve.
 
 import * as THREE from 'three';
-import { spawnBallAt } from '../../physics/ball.js';
-import { ballRadius, tableBox, tableSurfaceY, netBox } from '../../scene/models.js';
-import { solvePaddle, maxPaddleSpeedForDifficulty } from '../../ai/paddleSolver.js';
-import { computeImpulse } from '../../physics/impulse.js';
-import {
-  PADDLE_RESTITUTION, SPIN_CAPTURE_GAIN, paddleRestitution,
-} from '../../physics/constants.js';
-import { integrateFlightStep } from '../../physics/rollout.js';
+import { spawnBallAt, ballVelocity } from '../../physics/ball.js';
+import { ballRadius, tableBox, tableSurfaceY, netBox, ballModel } from '../../scene/models.js';
+import { playPaddleHitSound } from '../../scene/audio.js';
+import { maxPaddleSpeedForDifficulty } from '../../ai/paddleSolver.js';
+import { integrateFlightStep, applyTableBounce } from '../../physics/rollout.js';
+import { serveBallistic } from '../training/serveBallistics.js';
 
 export const SERVE_STATES = Object.freeze({
   IDLE: 'SERVE_IDLE',
   PRE_SERVE: 'PRE_SERVE',
+  TOSS: 'SERVE_TOSS',
   SERVE_SWING: 'SERVE_SWING',
   POST_SERVE: 'POST_SERVE',
 });
@@ -52,25 +74,85 @@ const PRE_SERVE_DURATION_MS = 400;
 const SERVE_SWING_DURATION_MS = 150;
 const POST_SERVE_RECOVERY_MS = 300;
 
-const BALL_SPAWN_FORWARD_OFFSET_M = 0.15;
 const SWING_FORWARD_TRAVEL_M = 0.20;
-const FALLBACK_LAUNCH_SPEED_MPS = 3.5;
 
-// --- Net-clearance guard ---------------------------------------------------
+// --- Toss geometry ---------------------------------------------------------
 //
-// The solver picks a launch velocity that lands near the target under nominal
-// physics. When the physics tuner cranks DRAG_COEFFICIENT, GRAVITY, or Magnus
-// values away from baseline, the trajectory can sag and clip the net. We
-// don't want the AI's serves to ever hit the net — that's a distracting
-// failure mode. So AFTER computing launchVel/launchSpin, we roll the ball
-// forward with the ACTIVE physics constants (live-binding imports pick up
-// the current tuner values every serve), find where the trajectory crosses
-// the net Z-plane, and if the Y at that crossing is below (netTop +
-// ballRadius + margin) we boost the launch vertical component and re-check.
+// The free hand tosses from just above the table, beside the paddle, behind
+// the AI's end line. The ball then rises most of a metre and is struck on the
+// way back down at about net height — the whole arc is in view, which is the
+// point: the player has to be able to read the toss to read the serve.
 //
-// The boost trades placement accuracy for legality — a serve that lands
-// 30cm short of the target still counts as a serve. Losing the point
-// because we clipped the net is worse.
+// Measured under the shipping physics (gravity -9.81, drag 0.17):
+//   normal toss: rise 0.88m (apex 0.98m over the table), struck 792ms after
+//                release at 0.33m descending at 3.3 m/s
+//   high toss:   rise 0.99m (apex 1.09m), struck 840ms after release at
+//                0.34m descending at 3.5 m/s
+// Serve takes ~1.2s from paddle-ready to contact where it used to take 0.4s
+// with no visible ball at all.
+//
+// WHY THE TOSS IS CAPPED HERE and not made taller still: the strike writes
+// the outgoing velocity directly, so the descent speed no longer constrains a
+// placement solve — but a faster-falling ball is struck later and lower (see
+// MAX_CONTACT_DESCENT_MPS below), and a taller toss buys visibility we
+// already have at the cost of serve pacing. These velocities are the
+// measured sweet spot; raise them only with the contact choreography.
+const TOSS_ORIGIN_HEIGHT_M = 0.10;      // above table surface
+const TOSS_LATERAL_OFFSET_M = 0.16;     // free hand sits beside the paddle
+// Negative = further from the net than the serve-ready pose, which already
+// sits 5cm behind the AI end line. Keeps the whole toss-and-strike behind
+// the line (ITTF), and means a missed strike falls off the back of the
+// table rather than bouncing on the AI's own half and conceding the point.
+const TOSS_FORWARD_OFFSET_M = -0.02;
+const TOSS_UP_VY_MPS = 4.5;
+const HIGH_TOSS_UP_VY_MPS = 4.8;
+const TOSS_DRIFT_MPS = 0.05;            // barely-there horizontal drift
+
+// Contact is taken on the descent at whichever comes FIRST:
+//   - the ball falling back to TOSS_CONTACT_HEIGHT_M above the table
+//     (the normal case: a natural, above-net-height serve contact), or
+//   - the descent speed reaching MAX_CONTACT_DESCENT_MPS.
+// The second is a safety valve. It only bites if the toss ends up taller than
+// intended — a gravity/drag change from the physics tuner, say — and it
+// guarantees the solver never sees an incoming speed it can't place, at the
+// cost of the AI striking the ball a bit higher than usual.
+//
+// WHY 0.35 AND NOT 0.25 (the original): contact height is what sets the
+// two-bounce solver's reachable envelope, because the ball must come back
+// down onto the server's own half before it crosses the net. At 0.25 m the
+// entire mid-arc band (vy −1.2 … +0.3) had NO legal solution at all, and the
+// upward arcs that did solve topped out at a 0.5–0.72 m landing — so every
+// deep-target archetype was served short, arriving at the receiver's end line
+// after 1.3 s at under 2 m/s. Measured at 0.35 m, arcs from −2.2 to −0.7 land
+// 0.85–1.32 deep and arrive in 0.5–0.8 s at 2.7–4.5 m/s. Ten centimetres of
+// contact height is the difference between a serve that reaches the player
+// and one that dribbles over the line.
+const TOSS_CONTACT_HEIGHT_M = 0.35;     // above table surface
+const MAX_CONTACT_DESCENT_MPS = 4.0;
+
+const TOSS_MAX_DURATION_MS = 1800;      // safety net if the ball never arrives
+const TOSS_SIM_MAX_STEPS = 500;
+
+// Paddle choreography during the toss: draw back for the first stretch, then
+// accelerate into the contact point, arriving on the strike frame.
+const BACKSWING_FRACTION = 0.55;
+const BACKSWING_BACK_M = 0.16;
+const BACKSWING_APPROACH_MIN_SPEED_MPS = 1.0;
+const ARRIVE_EARLY_FRACTION = 0.92;   // paddle reaches contact just before it
+const STRIKE_GRACE_MS = 60;           // wait this long for a lagging ball
+
+// Distance from the paddle face at which the outgoing serve is far enough
+// away to safely re-arm the AI paddle's collider.
+const COLLISION_REARM_DISTANCE_M = 0.35;
+
+// --- Net-clearance guard (direct flights) ----------------------------------
+//
+// Rolls a DIRECT (no own-side bounce) launch forward with the ACTIVE physics
+// constants and boosts its vertical component until the trajectory clears the
+// net top by a margin. The live serve no longer uses this — the strike is a
+// two-bounce solve (see solveTwoBounceServe below), whose own verification
+// accounts for the table bounce that this simulator deliberately doesn't
+// model. Kept as a public helper for direct-flight launches and their tests.
 
 const NET_CLEARANCE_MARGIN_M = 0.04;    // ball CENTER must be this far above net top
 const CLEAR_BOOST_STEP_MPS = 0.6;       // vy bump per iteration
@@ -130,6 +212,311 @@ export function ensureNetClearance(launchPos, launchVel, launchSpin) {
   }
   // Exhausted — return best effort. Physics is probably over-tuned.
   return { launchVel: vel, launchSpin: spin, clears: false, iterations: CLEAR_MAX_ITERATIONS };
+}
+
+// --- Two-bounce serve solver ------------------------------------------------
+//
+// An ITTF serve strikes the server's own half first, then crosses the net and
+// lands in the receiver's court. There is no usable closed form once drag,
+// Magnus and the speed-dependent friction-coupled bounce are in play, so this
+// is a direct search over the launch itself: aim horizontally at the target,
+// and for each of several arc heights (vertical launch speeds, ordered by the
+// archetype's speed intent — fast serves try flat arcs first, soft serves
+// arced ones) binary-search the horizontal speed until the SECOND bounce
+// lands at the target depth. Every trial is rolled through the same
+// integrator the live ball uses (integrateFlightStep + applyTableBounce), so
+// what the solver accepts is what the table will show.
+//
+// The arc height is the familiar human trade: a flat fast serve bounces deep
+// on the server's own half and skims the net; when it can't both reach depth
+// and clear the cord, the next-more-arced candidate gets its chance.
+
+const SERVE_SIM_DT = 0.004;
+const SERVE_SIM_MAX_STEPS = 700;          // 2.8 s of simulated flight
+// Required clearance above (net top + ball radius) for the ball CENTER. The
+// live ball integrates at frame dt (~11 ms at 90 Hz) while this solver
+// verifies at 4 ms, so a solver-approved skim can drift a couple of cm by
+// the net crossing — the margin must absorb that or "verified" serves clip
+// the cord in-headset.
+const SERVE_NET_MARGIN_M = 0.035;
+// Negative arcs are real serves too: a fast deep serve is struck slightly
+// DOWNWARD from just above the table, bouncing early on the server's own
+// half and skimming the net on a long flat second leg — that shape is
+// unreachable with an upward launch (the own-half bounce constraint caps its
+// horizontal speed). Capped at 2.6 up: taller arcs turn into floaty moon
+// serves that read as a glitch, not a soft serve.
+const SERVE_VY_CANDIDATES_MPS = [-2.2, -1.7, -1.2, -0.7, -0.2, 0.3, 0.8, 1.4, 2.0, 2.6];
+const SERVE_VH_MIN_MPS = 1.0;
+const SERVE_VH_MAX_MPS = 9.5;
+const SERVE_VH_BINARY_STEPS = 9;
+const SERVE_LANDING_TOLERANCE_M = 0.30;   // stop trying other arcs below this
+// Meters of landing error a candidate may buy per m/s of arc mismatch.
+// Without this a soft touch serve loses to a laser-flat one that happens to
+// land 10cm closer — accuracy would erase the archetype's character.
+const SERVE_ARC_MISMATCH_WEIGHT = 0.12;
+// ...but the allowance is CAPPED. Uncapped, the arc span (−2.2 … +2.6) buys
+// up to 0.58 m of forgiveness — twice SERVE_LANDING_TOLERANCE_M — and the
+// preference stops being a tiebreak and starts overruling placement outright:
+// a soft-serve arc landing 33 cm short scored 0.35 while the accurate flat
+// candidate 5 cm from the target scored 0.50 and lost. 0.08 m keeps character
+// deciding ties between comparable candidates and nothing more.
+const SERVE_ARC_MISMATCH_MAX_M = 0.08;
+
+// --- Arc preference vs. reachable depth -------------------------------------
+//
+// Deepest legal landing each arc can reach, measured at the production
+// contact height with the shipping physics (drag 0.17, gravity −9.81,
+// table COR curve clamped at COR_MAX — the clamp trims the own-half
+// bounce's low-speed rebound, which is why these sit a few cm shorter
+// than the pre-clamp measurements):
+//
+//     vy    −2.2   −1.7   −1.2   −0.7   −0.2    +0.3 and above
+//     z      1.28   1.08   0.92   0.77   0.71    ~0.68-0.75 (flat ceiling)
+//
+// The own-half bounce is what caps it: an UPWARD launch has only ~0.5 s of
+// air before it must land on the server's half, which caps its horizontal
+// speed near 3.5 m/s and leaves the post-bounce leg with nothing. Only a
+// downward strike carries deep — which is exactly what a real server does.
+//
+// A target deeper than the preferred arc can reach does NOT fail; it solves
+// short and slow, which is how a speed-only preference (prefVy from
+// targetSpeed alone) sent every soft archetype — all of which ask for
+// 0.85–1.10 depth — onto a +1.4 arc that tops out at 0.78. So the speed
+// preference is ceilinged by the depth the target actually demands.
+const SERVE_ARC_DEPTH_REF_Z  = [0.71, 1.28];
+const SERVE_ARC_DEPTH_REF_VY = [-0.2, -2.2];
+// Aim the preference one notch flatter than the bare minimum, so the chosen
+// arc isn't sitting exactly on its own reachability limit.
+const SERVE_ARC_DEPTH_MARGIN_M = 0.10;
+
+// Flattest (most negative) arc the preference may sit at, given how deep the
+// serve needs to land. Infinity = every arc reaches this depth, so the speed
+// intent is free to choose.
+function arcCeilingForDepth(depth) {
+  const d = depth + SERVE_ARC_DEPTH_MARGIN_M;
+  const [z0, z1] = SERVE_ARC_DEPTH_REF_Z;
+  if (d <= z0) return Infinity;
+  const [vy0, vy1] = SERVE_ARC_DEPTH_REF_VY;
+  return vy0 + ((d - z0) / (z1 - z0)) * (vy1 - vy0);
+}
+
+// Roll a serve launch through the live physics, across its first table bounce,
+// to its second surface contact. Reports everything the legality judgement
+// needs: where the first bounce landed, whether the trajectory crossed the
+// net plane BEFORE bouncing (an illegal direct serve), the clearance over the
+// net top on the post-bounce leg, and the final landing point.
+export function simulateTwoBounceServe(launchPos, launchVel, launchSpin, env) {
+  const fail = { firstBounce: null, crossedNetBeforeBounce: false, netClearance: null, landing: null };
+  if (!env || !env.tableBox) return fail;
+  const netZ = env.netBox
+    ? (env.netBox.min.z + env.netBox.max.z) / 2
+    : (env.tableBox.min.z + env.tableBox.max.z) / 2;
+  const netTopY = env.netBox ? env.netBox.max.y : env.tableSurfaceY + 0.1525;
+
+  const pos = launchPos.clone();
+  const vel = launchVel.clone();
+  const spin = launchSpin.clone();
+  let firstBounce = null;
+  let crossedNetBeforeBounce = false;
+  let netClearance = null;
+
+  for (let i = 0; i < SERVE_SIM_MAX_STEPS; i++) {
+    const prevY = pos.y;
+    const prevZ = pos.z;
+    integrateFlightStep(pos, vel, spin, SERVE_SIM_DT);
+
+    if ((prevZ < netZ && pos.z >= netZ) || (prevZ > netZ && pos.z <= netZ)) {
+      const span = pos.z - prevZ;
+      const frac = Math.abs(span) > 1e-9 ? (netZ - prevZ) / span : 0;
+      const yAtNet = prevY + (pos.y - prevY) * frac;
+      if (!firstBounce) crossedNetBeforeBounce = true;
+      else if (netClearance === null) netClearance = yAtNet - netTopY;
+    }
+
+    if ((pos.y - env.ballRadius) <= env.tableSurfaceY && vel.y < 0) {
+      const onTable =
+        pos.x >= env.tableBox.min.x && pos.x <= env.tableBox.max.x &&
+        pos.z >= env.tableBox.min.z && pos.z <= env.tableBox.max.z;
+      if (!firstBounce) {
+        // Dropped below the surface plane off-table before any bounce — the
+        // launch never reached the table. Unusable candidate.
+        if (!onTable) return { firstBounce: null, crossedNetBeforeBounce, netClearance, landing: null };
+        firstBounce = { x: pos.x, z: pos.z };
+        pos.y = env.tableSurfaceY + env.ballRadius;
+        applyTableBounce(vel, spin, env.ballRadius);
+      } else {
+        return {
+          firstBounce, crossedNetBeforeBounce, netClearance,
+          landing: { x: pos.x, z: pos.z, onTable },
+        };
+      }
+    }
+    if (pos.y < env.tableSurfaceY - 1.0) break;
+  }
+  return { firstBounce, crossedNetBeforeBounce, netClearance, landing: null };
+}
+
+// Find a legal two-bounce launch from launchPos to targetWorld. Returns
+// { velocity, legal, landingError, sim } — `legal` false means every
+// candidate failed some requirement and `velocity` is the least-bad one
+// (physics probably over-tuned). Returns null only on degenerate geometry.
+export function solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchSpin, env) {
+  if (!env || !env.tableBox) return null;
+  const netZ = env.netBox
+    ? (env.netBox.min.z + env.netBox.max.z) / 2
+    : (env.tableBox.min.z + env.tableBox.max.z) / 2;
+  // Which side of the net the server occupies (AI is -z in practice, but the
+  // solve is side-agnostic).
+  const serverSign = Math.sign(launchPos.z - netZ) || -1;
+  const recvSign = -serverSign;
+
+  // Horizontal aim straight at the target. The solved spin is pure top/back
+  // (axis perpendicular to this line), so lateral drift is second-order and
+  // folded into landingError rather than corrected separately.
+  const dir = new THREE.Vector3(
+    targetWorld.x - launchPos.x, 0, targetWorld.z - launchPos.z);
+  if (dir.lengthSq() < 1e-9) dir.set(0, 0, recvSign);
+  dir.normalize();
+
+  // Arc preference from the archetype's speed intent: a 9 m/s serve wants a
+  // downward strike and a flat skim, a 3 m/s touch serve a gently arced one.
+  // Candidates are tried nearest-preference first, so ties in landing error
+  // resolve to the arc that matches the serve's character.
+  //
+  // Then ceilinged by reachable depth (see arcCeilingForDepth): a soft serve
+  // aimed at the back of the service box cannot be played on a soft arc, no
+  // matter what its speed intent says, because the own-half bounce won't let
+  // that arc carry. Ordering matters as much as scoring here — the arc loop
+  // breaks early on the first candidate inside SERVE_LANDING_TOLERANCE_M, so
+  // a preference pointing at a short-landing arc is never even compared
+  // against the arcs that reach.
+  // Depth for arc selection, corrected for diagonal travel: the reachability
+  // table above was measured on straight serves, and a crossline serve covers
+  // a longer horizontal path for the same z-depth — so it needs the arc that
+  // carries the full path length, not just the z component.
+  const dxTotal = targetWorld.x - launchPos.x;
+  const dzTotal = targetWorld.z - launchPos.z;
+  const diagRatio = Math.abs(dzTotal) > 1e-6
+    ? Math.hypot(dxTotal, dzTotal) / Math.abs(dzTotal)
+    : 1;
+  const targetDepth = Math.abs(targetWorld.z - netZ) * diagRatio;
+  const prefVy = Math.min(2.6, Math.max(-2.2, Math.min(
+    3.4 - 0.55 * targetSpeed,
+    arcCeilingForDepth(targetDepth),
+  )));
+  const vyCandidates = [...SERVE_VY_CANDIDATES_MPS]
+    .sort((a, b) => Math.abs(a - prefVy) - Math.abs(b - prefVy));
+
+  const vel = new THREE.Vector3();
+  let best = null;
+
+  const evaluate = (vh, vy) => {
+    vel.set(dir.x * vh, vy, dir.z * vh);
+    const sim = simulateTwoBounceServe(launchPos, vel, launchSpin, env);
+    const bounceOnOwnHalf = !!sim.firstBounce &&
+      Math.sign(sim.firstBounce.z - netZ) === serverSign &&
+      !sim.crossedNetBeforeBounce;
+    const clearsNet = sim.netClearance !== null &&
+      sim.netClearance >= env.ballRadius + SERVE_NET_MARGIN_M;
+    const landsInCourt = !!sim.landing && sim.landing.onTable &&
+      Math.sign(sim.landing.z - netZ) === recvSign;
+    const landingError = sim.landing
+      ? Math.hypot(sim.landing.x - targetWorld.x, sim.landing.z - targetWorld.z)
+      : Infinity;
+    const legal = bounceOnOwnHalf && clearsNet && landsInCourt;
+    // Illegal candidates rank strictly below every legal one, ordered by how
+    // much of the legality checklist they fail.
+    const score = legal
+      ? landingError
+      : 1e3 + (bounceOnOwnHalf ? 0 : 400) + (clearsNet ? 0 : 200) +
+        (landsInCourt ? 0 : 100) + Math.min(landingError, 99);
+    return { velocity: vel.clone(), sim, legal, score, landingError };
+  };
+
+  for (const vy of vyCandidates) {
+    // Landing depth grows with horizontal speed (at fixed arc), so a binary
+    // search homes in on the target depth; legality is judged on every trial
+    // and the best-scoring one kept.
+    let lo = SERVE_VH_MIN_MPS;
+    let hi = SERVE_VH_MAX_MPS;
+    const arcPenalty = Math.min(
+      SERVE_ARC_MISMATCH_WEIGHT * Math.abs(vy - prefVy),
+      SERVE_ARC_MISMATCH_MAX_M,
+    );
+    for (let i = 0; i < SERVE_VH_BINARY_STEPS; i++) {
+      const vh = (lo + hi) / 2;
+      const r = evaluate(vh, vy);
+      r.score += arcPenalty;
+      if (!best || r.score < best.score) best = r;
+      const landZ = r.sim.landing ? r.sim.landing.z : null;
+      if (landZ === null) {
+        // No second surface contact in the window. Crossing the net plane
+        // before bouncing means too fast; anything else (died before the
+        // table, or settled without a countable landing) reads as too slow.
+        if (r.sim.crossedNetBeforeBounce) hi = vh;
+        else lo = vh;
+      } else if ((targetWorld.z - landZ) * recvSign > 0) {
+        lo = vh;                              // landed short — more speed
+      } else {
+        hi = vh;                              // landed long — less speed
+      }
+    }
+    if (best && best.legal && best.landingError <= SERVE_LANDING_TOLERANCE_M) break;
+  }
+  return best;
+}
+
+// --- Toss prediction -------------------------------------------------------
+//
+// Roll the tossed ball forward with the ACTIVE physics constants to find
+// where and when it will be struck: on the descent, at the first frame where
+// it has either fallen back to contactFloorY or reached the descent-speed
+// cap. Doing it by simulation rather than closed form means the choreography
+// stays correct when the physics tuner changes gravity or drag.
+//
+// Returns { timeMs, position, velocity, contactY, apexY }. Never null — a
+// degenerate toss that never reaches either condition falls back to the apex
+// state, which is always reached.
+const _tossSpin = new THREE.Vector3();
+export function predictTossContact(tossPos, tossVel, contactFloorY) {
+  const dt = CLEAR_SIM_DT;
+  const floorY = contactFloorY != null ? contactFloorY : tossPos.y;
+
+  const pos = tossPos.clone();
+  const vel = tossVel.clone();
+  let apexY = pos.y;
+  let apexStep = 0;
+  const apexPos = pos.clone();
+  const apexVel = vel.clone();
+
+  for (let i = 0; i < TOSS_SIM_MAX_STEPS; i++) {
+    _tossSpin.set(0, 0, 0);
+    integrateFlightStep(pos, vel, _tossSpin, dt);
+    if (pos.y > apexY) {
+      apexY = pos.y;
+      apexStep = i + 1;
+      apexPos.copy(pos);
+      apexVel.copy(vel);
+    }
+    if (vel.y < 0 && (pos.y <= floorY || vel.y <= -MAX_CONTACT_DESCENT_MPS)) {
+      return {
+        timeMs: (i + 1) * dt * 1000,
+        position: pos.clone(),
+        velocity: vel.clone(),
+        contactY: pos.y,
+        apexY,
+      };
+    }
+  }
+
+  // Degenerate toss — strike at the apex instead.
+  return {
+    timeMs: Math.max(apexStep, 1) * dt * 1000,
+    position: apexPos,
+    velocity: apexVel,
+    contactY: apexY,
+    apexY,
+  };
 }
 
 // --- Archetype catalog -----------------------------------------------------
@@ -529,6 +916,32 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
   const swingTargetPos = new THREE.Vector3();
   const swingTargetNormal = new THREE.Vector3();
 
+  // Toss/contact choreography, rebuilt on every serve by tossBall().
+  const contactTargetPos = new THREE.Vector3();
+  const contactTargetNormal = new THREE.Vector3();
+  const backswingPos = new THREE.Vector3();
+  let toss = null;              // predictTossContact result for this serve
+  let collisionSuppressed = false;
+
+  // The AI paddle is only conditionally collidable — tests and the headless
+  // harness pass stub paddles without the method, so guard every call.
+  function setPaddleCollision(enabled) {
+    collisionSuppressed = !enabled;
+    if (paddle && typeof paddle.setCollisionEnabled === 'function') {
+      paddle.setCollisionEnabled(enabled);
+    }
+  }
+
+  // Once the struck ball is clear of the hit radius, hand the collider back
+  // so a fast player return during POST_SERVE is still hittable.
+  function maybeRearmCollision() {
+    if (!collisionSuppressed) return;
+    if (!ballModel || !ballModel.visible) return;
+    if (ballModel.position.distanceTo(paddle.faceCenterWorld) > COLLISION_REARM_DISTANCE_M) {
+      setPaddleCollision(true);
+    }
+  }
+
   // Serve-ready pose: archetype's servePos.x sets the lateral offset from
   // the AI baseline center. Y and Z remain at the AI's baseline edge.
   function computeServeReadyPose(servePosXMeters = 0) {
@@ -613,69 +1026,164 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
     swingTargetNormal.copy(paddle.faceNormalWorld);
   }
 
-  function launchBall() {
-    const launchPos = paddle.faceCenterWorld.clone()
-      .addScaledVector(paddle.faceNormalWorld, BALL_SPAWN_FORWARD_OFFSET_M);
+  // World-space landing point this serve is aimed at.
+  function targetWorldPoint() {
+    const tableCenterZ = tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;
+    return new THREE.Vector3(
+      serveTarget.target_x,
+      tableSurfaceY || 0,
+      tableCenterZ + serveTarget.target_z,
+    );
+  }
 
-    const env = {
-      tableBox, tableSurfaceY, ballRadius,
-      tableCenterZ: tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0,
-    };
+  // Spawn the toss and build the paddle choreography around it.
+  //
+  // The ball leaves the free hand — modelled as a point offset laterally
+  // from the paddle, on the side the swing comes FROM, so a pendulum sweeps
+  // across the body toward it. Vertical velocity comes from the archetype:
+  // 'high_toss' gets the dramatic version, everything else the standard one.
+  function tossBall() {
+    const ready = paddle._serveReadyPose || computeServeReadyPose(serveTarget.servePos.x);
+    // lateralSign matches computeSwingTarget's convention: the swing crosses
+    // the body, so the free hand is on the far side of the swing origin.
+    const lateralSign = serveTarget.servePos.x >= 0 ? -1 : +1;
+    const tossPos = new THREE.Vector3(
+      ready.position.x + lateralSign * TOSS_LATERAL_OFFSET_M,
+      (tableSurfaceY || 0) + TOSS_ORIGIN_HEIGHT_M,
+      ready.position.z + TOSS_FORWARD_OFFSET_M,
+    );
+    const vy = serveTarget.swing.type === 'high_toss'
+      ? HIGH_TOSS_UP_VY_MPS
+      : TOSS_UP_VY_MPS;
+    const tossVel = new THREE.Vector3(
+      -lateralSign * TOSS_DRIFT_MPS,
+      vy,
+      TOSS_DRIFT_MPS,
+    );
 
-    const contactVel = new THREE.Vector3();
-    const contactSpin = new THREE.Vector3();
-    const solverResult = solvePaddle({
-      targetX: serveTarget.target_x,
-      targetZ: serveTarget.target_z,
-      targetSpeed: serveTarget.target_speed,
-      targetSpin: serveTarget.target_spin,
-      contactPos: launchPos,
-      contactVel,
-      contactSpin,
-      difficulty, env,
-    });
+    toss = predictTossContact(
+      tossPos, tossVel,
+      (tableSurfaceY || 0) + TOSS_CONTACT_HEIGHT_M,
+    );
 
-    let launchVel;
-    let launchSpin;
-    if (solverResult.feasible) {
-      const impulse = computeImpulse(
-        contactVel, contactSpin, launchPos,
-        solverResult.paddleV, null, null,
-        solverResult.faceNormal,
-        ballRadius, PADDLE_RESTITUTION, SPIN_CAPTURE_GAIN,
-        { restitutionCurve: paddleRestitution },
-      );
-      launchVel = impulse.ballV_out;
-      launchSpin = impulse.ballW_out;
-    } else {
-      const tableCenterZ = tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;
-      const targetWorld = new THREE.Vector3(
-        serveTarget.target_x,
-        tableSurfaceY,
-        tableCenterZ + serveTarget.target_z,
-      );
-      const dir = targetWorld.clone().sub(launchPos);
-      dir.y = 0;
-      if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
-      dir.normalize();
-      launchVel = new THREE.Vector3(
-        dir.x * FALLBACK_LAUNCH_SPEED_MPS,
-        1.5,
-        dir.z * FALLBACK_LAUNCH_SPEED_MPS,
-      );
-      launchSpin = new THREE.Vector3();
+    // Contact pose: paddle face points from the contact point toward the
+    // landing target, tilted slightly up so the serve arcs over the net.
+    contactTargetPos.copy(toss.position);
+    contactTargetNormal.copy(targetWorldPoint()).sub(contactTargetPos);
+    contactTargetNormal.y = 0;
+    if (contactTargetNormal.lengthSq() < 1e-6) contactTargetNormal.set(0, 0, 1);
+    contactTargetNormal.normalize();
+    contactTargetNormal.y = 0.20;
+    contactTargetNormal.normalize();
+
+    // Backswing: the mirror image of the follow-through, so the whole motion
+    // reads as one continuous swing through the ball.
+    const kin = serveTarget.swing;
+    backswingPos.copy(contactTargetPos)
+      .addScaledVector(contactTargetNormal, -BACKSWING_BACK_M);
+    backswingPos.x -= kin.lateral * lateralSign;
+    backswingPos.y -= kin.vertical;
+
+    // The ball is about to fly straight into the paddle. Contact is scripted
+    // (strikeBall), so the swept-disc collider must stay out of it.
+    setPaddleCollision(false);
+    spawnBallAt(tossPos, tossVel, new THREE.Vector3());
+  }
+
+  // True once the tossed ball has come back down to contact height, or once
+  // the scheduled contact time has passed (covers a missing ballModel, e.g.
+  // headless, and any drift between prediction and live physics).
+  function shouldStrike(elapsedMs) {
+    const scheduledMs = toss ? toss.timeMs : PRE_SERVE_DURATION_MS;
+    if (ballModel && ballModel.visible) {
+      if (ballVelocity.y < 0 && ballModel.position.y <= toss.contactY) return true;
+      // Independent of the predicted height: never let the live ball get
+      // past the descent speed the placement solver can absorb.
+      if (ballVelocity.y <= -MAX_CONTACT_DESCENT_MPS) return true;
+      // The live ball can lag the prediction slightly (variable dt, tuner
+      // changes mid-toss). Give it a short grace period to actually arrive
+      // before forcing the strike, so the paddle isn't seen swinging at
+      // empty air. The hard cap below still guarantees termination.
+      if (elapsedMs >= scheduledMs + STRIKE_GRACE_MS) return true;
+      return elapsedMs >= TOSS_MAX_DURATION_MS;
     }
+    // Headless / no ball model: purely scheduled.
+    return elapsedMs >= scheduledMs;
+  }
 
-    // Net-clearance guard: verify (and if necessary boost) the launch so the
-    // ball clears the net, regardless of the current physics tuning.
-    const cleared = ensureNetClearance(launchPos, launchVel, launchSpin);
-    launchVel = cleared.launchVel;
-    launchSpin = cleared.launchSpin;
-    if (!cleared.clears && typeof console !== 'undefined') {
-      console.warn('[AI serve] could not verify net clearance after boost — physics may be over-tuned');
+  // Drive the paddle back, then into the predicted contact point. The
+  // approach leg derives its speed from the time remaining so the paddle
+  // arrives ON the strike frame rather than trailing it.
+  function driveTossPaddle(dt, elapsedMs) {
+    const totalMs = toss ? toss.timeMs : PRE_SERVE_DURATION_MS;
+    if (elapsedMs < totalMs * BACKSWING_FRACTION) {
+      paddle.driveTowardPose(backswingPos, contactTargetNormal, dt, 2.5);
+      return;
+    }
+    // Aim to be AT the contact point slightly before the predicted strike.
+    // Either trigger in shouldStrike can fire a frame or two early; arriving
+    // early means the paddle is already there when it does, and it simply
+    // holds the pose for the remainder.
+    const arriveMs = totalMs * ARRIVE_EARLY_FRACTION;
+    const remainingS = Math.max((arriveMs - elapsedMs) / 1000, 1 / 90);
+    const dist = paddle.faceCenterWorld.distanceTo(contactTargetPos);
+    const needed = Math.max(dist / remainingS, BACKSWING_APPROACH_MIN_SPEED_MPS);
+    paddle.driveTowardPose(
+      contactTargetPos, contactTargetNormal, dt,
+      Math.min(needed, maxPaddleSpeedForDifficulty(difficulty)),
+    );
+  }
+
+  // Scripted contact. Solves from the ball's REAL position at this instant,
+  // so any drift between the predicted toss and the live one is absorbed here
+  // instead of throwing the placement off. The outgoing trajectory is a legal
+  // two-bounce serve: own half first, then over the net to the target.
+  function strikeBall() {
+    const live = !!(ballModel && ballModel.visible);
+    const launchPos = live ? ballModel.position.clone() : toss.position.clone();
+
+    const env = { tableBox, tableSurfaceY, ballRadius, netBox };
+    const targetPoint = targetWorldPoint();
+
+    // Outgoing spin: topspin/backspin about the horizontal axis perpendicular
+    // to the direction of travel (feeder.js convention — ball toward +z,
+    // topspin = +x). target_spin is rps, signed; ball spin is rad/s.
+    const dir = targetPoint.clone().sub(launchPos);
+    dir.y = 0;
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+    dir.normalize();
+    const launchSpin = new THREE.Vector3()
+      .crossVectors(new THREE.Vector3(0, 1, 0), dir)
+      .normalize()
+      .multiplyScalar(serveTarget.target_spin * 2 * Math.PI);
+
+    const solved = solveTwoBounceServe(
+      launchPos, targetPoint, serveTarget.target_speed, launchSpin, env,
+    );
+    let launchVel;
+    if (solved && solved.velocity) {
+      launchVel = solved.velocity;
+      if (!solved.legal && typeof console !== 'undefined') {
+        console.warn('[AI serve] no fully legal two-bounce candidate — serving best effort; physics may be over-tuned');
+      }
+    } else {
+      // Degenerate geometry (no table box — headless edge case). Closed-form
+      // two-bounce launch at a middle-of-the-road leg-1 time.
+      const fb = serveBallistic(launchPos, targetPoint, tableSurfaceY || 0, 0.30, null);
+      launchVel = fb.velocity.clone();
     }
 
     spawnBallAt(launchPos, launchVel, launchSpin);
+
+    // The contact never goes through tryPaddleCollision, so the hit sound
+    // would otherwise be missing — a visible toss with a silent strike reads
+    // as a glitch. Volume/intensity scale the same way the collision path
+    // does (swing speed / 3, clamped).
+    const speed = launchVel.length();
+    try {
+      playPaddleHitSound(Math.min(speed / 3, 1.0), Math.min(speed / 8, 1.0), launchPos);
+    } catch (_) { /* audio graph not up yet (pre-gesture) — not fatal */ }
+
     computeSwingTarget();
   }
 
@@ -688,7 +1196,17 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
         const ready = paddle._serveReadyPose;
         if (ready) paddle.driveTowardPose(ready.position, ready.normal, dt, 2.0);
         if (nowMs - stateEnteredAtMs >= PRE_SERVE_DURATION_MS) {
-          launchBall();
+          tossBall();
+          transitionTo(SERVE_STATES.TOSS);
+        }
+        return;
+      }
+
+      case SERVE_STATES.TOSS: {
+        const elapsed = nowMs - stateEnteredAtMs;
+        driveTossPaddle(dt, elapsed);
+        if (shouldStrike(elapsed)) {
+          strikeBall();
           transitionTo(SERVE_STATES.SERVE_SWING);
         }
         return;
@@ -699,6 +1217,7 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
           swingTargetPos, swingTargetNormal, dt,
           maxPaddleSpeedForDifficulty(difficulty),
         );
+        maybeRearmCollision();
         if (nowMs - stateEnteredAtMs >= SERVE_SWING_DURATION_MS) {
           transitionTo(SERVE_STATES.POST_SERVE);
         }
@@ -710,9 +1229,16 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
           paddle.readyPose.position, paddle.readyPose.normal,
           dt, 1.5,
         );
+        maybeRearmCollision();
         if (nowMs - stateEnteredAtMs >= POST_SERVE_RECOVERY_MS) {
           transitionTo(SERVE_STATES.IDLE);
           serveTarget = null;
+          toss = null;
+          // Unconditional restore — by now the serve has travelled at least
+          // 1.3m (450ms at the 3 m/s archetype floor), so the collider can
+          // never re-hit its own ball, and leaving it gated would make the
+          // AI unable to return anything.
+          setPaddleCollision(true);
           if (onComplete) {
             const cb = onComplete;
             onComplete = null;
@@ -729,6 +1255,9 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
     serveTarget = null;
     onComplete = null;
     lastArchetypeId = null;
+    toss = null;
+    // Never leave the paddle uncollidable if we're torn down mid-toss.
+    setPaddleCollision(true);
   }
 
   return {

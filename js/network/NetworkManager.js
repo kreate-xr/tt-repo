@@ -20,6 +20,15 @@ import { ClockSync, PING_INTERVAL_MS } from './ClockSync.js';
 
 const ICE_TIMEOUT_MS = 30000;
 
+// Congestion governor thresholds (see _updateCongestion). High-water marks
+// trip the backoff; both signals must sit below the low-water marks for
+// CONGESTION_RECOVERY_MS before the rate is restored.
+export const CONGESTION_BUFFERED_HIGH_BYTES = 4096; // ~13 send ticks of backlog
+export const CONGESTION_BUFFERED_LOW_BYTES = 1024;
+export const CONGESTION_QUEUE_HIGH_MS = 60;
+export const CONGESTION_QUEUE_LOW_MS = 25;
+export const CONGESTION_RECOVERY_MS = 2000;
+
 // STUN-only fallback for direct construction (tests, harnesses). Production
 // paths go through LobbyManager, which injects TURN via iceConfig.js —
 // env-driven config lives there because this file must stay importable under
@@ -74,10 +83,14 @@ export class NetworkManager {
 
     this.listeners = {
       connected: [], disconnected: [], channelDegraded: [],
-      gameMessage: [], eventMessage: [], iceFailed: [],
+      gameMessage: [], eventMessage: [], iceFailed: [], congestion: [],
     };
 
     this.sendLoopHandle = null;
+    this.baseRateHz = 60;
+    this.congested = false;
+    this._congestionClearSince = null;
+    this._iceTimeoutHandle = null;
     this._teardownStarted = false;
   }
 
@@ -97,6 +110,24 @@ export class NetworkManager {
     this.pc = new RTCPeerConnection({
       iceServers: this.iceServers,
       iceTransportPolicy: 'all',
+    });
+
+    // Hard ICE timeout, armed when negotiation actually begins — NOT at
+    // start(). The host may sit in the lobby indefinitely before a guest
+    // joins, and that waiting time must not count against ICE.
+    const armIceTimeout = () => {
+      if (this._iceTimeoutHandle) return;
+      this._iceTimeoutHandle = setTimeout(() => {
+        if (this._teardownStarted) return;
+        const s = this.pc && this.pc.iceConnectionState;
+        if (s !== 'connected' && s !== 'completed') {
+          this._emit('iceFailed', { iceConnectionState: s });
+        }
+      }, ICE_TIMEOUT_MS);
+    };
+    this.pc.addEventListener('iceconnectionstatechange', () => {
+      const s = this.pc.iceConnectionState;
+      if (s === 'connected' || s === 'completed') clearTimeout(this._iceTimeoutHandle);
     });
 
     // Forward local ICE candidates to the peer.
@@ -138,8 +169,10 @@ export class NetworkManager {
       });
 
       // The signaling server emits peerReady once both peers have JOINed. The
-      // host kicks off the offer at that point.
+      // host kicks off the offer at that point — negotiation starts here, so
+      // this is where the ICE clock starts too.
       this.signaling.on('peerReady', async () => {
+        armIceTimeout();
         try {
           const offer = await this.pc.createOffer();
           await this.pc.setLocalDescription(offer);
@@ -165,20 +198,12 @@ export class NetworkManager {
           this.signaling.sendAnswer(answer);
         } catch (err) { console.error('guest answer flow failed:', err); }
       });
-    }
 
-    // Hard ICE timeout. If we never reach connected/completed within
-    // ICE_TIMEOUT_MS, surface a failure so the lobby can retry.
-    const iceTimeout = setTimeout(() => {
-      const s = this.pc && this.pc.iceConnectionState;
-      if (s !== 'connected' && s !== 'completed') {
-        this._emit('iceFailed', { iceConnectionState: s });
-      }
-    }, ICE_TIMEOUT_MS);
-    this.pc.addEventListener('iceconnectionstatechange', () => {
-      const s = this.pc.iceConnectionState;
-      if (s === 'connected' || s === 'completed') clearTimeout(iceTimeout);
-    });
+      // A guest only gets here after successfully joining a room whose host
+      // is present, so negotiation is genuinely underway — arm immediately
+      // (also covers a host that vanished before sending the offer).
+      armIceTimeout();
+    }
 
     const { game, events } = await channelsPromise;
     await waitForOpen(game, events);
@@ -274,6 +299,10 @@ export class NetworkManager {
     }
   }
 
+  // Both send paths stamp `seq` and `timestamp` into the packet IN PLACE just
+  // before encoding — application payloads must not use those top-level field
+  // names (they'd be silently overwritten; RALLY_END's rally counter is named
+  // `rallySeq` for exactly this reason).
   sendGame(packet) {
     if (!this.gameChannel || this.gameChannel.readyState !== 'open') return;
     packet.seq = ++this.outboundSeq.game;
@@ -291,11 +320,15 @@ export class NetworkManager {
   // Start a setTimeout-based send loop that drains outboundState at the given
   // rate. Independent of requestAnimationFrame so a backgrounded tab does not
   // freeze network output. Phase 3 enables this once outboundState is populated.
+  // The interval is recomputed every tick so congestion backoff (and
+  // setSendRate) take effect within one send interval.
   startSendLoop(rateHz = 60) {
     if (this.sendLoopHandle) return;
-    const interval = Math.max(1, 1000 / rateHz);
+    this.baseRateHz = rateHz;
     const tick = () => {
+      this._updateCongestion(performance.now());
       this._drainOutbound();
+      const interval = Math.max(1, 1000 / this._effectiveRateHz());
       this.sendLoopHandle = setTimeout(tick, interval);
     };
     tick();
@@ -308,8 +341,59 @@ export class NetworkManager {
 
   setSendRate(rateHz) {
     if (!this.sendLoopHandle) return;
-    this.stopSendLoop();
-    this.startSendLoop(rateHz);
+    this.baseRateHz = rateHz;
+  }
+
+  _effectiveRateHz() {
+    return this.congested ? this.baseRateHz / 2 : this.baseRateHz;
+  }
+
+  // Congestion governor for the fixed-rate state stream. Two independent
+  // signals, either of which marks the link congested:
+  //   - gameChannel.bufferedAmount: bytes SCTP has accepted but not yet put
+  //     on the wire. The unreliable channel never retransmits, but outbound
+  //     frames still queue behind a slow link — a growing buffer means we
+  //     are producing faster than the path drains.
+  //   - clock.queuingDelayMs(): smoothed ping RTT above its windowed minimum
+  //     — standing queue in the network itself (bufferbloat), which
+  //     bufferedAmount can't see once bytes leave the local SCTP stack.
+  // While congested, _effectiveRateHz halves baseRateHz (30 Hz at the
+  // default 60). Dead reckoning rides a 30 Hz stream easily, and halving the
+  // offered load drains the queue instead of feeding it. Recovery is
+  // hysteretic: both signals must stay below the low-water marks for
+  // CONGESTION_RECOVERY_MS before restoring, so a marginal link doesn't
+  // oscillate between rates.
+  _updateCongestion(now) {
+    const buffered = this.gameChannel ? this.gameChannel.bufferedAmount : 0;
+    const qDelay = this.clock.queuingDelayMs();
+    const overHigh = buffered >= CONGESTION_BUFFERED_HIGH_BYTES
+      || (qDelay !== null && qDelay >= CONGESTION_QUEUE_HIGH_MS);
+
+    if (overHigh) {
+      this._congestionClearSince = null;
+      if (!this.congested) {
+        this.congested = true;
+        this._emit('congestion', { congested: true, bufferedBytes: buffered, queuingDelayMs: qDelay });
+      }
+      return;
+    }
+    if (!this.congested) return;
+
+    const underLow = buffered < CONGESTION_BUFFERED_LOW_BYTES
+      && (qDelay === null || qDelay < CONGESTION_QUEUE_LOW_MS);
+    if (!underLow) {
+      this._congestionClearSince = null;
+      return;
+    }
+    if (this._congestionClearSince === null) {
+      this._congestionClearSince = now;
+      return;
+    }
+    if (now - this._congestionClearSince >= CONGESTION_RECOVERY_MS) {
+      this.congested = false;
+      this._congestionClearSince = null;
+      this._emit('congestion', { congested: false, bufferedBytes: buffered, queuingDelayMs: qDelay });
+    }
   }
 
   _drainOutbound() {
@@ -329,6 +413,7 @@ export class NetworkManager {
     this._teardownStarted = true;
     this.stopSendLoop();
     this.stopPingLoop();
+    if (this._iceTimeoutHandle) clearTimeout(this._iceTimeoutHandle);
     try { if (this.gameChannel) this.gameChannel.close(); } catch {}
     try { if (this.eventChannel) this.eventChannel.close(); } catch {}
     try { if (this.pc) this.pc.close(); } catch {}

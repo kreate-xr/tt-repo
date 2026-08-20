@@ -2,8 +2,13 @@
 // drop, ThermalMonitor threshold, ReconnectHandler max-attempts behavior, and
 // SessionState serialize/deserialize round-trip.
 
-import { GameStateSync, BALL_EXTRAP_CAP_MS } from '../js/network/GameStateSync.js';
+import {
+  GameStateSync, BALL_EXTRAP_CAP_MS, BALL_EXTRAP_CAP_MAX_MS, EXTRAP_LATENCY_MARGIN_MS,
+} from '../js/network/GameStateSync.js';
 import { PaddleSync, PADDLE_EXTRAP_CAP_MS } from '../js/network/PaddleSync.js';
+import {
+  NetworkManager, CONGESTION_BUFFERED_HIGH_BYTES, CONGESTION_RECOVERY_MS,
+} from '../js/network/NetworkManager.js';
 import * as ThermalMonitor from '../js/network/ThermalMonitor.js';
 import { ReconnectHandler } from '../js/network/ReconnectHandler.js';
 import { SessionState } from '../js/lobby/SessionState.js';
@@ -144,6 +149,104 @@ describe('GameStateSync dead reckoning', () => {
     expect(g.getDeadReckonedBallState(1000, 0)).not.toBe(null);
     g.clear();
     expect(g.getDeadReckonedBallState(1100, DT)).toBe(null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GameStateSync — latency-adaptive extrapolation cap
+// ---------------------------------------------------------------------------
+
+describe('GameStateSync adaptive extrapolation cap', () => {
+  test('setLatencyMs raises the projection cap above the floor on slow links', () => {
+    const g = makeSync(0);
+    g.setLatencyMs(150); // cap = 150 + margin = 190 ms
+    g.onRemoteBallPacket(makePacket({ seq: 1, ts: 1000, p: [0, 0, 0], v: [10, 0, 0] }));
+    // Age 5000 ms → capped at the raised cap, not the 120 ms floor.
+    const s = g.getDeadReckonedBallState(6000, 0);
+    expect(s.pos.x).toBeCloseTo(10 * ((150 + EXTRAP_LATENCY_MARGIN_MS) / 1000));
+  });
+
+  test('cap clamps to [floor, max] and ignores non-numeric latency', () => {
+    const g = makeSync(0);
+    g.setLatencyMs(0);
+    expect(g.extrapCapMs).toBe(BALL_EXTRAP_CAP_MS);
+    g.setLatencyMs(10000);
+    expect(g.extrapCapMs).toBe(BALL_EXTRAP_CAP_MAX_MS);
+    g.setLatencyMs(null); // ClockSync.oneWayMs() before the first pong
+    expect(g.extrapCapMs).toBe(BALL_EXTRAP_CAP_MAX_MS); // unchanged
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NetworkManager — congestion governor (bufferedAmount + queuing delay)
+// ---------------------------------------------------------------------------
+
+describe('NetworkManager congestion governor', () => {
+  // No pc / signaling needed: _updateCongestion reads only gameChannel and
+  // clock, and the send loop is never started in these tests.
+  function makeNm() {
+    const nm = new NetworkManager({ role: 'host', signaling: {}, lagSim: null });
+    nm.gameChannel = { bufferedAmount: 0, readyState: 'open', send: () => {} };
+    nm.baseRateHz = 60;
+    return nm;
+  }
+
+  test('halves the rate when bufferedAmount crosses the high-water mark', () => {
+    const nm = makeNm();
+    const events = [];
+    nm.on('congestion', (e) => events.push(e));
+    nm.gameChannel.bufferedAmount = CONGESTION_BUFFERED_HIGH_BYTES;
+    nm._updateCongestion(1000);
+    expect(nm.congested).toBe(true);
+    expect(nm._effectiveRateHz()).toBe(30);
+    expect(events).toEqual([expect.objectContaining({ congested: true })]);
+    // Still over the mark on the next tick — no duplicate event.
+    nm._updateCongestion(1016);
+    expect(events.length).toBe(1);
+  });
+
+  test('backs off on standing queuing delay even with an empty local buffer', () => {
+    const nm = makeNm();
+    nm.clock.queuingDelayMs = () => 80; // bufferbloat past the SCTP stack
+    nm._updateCongestion(1000);
+    expect(nm.congested).toBe(true);
+  });
+
+  test('recovers only after a sustained clear window; relapse resets the timer', () => {
+    const nm = makeNm();
+    nm.gameChannel.bufferedAmount = CONGESTION_BUFFERED_HIGH_BYTES;
+    nm._updateCongestion(1000);
+
+    // Buffer drains — the clear timer starts, but recovery must wait.
+    nm.gameChannel.bufferedAmount = 0;
+    nm._updateCongestion(1100);
+    nm._updateCongestion(1100 + CONGESTION_RECOVERY_MS - 1);
+    expect(nm.congested).toBe(true);
+
+    // Relapse mid-wait discards the accumulated clear time.
+    nm.gameChannel.bufferedAmount = CONGESTION_BUFFERED_HIGH_BYTES;
+    nm._updateCongestion(1100 + CONGESTION_RECOVERY_MS);
+
+    // A fresh full clear window is required from here.
+    nm.gameChannel.bufferedAmount = 0;
+    nm._updateCongestion(5000);
+    nm._updateCongestion(5000 + CONGESTION_RECOVERY_MS - 1);
+    expect(nm.congested).toBe(true);
+    const events = [];
+    nm.on('congestion', (e) => events.push(e));
+    nm._updateCongestion(5000 + CONGESTION_RECOVERY_MS);
+    expect(nm.congested).toBe(false);
+    expect(nm._effectiveRateHz()).toBe(60);
+    expect(events).toEqual([expect.objectContaining({ congested: false })]);
+  });
+
+  test('setSendRate composes with congestion backoff (thermal 30 Hz → 15 Hz)', () => {
+    const nm = makeNm();
+    nm.sendLoopHandle = 1; // setSendRate no-ops unless the loop is live
+    nm.congested = true;
+    nm.setSendRate(30);
+    expect(nm._effectiveRateHz()).toBe(15);
+    nm.sendLoopHandle = null;
   });
 });
 

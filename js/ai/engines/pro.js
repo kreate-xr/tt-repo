@@ -248,7 +248,7 @@ export function createProEngine({ rng = Math.random } = {}) {
       // Placement is already decided; the stroke must fit it.
       targetZ: target[1],
     });
-    let { speed: target_speed, spin: target_spin } = sampleShotParameters({
+    let { speed: target_speed, spin: target_spin, sideSpin: target_sidespin } = sampleShotParameters({
       shotType,
       difficulty: 'pro',
       rng,
@@ -275,8 +275,10 @@ export function createProEngine({ rng = Math.random } = {}) {
     const confidence = 1.0;
     // Payload [5] = engine's picked shot type. See intermediate.js for
     // rationale (reverse-labelling from speed/spin lost PUSH into SLICE
-    // and misclassified LOOP/DRIVE at boundary spins).
-    return [target[0], target[1], target_speed, target_spin, confidence, shotType];
+    // and misclassified LOOP/DRIVE at boundary spins). [6] = signed
+    // sidespin rps (see sampleSideSpin).
+    return [target[0], target[1], target_speed, target_spin, confidence, shotType,
+            target_sidespin];
   }
 
   function reset() {

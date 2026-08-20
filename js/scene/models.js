@@ -3,13 +3,48 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { scene } from './sceneSetup.js';
 import { SELF_TEST, initDebugHud } from './hud.js';
 import { detectDiscCollision } from '../physics/collisions.js';
-import { createBallTrail } from './ballTrail.js';
-import { createBallSeamTexture } from './ballTexture.js';
+// compositeSpinMarkings stamps spin-legibility markings (cert dots + faint
+// arcs) onto Ball.glb's baked base-color map at load — the authored map is a
+// near-uniform gray whose rotation is invisible without them. The procedural
+// createBallSeamTexture is only used by the commented-out fallback ball.
+import { compositeSpinMarkings } from './ballTexture.js';
+// import { createBallSeamTexture } from './ballTexture.js';
 import { createBallShadow } from './ballShadow.js';
 import { createBallGhost } from './ballGhost.js';
+import { refineBallGeometry } from './ballGeometry.js';
 import { ballEnvMap } from './sceneSetup.js';
+import { enhancePaddleMaterial } from './paddleMaterial.js';
+import { buildProceduralPaddle } from './paddleGeometry.js';
+import { setPaddleSpec, paddleSpecOverridesFromQuery } from '../physics/paddleSpec.js';
+import { deriveHandleGripPreset } from '../xr/handleGrip.js';
+import { registerDerivedPreset } from '../xr/calibrationPresets.js';
 
 const loader = new GLTFLoader();
+
+// Paddle asset selection. The re-authored Paddle.glb is now the DEFAULT; the
+// procedural bat (scene/paddleGeometry.js, defined by physics/paddleSpec.js)
+// stays loadable behind `?paddle=procedural` so the two can still be compared
+// in the same session rather than across builds. Both go through the SAME
+// measurement code below, so a difference you see in headset is a difference in
+// the asset, not in the path.
+//
+// The new GLB ships the full anchor set the measurement code requires
+// (EdgeTop/EdgeBottom/EdgeLeft/EdgeRight, plus HandleEnd/SweetSpot/BladeNormal)
+// as children of the single blade mesh node, so the disc center, hit radius and
+// blade half-thickness are all derived from artist-authored geometry exactly as
+// before — no private shortcut for either asset.
+function useGlbPaddle() {
+  if (typeof location === 'undefined') return true;
+  return new URLSearchParams(location.search).get('paddle') !== 'procedural';
+}
+
+// Previous selection — procedural by default, GLB behind `?paddle=glb`. Kept
+// commented rather than deleted so flipping the default back is a one-line
+// swap if the new asset regresses in headset.
+// function useGlbPaddle() {
+//   if (typeof location === 'undefined') return false;
+//   return new URLSearchParams(location.search).get('paddle') === 'glb';
+// }
 
 // Model refs (assigned in loadModels). Live ESM bindings — readers see updates.
 export let paddleModel = null;
@@ -21,6 +56,8 @@ export let paddleModel = null;
 // quaternion through the transform hierarchy.
 export let ballModel = null;
 export let tableModel = null;
+// Standalone net (models/Net.glb), parented under tableModel — see loadModels.
+export let netModel = null;
 export let tableBox = null;
 export let netBox = null;
 export let tableSurfaceY = 0;
@@ -250,26 +287,153 @@ function getNetMeshAlphaMap() {
 // we install the procedural mesh grid so the visible cue "strings + holes"
 // exists — a solid plane, even lifted from black, still reads as "wrong slab"
 // rather than "TT net" because the eye looks for the mesh pattern.
+//
+// Detection (isNetMesh) is factored out of the material rewrite because two
+// callers now need it: enhanceNetVisibility, which restyles the standalone
+// Net.glb, and hideTableNet, which switches off the net baked into Table.glb.
+// Sharing one predicate is what guarantees the mesh we hide is exactly the mesh
+// the old code used to enhance.
+function isNetMesh(node) {
+  if (!node.isMesh || !node.material) return false;
+  const nodeName = (node.name || '').toLowerCase();
+  const matName  = (node.material.name || '').toLowerCase();
+  if (nodeName.includes('net') || matName.includes('net')) return true;
+  if (!node.geometry) return false;
+  const geom = node.geometry;
+  if (!geom.boundingBox) geom.computeBoundingBox();
+  const bb = geom.boundingBox;
+  if (!bb) return false;
+  const dx = bb.max.x - bb.min.x;
+  const dy = bb.max.y - bb.min.y;
+  const dz = bb.max.z - bb.min.z;
+  const cz = (bb.min.z + bb.max.z) / 2;
+  return dz < 0.03 && dy > 0.05 && dx > 1.0 && Math.abs(cz) < 0.05;
+}
+
+// Hide the net that ships baked into Table.glb, so the standalone Net.glb
+// (loaded below, authored in the SAME coordinate space) is the only net in the
+// scene. Table.glb exports one glTF mesh with five primitives, which the loader
+// splits into five sibling Meshes — the net is the one carrying Material.005, a
+// 1.80 m × 0.14 m pure-black plane at z≈0, and it is the only primitive the
+// predicate above matches (the felt, rails and white lines all fail either the
+// thin-in-z or the tall-enough test). Hidden rather than removed: the two nets
+// are near-coincident planes, so leaving it drawn would z-fight, while keeping
+// the node in the graph means restoring it is a one-line change.
+function hideTableNet(root) {
+  const hidden = [];
+  root.traverse((node) => {
+    if (!isNetMesh(node)) return;
+    node.visible = false;
+    hidden.push(node.name || '(unnamed)');
+  });
+  console.log('Table.glb built-in net hidden:', hidden.length ? hidden : '(none matched)');
+}
+
+// Second half of removing Table.glb's net: its white top tape.
+//
+// The net is NOT one primitive. Table.glb authors it across three:
+//   Material.005 — the black mesh plane and its side edging  (hideTableNet)
+//   Material.002 — the white tape band along the net's top   (this function)
+//   Material.003 — the posts and table-edge clamps           (deliberately KEPT)
+//
+// hideTableNet only catches the first. Left alone, the tape band survives as a
+// full-width white bar floating ~1 cm above Net.glb's top edge — which is
+// exactly what "there are two nets" looks like from the player's side.
+//
+// It cannot be switched off at mesh level: Material.002 also carries the
+// table's white boundary and centre lines, and the loader gives all of it one
+// Mesh. So the tape's triangles are dropped from the index buffer instead.
+//
+// The posts stay because they are real hardware and Net.glb ships none — it is
+// netting only, no tape and no posts (verified against its texture: uniform
+// mesh top to bottom). So the assembled net is Net.glb's mesh hung between
+// Table.glb's posts, which is how a real one is put together.
+//
+// Selection is deliberately narrow rather than "drop everything above the
+// felt", which would take the posts and parts of the frame with it. Per mesh,
+// the above-surface triangles are collected and dropped only if together they
+// form a band that is ALL FOUR of:
+//
+//   wide          (> 1 m across)          — spans the table, like a net does
+//   thin in Y     (< 3 cm tall)           — a tape, not the 15 cm posts
+//   thin in Z     (< 5 cm deep)           — in the net plane, not a horizontal
+//                                           shelf somewhere in the frame
+//   at the net    (within 5 cm of NetCenter.z)
+//
+// The first two alone were not enough: the table frame contains a 1.81 m wide
+// perfectly flat horizontal band above the play surface that passed both and
+// got deleted. The Z tests are what pin the match to the net line.
+const TAPE_MIN_WIDTH  = 1.0;
+const TAPE_MAX_HEIGHT = 0.03;
+const TAPE_MAX_DEPTH  = 0.05;
+const TAPE_MAX_Z_OFFSET = 0.05;
+function stripTableNetTape(root, surfaceY, netZ) {
+  const cutY = surfaceY + 0.02;   // 2 cm of clearance over the felt
+  const v = new THREE.Vector3();
+  root.updateMatrixWorld(true);
+
+  root.traverse((node) => {
+    if (!node.isMesh || !node.geometry) return;
+    // Already-hidden meshes are the net plane hideTableNet switched off —
+    // nothing to gain from editing geometry nobody draws.
+    if (!node.visible) return;
+    // Net.glb is parented under tableModel by the time this runs. It survives
+    // the band test on its own (14 cm tall, well over TAPE_MAX_HEIGHT), but skip
+    // it explicitly so a future shorter net asset can't be eaten by its own
+    // clean-up pass.
+    if (netModel && (node === netModel || netModel.getObjectById(node.id))) return;
+    const geom = node.geometry;
+    const pos = geom.getAttribute('position');
+    const idx = geom.getIndex();
+    if (!pos || !idx) return;
+
+    // Pass 1 — split triangles into above-surface and the rest, measuring the
+    // above-surface set's world bbox as we go.
+    const above = [];
+    const below = [];
+    const bMin = new THREE.Vector3(Infinity, Infinity, Infinity);
+    const bMax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
+    for (let i = 0; i < idx.count; i += 3) {
+      const tri = [idx.getX(i), idx.getX(i + 1), idx.getX(i + 2)];
+      let minY = Infinity;
+      const world = [];
+      for (const vi of tri) {
+        v.fromBufferAttribute(pos, vi).applyMatrix4(node.matrixWorld);
+        world.push(v.clone());
+        if (v.y < minY) minY = v.y;
+      }
+      if (minY > cutY) {
+        above.push(...tri);
+        for (const w of world) { bMin.min(w); bMax.max(w); }
+      } else {
+        below.push(...tri);
+      }
+    }
+    if (above.length === 0) return;
+
+    // Pass 2 — is that set a tape band, or something we must not touch?
+    const width  = bMax.x - bMin.x;
+    const height = bMax.y - bMin.y;
+    const depth  = bMax.z - bMin.z;
+    const zOff   = Math.abs((bMin.z + bMax.z) / 2 - netZ);
+    if (width < TAPE_MIN_WIDTH) return;
+    if (height > TAPE_MAX_HEIGHT) return;
+    if (depth > TAPE_MAX_DEPTH) return;
+    if (zOff > TAPE_MAX_Z_OFFSET) return;
+
+    geom.setIndex(below);
+    geom.computeBoundingBox();
+    geom.computeBoundingSphere();
+    console.log(`Table.glb net tape stripped from '${node.name || '(unnamed)'}': ` +
+      `${above.length / 3} triangles (${width.toFixed(3)} × ${height.toFixed(3)} × ` +
+      `${depth.toFixed(3)} m band, ${zOff.toFixed(3)} m from the net line)`);
+  });
+}
+
 function enhanceNetVisibility(root) {
   const matched = [];
   root.traverse((node) => {
-    if (!node.isMesh || !node.material) return;
-    const nodeName  = (node.name || '').toLowerCase();
-    const matName   = (node.material.name || '').toLowerCase();
-    let isNet = nodeName.includes('net') || matName.includes('net');
-    if (!isNet && node.geometry) {
-      const geom = node.geometry;
-      if (!geom.boundingBox) geom.computeBoundingBox();
-      const bb = geom.boundingBox;
-      if (bb) {
-        const dx = bb.max.x - bb.min.x;
-        const dy = bb.max.y - bb.min.y;
-        const dz = bb.max.z - bb.min.z;
-        const cz = (bb.min.z + bb.max.z) / 2;
-        isNet = dz < 0.03 && dy > 0.05 && dx > 1.0 && Math.abs(cz) < 0.05;
-      }
-    }
-    if (!isNet) return;
+    if (!isNetMesh(node)) return;
 
     const mat = node.material;
     // Install the procedural mesh alpha map when the GLB shipped no texture
@@ -345,22 +509,40 @@ export async function loadModels(loadingScreen, statusEl) {
   if (loadingScreen) loadingScreen.style.display = 'flex';
 
   try {
-    const [paddleGltf, tableGltf] = await Promise.all([
-      loader.loadAsync('models/Paddle.glb'),
+    // Spec overrides (`?paddle.handleLength=0.11`) are applied BEFORE the mesh
+    // is built, so the geometry, the collision disc and the mass properties all
+    // see the same numbers. Applying them later would leave the bat you swing
+    // and the bat physics thinks you're holding out of sync.
+    const glbPaddle = useGlbPaddle();
+    if (!glbPaddle && typeof location !== 'undefined') {
+      const overrides = paddleSpecOverridesFromQuery(location.search);
+      if (Object.keys(overrides).length) {
+        console.log('Paddle spec overrides:', overrides);
+        setPaddleSpec(overrides);
+      }
+    }
+
+    const [paddleGltf, tableGltf, ballGltf, netGltf] = await Promise.all([
+      glbPaddle ? loader.loadAsync('models/Paddle.glb') : Promise.resolve(null),
       loader.loadAsync('models/Table.glb'),
+      loader.loadAsync('models/Ball.glb'),
+      loader.loadAsync('models/Net.glb'),
     ]);
 
     // --- Table ---
     tableModel = tableGltf.scene;
     scene.add(tableModel);
 
-    // Force the net's material to render its grid crisply. The GLB ships
-    // with alpha-blended net material that fades to near-invisible against
-    // AR pass-through; alpha-test gives a hard cutout instead so the mesh
-    // pattern reads as opaque strings + real holes. Also drops opacity to 1
-    // and sets DoubleSide so the net is visible from both sides of the
-    // table. Runs on any mesh whose node name contains 'net' (case-insensitive).
-    enhanceNetVisibility(tableModel);
+    // Table.glb's own net is a black solid plane — replaced by the standalone
+    // Net.glb below, so hide it here before anything else measures or restyles
+    // the table.
+    hideTableNet(tableModel);
+
+    // Previous treatment — the baked-in net was kept and its material rewritten
+    // to an alpha cutout to survive AR pass-through. Net.glb ships a real
+    // mesh-with-alpha texture, so that pass now runs on the new asset instead
+    // (see below); left commented in case the built-in net is ever restored.
+    // enhanceNetVisibility(tableModel);
     matteTableSurface(tableModel);
     applyTableShadowFlags(tableModel);
 
@@ -368,6 +550,24 @@ export async function loadModels(loadingScreen, statusEl) {
     const tableLength = rawBox.max.z - rawBox.min.z;
     const nearEdgeOffset = -0.3 - rawBox.max.z;
     tableModel.position.set(0, 0, nearEdgeOffset);
+
+    // --- Net (models/Net.glb) ---
+    // Authored in Table.glb's own coordinate space (its plane lands at x
+    // -0.96..0.82, y 0.79..0.93, z=0 — within a centimetre of the black plane
+    // it replaces), so it is parented under tableModel with an identity
+    // transform: no hand-tuned offset to drift out of sync when the table is
+    // re-placed. Added AFTER rawBox is measured and the table positioned, so
+    // the near-edge placement stays derived from the table alone.
+    //
+    // enhanceNetVisibility is the same pass the built-in net used to get: the
+    // GLB authors the net as alpha-BLEND, which fades to near-invisible against
+    // AR pass-through, so it is switched to a hard alphaTest cutout that keeps
+    // the strings opaque and the holes genuinely see-through. The GLB already
+    // ships an RGBA mesh texture, so the procedural grid alphaMap in that
+    // function is not used here.
+    netModel = netGltf.scene;
+    enhanceNetVisibility(netModel);
+    tableModel.add(netModel);
 
     // Derive play-surface bounds and net AABB from the named anchor empties
     // baked into Table.glb. setFromObject(tableModel) is too generous — it
@@ -385,6 +585,9 @@ export async function loadModels(loadingScreen, statusEl) {
     const edgeFar   = getAnchor('Edge_Far');
     const edgeNear  = getAnchor('Edge_Near');
     const tableCtr  = getAnchor('TableCenter');
+    // Hoisted above its original use in the net-AABB block below because
+    // stripTableNetTape needs the net line to know which band is the tape.
+    const netCtr    = getAnchor('NetCenter');
 
     tableSurfaceY = tableCtr.y;
     tableBox = new THREE.Box3(
@@ -394,81 +597,180 @@ export async function loadModels(loadingScreen, statusEl) {
     console.log('Table play-surface bounds:', tableBox.min, tableBox.max);
     console.log('Table length:', tableLength, 'Surface Y:', tableSurfaceY);
 
+    // Finish removing Table.glb's net now that the play-surface height is
+    // known — the tape band is identified relative to it. Runs after the table
+    // is positioned so the triangle test is done in final world space.
+    stripTableNetTape(tableModel, tableSurfaceY, netCtr.z);
+
     // --- Ball ---
-    // Procedural sphere at the real 40 mm ITTF diameter (radius 0.02 m).
-    // Never scaled up "for visibility": if the visual ball is larger than
-    // the physics ball, contact points stop matching what players see, and
-    // that mismatch is felt in VR before it's articulated. Visibility is
-    // solved by rendering (matte material + envMap + rim light + blob
-    // shadow), not by size.
+    // models/Ball.glb, authored at the real 40 mm ITTF diameter (radius
+    // 0.02 m) with its own baked base-color texture. Never scaled up "for
+    // visibility": if the visual ball is larger than the physics ball, contact
+    // points stop matching what players see, and that mismatch is felt in VR
+    // before it's articulated. Visibility is solved by rendering (matte
+    // material + envMap + rim light + blob shadow), not by size.
     //
-    // The mesh lives inside a wrapper Group. The wrapper (`ballModel`) is
-    // the single node physics writes to: world position AND accumulating
+    // The GLB's meshes live inside a wrapper Group. The wrapper (`ballModel`)
+    // is the single node physics writes to: world position AND accumulating
     // world-frame spin quaternion. Squash-and-stretch is applied downstream
-    // as a vertex-buffer deformation on the inner mesh (see setBallSquash /
+    // as a vertex-buffer deformation on the inner meshes (see setBallSquash /
     // updateBallSquashAmount / resetBallSquash), not through the transform
     // hierarchy — otherwise a parent scale/quaternion would corrupt the
     // child's world spin axis for the duration of the squash window.
     ballModel = new THREE.Group();
 
-    const ballGeom = new THREE.SphereGeometry(0.02, 32, 24);
-    const ballTex  = createBallSeamTexture();
+    const ballRoot = ballGltf.scene;
+    const ballMeshes = [];
+    ballRoot.traverse((node) => { if (node.isMesh && node.geometry) ballMeshes.push(node); });
+    if (ballMeshes.length === 0) throw new Error('Ball.glb contains no mesh');
+
+    // Silhouette refinement — Ball.glb ships at 960 tris (~32-segment rim),
+    // which reads as a polygon instead of a circle in the last ~30 cm before
+    // paddle contact. Subdivide-and-reproject to ≥3000 tris at load (see
+    // ballGeometry.js). MUST run here, before the squash system caches vertex
+    // positions and before createBallGhost captures the geometry reference,
+    // so every consumer sees the refined buffer. Radius is preserved exactly,
+    // so the 40 mm physics/visual match check below is unaffected.
+    for (const mesh of ballMeshes) {
+      const refined = refineBallGeometry(mesh.geometry);
+      if (refined !== mesh.geometry) {
+        mesh.geometry.dispose();
+        mesh.geometry = refined;
+      }
+    }
+
+    // Material tuning, applied ON TOP of the GLB's authored base-color map
+    // rather than replacing it — the same numbers the procedural ball used, so
+    // swapping the asset does not silently change how the ball responds to the
+    // lighting rig.
+    //
     // P16 §2.7: roughness 0.6 (matte-with-microspecular, matches real ITTF
-    // celluloid better than fully-flat 0.85), metalness 0. envMap wired
-    // with clamped intensity (§2.6): 0.15 is the ceiling that gives the
-    // ball a hair of environmental brightness without reintroducing the
-    // "glowing plastic" halo that the old ACES+exposure 1.2 combo produced.
+    // celluloid better than fully-flat 0.85), metalness 0.
     // toneMapped explicit (defends against future material clones that
     // might inherit a false). emissive stays black — enforced by Step 0.1.
-    const ballMat = new THREE.MeshStandardMaterial({
-      map: ballTex,
-      color: new THREE.Color(BALL_COLORS[currentBallColorId].base),
-      roughness: 0.6,
-      metalness: 0.0,
-      envMap: ballEnvMap,
-      envMapIntensity: 0.15,
-      toneMapped: true,
-    });
-    const ballMesh = new THREE.Mesh(ballGeom, ballMat);
-    // castShadow OFF: the blob shadow (see ballShadow.js) is the sole ground-
-    // contact cue. Enabling castShadow rendered a SECOND shadow via the
-    // angled directional light at (2, 4, 3), landing offset from the blob's
-    // directly-below position and reading as two shadows in headset. Spec:
-    // "the blob is the load-bearing one." Also, PCFSoft on a 40 mm caster
-    // at 2.7 m flickers because the shadow map can't resolve the ball edge.
-    ballMesh.castShadow = false;
-    ballMesh.receiveShadow = false;
-    ballModel.add(ballMesh);
+    //
+    // envMapIntensity 0.40, raised from the 0.15 that §2.6 set as a ceiling
+    // against the "glowing plastic" halo. Two things justify reopening it:
+    //
+    //   1. That ceiling was measured against ACES at exposure 1.2. The
+    //      pipeline is now NeutralToneMapping at 1.0, which rolls highlights
+    //      off instead of clipping them, so the halo it was guarding against
+    //      no longer forms at the same intensity.
+    //   2. The ball's dark side had no light source at all. The key is
+    //      near-vertical and the hemisphere fill's ground colour is 0x3a3830,
+    //      a dark warm brown standing in for a wooden floor — but a ball in
+    //      play flies over a large, brightly-lit table, which in reality
+    //      bounces a lot of light back up onto it. With nothing modelling
+    //      that, the lower hemisphere fell away to near-black and the ball
+    //      read as dim and hard to pick out.
+    //
+    // The env map (a neutral RoomEnvironment PMREM) is the right lever for
+    // this rather than the lights: it is per-material, so it lifts the ball
+    // without touching the paddle, table or arena, and at roughness 0.6 it
+    // arrives as a soft wrap rather than a specular hotspot. Measured in
+    // ball-preview.html — 0.70 visibly flattens the sphere's shading
+    // gradient (the actual "glowing plastic" failure mode), 0.40 lifts the
+    // shadow side while keeping the gradient that makes it read as round.
+    //
+    // specularColor/specularIntensity: Ball.glb authors
+    // KHR_materials_specular specularColorFactor [2,2,2], a 2× boost over
+    // physical that the loader maps onto MeshPhysicalMaterial. Left alone it
+    // puts a hard travelling hotspot on a fast-moving 40 mm sphere (the
+    // "strobe-lit ball" arenaLighting.js already calls out); clamped to
+    // physical white at the same 0.3 intensity matteTableSurface uses.
+    for (const mesh of ballMeshes) {
+      const mat = mesh.material;
+      if (mat.color) mat.color.set(BALL_COLORS[currentBallColorId].base);
+      mat.roughness = 0.6;
+      mat.metalness = 0.0;
+      mat.envMap = ballEnvMap;
+      mat.envMapIntensity = 0.40;
+      mat.toneMapped = true;
+      if (mat.specularColor) mat.specularColor.setRGB(1, 1, 1);
+      if ('specularIntensity' in mat) mat.specularIntensity = 0.3;
+      // Spin legibility — the authored map is a near-uniform gray (~1%
+      // island/background contrast) with one logo on one hemisphere; a ball
+      // wearing it reads as a featureless sphere, and a featureless sphere's
+      // rotation is invisible no matter how much spin the physics imparts.
+      // Composite cert dots + faint arcs onto both hemisphere islands at
+      // load. Idempotent, so shared materials across meshes are safe.
+      if (mat.map) mat.map = compositeSpinMarkings(mat.map);
+      mat.needsUpdate = true;
+      // castShadow OFF: the blob shadow (see ballShadow.js) is the sole ground-
+      // contact cue. Enabling castShadow rendered a SECOND shadow via the
+      // angled directional light at (2, 4, 3), landing offset from the blob's
+      // directly-below position and reading as two shadows in headset. Spec:
+      // "the blob is the load-bearing one." Also, PCFSoft on a 40 mm caster
+      // at 2.7 m flickers because the shadow map can't resolve the ball edge.
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+    }
+    const ballMesh = ballMeshes[0];
+    ballModel.add(ballRoot);
     ballModel.visible = false;
     scene.add(ballModel);
 
-    // Register the mesh for wrist-menu color swap (setBallColor mutates
-    // mat.color on every entry).
+    // Previous ball — a procedural 32×24 sphere carrying the generated
+    // seam+logo texture from scene/ballTexture.js. Superseded by Ball.glb.
+    // NOTE: an earlier version of this comment claimed the GLB "bakes an
+    // equivalent off-axis marking into its own map" — it does not (measured:
+    // near-uniform gray, one logo on one hemisphere, nothing on the other),
+    // which is why compositeSpinMarkings above adds the rotational-symmetry
+    // break at load. Kept commented as the fallback if the GLB is pulled.
+    // const ballGeom = new THREE.SphereGeometry(0.02, 32, 24);
+    // const ballTex  = createBallSeamTexture();
+    // const ballMat = new THREE.MeshStandardMaterial({
+    //   map: ballTex,
+    //   color: new THREE.Color(BALL_COLORS[currentBallColorId].base),
+    //   roughness: 0.6,
+    //   metalness: 0.0,
+    //   envMap: ballEnvMap,
+    //   envMapIntensity: 0.40,
+    //   toneMapped: true,
+    // });
+    // const ballMesh = new THREE.Mesh(ballGeom, ballMat);
+    // ballMesh.castShadow = false;
+    // ballMesh.receiveShadow = false;
+    // ballModel.add(ballMesh);
+
+    // Register every ball mesh for wrist-menu color swap (setBallColor mutates
+    // mat.color on every entry). The GLB authors no baseColorFactor, so its
+    // map arrives untinted and these multiply cleanly — white (#fafafa) is
+    // effectively a no-op, orange tints the same grayscale map.
     _ballMaterialMeshes.length = 0;
-    _ballMaterialMeshes.push(ballMesh);
+    _ballMaterialMeshes.push(...ballMeshes);
 
     // Cache the pristine vertex positions BEFORE any render or squash call,
     // so the squash system has a clean baseline to restore each frame.
     _ballSquashMeshes.length = 0;
-    _ballSquashMeshes.push({
-      mesh: ballMesh,
-      originalPositions: new Float32Array(ballGeom.getAttribute('position').array),
-    });
+    for (const mesh of ballMeshes) {
+      _ballSquashMeshes.push({
+        mesh,
+        originalPositions: new Float32Array(mesh.geometry.getAttribute('position').array),
+      });
+    }
 
-    // Ball radius is now a hard fact of the geometry, not a bbox reading —
-    // physics uses this same 0.02 constant for collision shapes.
+    // Ball radius stays the 0.02 constant physics uses for collision shapes —
+    // NOT a bbox reading, so a re-export that quietly rescales the mesh cannot
+    // move the physics ball. It is checked against the asset instead: a
+    // mismatch means the visual and physical balls have diverged, which is the
+    // one thing this must never do silently.
     ballRadius = 0.02;
-    console.log('Ball radius:', ballRadius);
-
-    // Motion trail — sibling of ballModel in the scene (NOT a child, so it
-    // stays where the ball WAS). Threshold-gated on speed; see ballTrail.js.
-    createBallTrail(scene);
+    const ballSize = new THREE.Box3().setFromObject(ballRoot).getSize(new THREE.Vector3());
+    const measuredRadius = Math.max(ballSize.x, ballSize.y, ballSize.z) / 2;
+    if (Math.abs(measuredRadius - ballRadius) > 0.001) {
+      console.warn(`Ball.glb radius is ${measuredRadius.toFixed(4)} m but physics uses ` +
+        `${ballRadius} m — re-export the asset at 40 mm diameter.`);
+    }
+    console.log('Ball radius:', ballRadius, '(Ball.glb measured', measuredRadius.toFixed(4), ')');
 
     // Blob shadow — soft radial-gradient quad on the table surface that
     // follows the ball's XZ and fades/shrinks with height. Load-bearing
     // depth cue for a 4 cm object flying at the player in VR; see
-    // ballShadow.js. Needs tableSurfaceY, already extracted above.
-    createBallShadow(scene, tableSurfaceY);
+    // ballShadow.js. Needs tableSurfaceY, already extracted above, and
+    // tableBox so the blob hides once the ball leaves the table footprint
+    // instead of hanging at surface height in mid-air.
+    createBallShadow(scene, tableSurfaceY, tableBox);
 
     // Mirror-ghost reflection (P16 §3.2) — dim mirrored copy below the
     // table plane, visible only when ball is within 0.5 m over the table
@@ -482,7 +784,7 @@ export async function loadModels(loadingScreen, statusEl) {
     // base sits on the play surface. Net plane overhangs the play surface
     // by ~14 cm each side (regulation TT geometry). Inflated by ballRadius
     // as a Minkowski-sum swept-sphere approximation for the AABB slab test.
-    const netCtr = getAnchor('NetCenter');
+    // netCtr is read once with the other anchors above.
     const NET_OVERHANG = 0.14;
     const NET_HALF_X = Math.max(Math.abs(edgeLeft.x), Math.abs(edgeRight.x)) + NET_OVERHANG;
     const NET_THICKNESS = 0.01;
@@ -493,7 +795,37 @@ export async function loadModels(loadingScreen, statusEl) {
     console.log('Net bounds (inflated):', netBox.min, netBox.max);
 
     // --- Paddle ---
-    paddleModel = paddleGltf.scene;
+    if (glbPaddle) {
+      paddleModel = paddleGltf.scene;
+
+      // Split rubber (matte) from wood/handle (satin) via a derived roughness
+      // map, and neutralize the GLB's 2× specular boost. Without this the single
+      // authored material renders the whole bat as uniform semi-gloss plastic
+      // and the face/handle junction reads as a decal seam, not two materials.
+      //
+      // Procedural-only: skipped, because that bat is authored with one material
+      // per real material already. The pass would be a no-op anyway (it needs a
+      // base-color map to classify), but skipping is the honest statement.
+      enhancePaddleMaterial(paddleModel);
+    } else {
+      // Wood, sponge and topsheet as separate extrusions sharing one
+      // silhouette — the rim sandwich is geometry, not a texture. See
+      // scene/paddleGeometry.js; the numbers live in physics/paddleSpec.js.
+      paddleModel = buildProceduralPaddle();
+    }
+
+    // NOTE: there is deliberately no procedural geometry pass ON THE GLB here.
+    // An earlier build added rubber caps + a sponge/ply rim band to the loaded
+    // GLB scene to fake the assembled-layers look it lacks. It was removed: it
+    // coupled the collision radius to a cosmetic lip, which is a physics
+    // dependency on a decoration. Patching an asset at load and authoring one
+    // from a spec are different things — the branch above is the second.
+    //
+    // Everything below measures whichever bat we ended up with, unchanged. One
+    // derivation path for both assets is the point: it makes the A/B honest,
+    // and it means the procedural bat has to satisfy the same anchor contract
+    // the GLB does rather than getting a private shortcut.
+
     paddleModel.rotation.x = PADDLE_EULER_X;
     paddleModel.rotation.y = PADDLE_EULER_Y;
     paddleModel.rotation.z = PADDLE_EULER_Z;
@@ -523,16 +855,118 @@ export async function loadModels(loadingScreen, statusEl) {
       thinAxis === 'y' ? 1 : 0,
       thinAxis === 'z' ? 1 : 0,
     );
-
-    const faceCenterModel = new THREE.Vector3();
-    const longMin = unrotatedBox.min[longAxis];
-    const longMax = unrotatedBox.max[longAxis];
-    const headEnd = Math.abs(longMin) > Math.abs(longMax) ? longMin : longMax;
-    faceCenterModel[longAxis] = headEnd * 0.65;
-
     const medAxis = dims[1].axis;
-    paddleHitRadius = Math.max(unrotatedSize[medAxis] / 2, 0.09);
-    paddleHalfThickness = unrotatedSize[thinAxis] / 2;
+
+    // Step 2b: blade extent from the GLB's ARTIST-AUTHORED anchors, not from
+    // the bounding box.
+    //
+    // The bbox spans the whole bat — blade AND handle — so anything derived
+    // from it about the BLADE is a guess. The disc center used to be one:
+    // `faceCenterModel[longAxis] = headEnd * 0.65`, an unexplained constant
+    // against the far end of the bbox. For this asset it lands at 0.1083 where
+    // the true blade center (EdgeTop/EdgeBottom midpoint) is 0.0921 — the disc
+    // sat 16.2 mm too far toward the tip, so:
+    //   - the bottom ~16 mm of visible rubber fell OUTSIDE the clean-face disc
+    //     but inside detectDiscCollision's edge band, and therefore resolved
+    //     through the wood-edge model: stiffer COR, reduced spin capture,
+    //     JITTERED normal. Hitting clean rubber near the throat sprayed.
+    //   - ~16 mm of air past the tip resolved as a pristine face hit.
+    // Both are >1 cm, i.e. outside the contact-visual agreement budget, and
+    // both are the "what I hit isn't what I see" failure the radius comment
+    // below already describes. The radius was audited against these anchors;
+    // the center never was, and nothing tested it.
+    //
+    // Worse, it was not something calibration could absorb: a player who felt
+    // throat hits misbehaving would drag T_cal in the wizard to compensate,
+    // which moves the RENDERED paddle off their hand to patch a COLLIDER
+    // error. The wizard would converge on a wrong answer. Collider geometry has
+    // to be right before calibration on top of it means anything.
+    //
+    // Anchors are mandatory (ai-docs/paddle-glb-reauthor-checklist.md §1, gated
+    // by tests/paddleRigidity.test.js) so a missing one is a broken asset, not
+    // a runtime condition — same fail-loud policy as Table.glb's getAnchor.
+    // Read via world position + worldToLocal so any future re-parenting or node
+    // transform is handled rather than assumed away.
+    const bladeAnchor = (name) => {
+      const node = paddleModel.getObjectByName(name);
+      if (!node) throw new Error(`Paddle.glb is missing anchor '${name}'`);
+      return paddleModel.worldToLocal(node.getWorldPosition(new THREE.Vector3()));
+    };
+    const bladeTop = bladeAnchor('EdgeTop');
+    const bladeBottom = bladeAnchor('EdgeBottom');
+    const bladeLeft = bladeAnchor('EdgeLeft');
+    const bladeRight = bladeAnchor('EdgeRight');
+    const handleEndModel = bladeAnchor('HandleEnd');
+
+    // Disc center = the blade's geometric center. Deliberately NOT the
+    // SweetSpot anchor: a sweet spot legitimately sits above geometric center
+    // (that is where a blade is liveliest), and centering the COLLIDER there
+    // would reproduce most of the 16 mm error we are removing — plausibly how
+    // the 0.65 constant was arrived at, since it lands within 1.5 mm of it.
+    const faceCenterModel = new THREE.Vector3();
+    faceCenterModel[longAxis] = (bladeTop[longAxis] + bladeBottom[longAxis]) / 2;
+
+    // Clean-face radius. Must match what the player SEES — the contact-visual
+    // agreement requirement is a bound on the RADIAL direction too, not just
+    // perpendicular distance to the face plane.
+    //
+    // This used to read `Math.max(size/2, 0.09)`. For this asset the 0.09 floor
+    // won (blade half-width is 0.0746), which put the clean-face disc 15.2 mm
+    // OUTSIDE the visible rubber all the way around: a ball that visually
+    // grazed past the rim still resolved as a pristine face hit, so the paddle
+    // behaved as though it had an invisible 1.5 cm collar. That is a "what I
+    // hit isn't what I see" mismatch, and it reads as the paddle not being the
+    // object on screen.
+    //
+    // Forgiveness is NOT lost by tightening this: detectDiscCollision's edge
+    // band (faceRadius → faceRadius + ballRadius) still catches everything the
+    // 0.09 disc used to, and routes it through the wood-blade edge-strike model
+    // in ball.js — stiffer COR, reduced spin capture, jittered normal. So rim
+    // contacts still come back, they just now behave and sound like rim
+    // contacts. The floor is kept only as a broken-asset guard, below the
+    // self-test's 0.05 lower bound rather than above the real blade size.
+    //
+    // Now sourced from the anchors like the center, so the disc is exact by
+    // construction on both axes instead of inheriting whatever else happens to
+    // be widest in the bbox (a future GLB with a wide handle guard would have
+    // silently inflated it). A blade is an ellipse and a disc is not, so the
+    // larger half-extent wins: under-covering would put dead rubber at the
+    // rim, which is worse than the 0.2 mm of collar it costs on this asset.
+    const bladeHalfWidth = Math.abs(bladeRight[medAxis] - bladeLeft[medAxis]) / 2;
+    const bladeHalfLength = Math.abs(bladeTop[longAxis] - bladeBottom[longAxis]) / 2;
+    paddleHitRadius = Math.max(bladeHalfWidth, bladeHalfLength, 0.05);
+
+    // Blade half-thickness, measured on the BLADE. The bbox thin axis spans the
+    // whole model and the handle is the thickest part of it (20.3 mm vs the
+    // blade's 10.6 mm), so `unrotatedSize[thinAxis] / 2` reported the handle —
+    // 10.15 mm for a 5.3 mm blade, ~2× over. It feeds the safety margin in
+    // resolvePaddleTablePenetration (`yTop = tableTop + halfThickness + 0.005`),
+    // so the paddle hovered ~5 mm higher above the felt than intended and the
+    // clamp engaged earlier and more often than it needed to.
+    //
+    // Sample only vertices in the middle half of the blade along its own axis:
+    // that excludes the handle AND the throat flare, where the wood thickens
+    // into the grip and is not representative of the hitting surface.
+    const bladeMid = faceCenterModel[longAxis];
+    const sampleBand = bladeHalfLength * 0.5;
+    let thinMin = Infinity;
+    let thinMax = -Infinity;
+    const _vtx = new THREE.Vector3();
+    paddleModel.traverse((node) => {
+      const pos = node.isMesh && node.geometry && node.geometry.attributes.position;
+      if (!pos) return;
+      node.updateMatrixWorld(true);
+      for (let i = 0; i < pos.count; i++) {
+        _vtx.fromBufferAttribute(pos, i).applyMatrix4(node.matrixWorld);
+        paddleModel.worldToLocal(_vtx);
+        if (Math.abs(_vtx[longAxis] - bladeMid) > sampleBand) continue;
+        if (_vtx[thinAxis] < thinMin) thinMin = _vtx[thinAxis];
+        if (_vtx[thinAxis] > thinMax) thinMax = _vtx[thinAxis];
+      }
+    });
+    paddleHalfThickness = thinMin <= thinMax
+      ? (thinMax - thinMin) / 2
+      : unrotatedSize[thinAxis] / 2;   // no vertices in band — broken asset guard
 
     // Step 3: restore rotation, compute controller-local-space vectors.
     paddleModel.rotation.set(savedRotX, savedRotY, savedRotZ);
@@ -540,11 +974,33 @@ export async function loadModels(loadingScreen, statusEl) {
     paddleFaceNormalLocal.copy(faceNormalModel).applyQuaternion(paddleLocalQuat).normalize();
     paddleFaceOffset.copy(faceCenterModel).applyQuaternion(paddleLocalQuat);
 
+    // Derive the 'handle_grip' calibration preset from the measured geometry:
+    // T_cal that puts the handle axis along grip -Z (WebXR's held-rod
+    // direction) with mid-handle at the grip origin — the controller body
+    // becomes the paddle handle. Computed per loaded asset from its authored
+    // anchors, so it stays exact across GLB re-exports and the procedural bat.
+    // Registered into the shared preset table; the wizard exposes it.
+    const handleGrip = deriveHandleGripPreset({
+      handleEnd: handleEndModel.clone().applyQuaternion(paddleLocalQuat),
+      bladeBottom: bladeBottom.clone().applyQuaternion(paddleLocalQuat),
+      faceCenter: paddleFaceOffset,
+    });
+    if (handleGrip) {
+      registerDerivedPreset('handle_grip', handleGrip);
+      console.log('Handle-grip preset (derived): posOffset',
+        handleGrip.posOffset, 'rotOffset', handleGrip.rotOffset);
+    } else {
+      console.warn('Handle-grip preset NOT derived — degenerate handle geometry');
+    }
+
     console.log('Paddle model size (unrotated):', unrotatedSize);
     console.log('Thin/normal axis:', thinAxis, '| Long/handle axis:', longAxis);
     console.log('Face normal (controller-local):', paddleFaceNormalLocal);
     console.log('Face center offset (controller-local):', paddleFaceOffset);
-    console.log('Paddle face hit radius:', paddleHitRadius);
+    console.log('Paddle face hit radius:', paddleHitRadius,
+      '(blade half-extents', bladeHalfWidth, bladeHalfLength, ')');
+    console.log('Paddle blade half-thickness:', paddleHalfThickness,
+      '(bbox thin axis was', unrotatedSize[thinAxis] / 2, '— includes the handle)');
 
     if (SELF_TEST) {
       debugFaceSphere = new THREE.Mesh(

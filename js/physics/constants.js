@@ -10,17 +10,20 @@
 // against the original floaty feel in headset without reverting code.
 export const WEIGHTY_BALL_ENABLED = true;
 
-// Gravity bumped past Earth-real so drops read as "authoritative" — a real
-// ping-pong ball's arc is loopy; -12 gives it a flatter, more decisive drop
-// that reads as "this thing has mass pulling it down." Combined with lower
-// drag below, the ball punches through air like a heavier object.
-export let GRAVITY = WEIGHTY_BALL_ENABLED ? -12.0 : -9.8;
+// Earth-real gravity. This shipped at -12 for a while (the "weighty ball"
+// pass wanted a flatter, more decisive drop), but the 22% surplus shortened
+// every hang time by ~10%, broke serve-toss timing — the single most
+// rehearsed motion a real player brings into the headset — and compounded
+// with the table COR into a game that played uniformly low and rushed. The
+// weighty read is now carried by drag, haptics, and audio, which don't
+// distort trajectories.
+export let GRAVITY = -9.81;
 
 // Aerodynamic buoyancy on the ball. F_B = ρ_air · V · g (upward), acceleration
 // = F_B / m = ρ_air · V · g_real / m. For an ITTF ball (r=0.02, m=0.0027) in
 // air (ρ=1.2 kg/m³) at real g=9.81:
 //     a_B = 1.2 · (4/3)π(0.02)³ · 9.81 / 0.0027 ≈ 0.146 m/s² upward
-// This is ~1.2% of the tuned GRAVITY magnitude — imperceptible in a single
+// This is ~1.5% of the GRAVITY magnitude — imperceptible in a single
 // arc but present so long lobs (~2 s aloft) don't cheat by omission. Uses the
 // REAL g (not the tuned GRAVITY value) because buoyancy is a property of the
 // displaced-air weight, not of whatever gravity the sim wants for feel.
@@ -38,6 +41,39 @@ export const BUOYANCY_ACCEL = 0.146;
 // off a brush. Downstream paths (edge scale, air drag) model different physical
 // effects rather than the same one — no double-counting to compensate for here.
 export const SPIN_CAPTURE_GAIN = 35;
+// Ceiling on outgoing ball spin after a paddle contact, applied in
+// computeImpulse. SPIN_CAPTURE_GAIN is the per-contact TRANSFER ceiling
+// (no-slip physics), but nothing bounded the SLIP feeding it: a VR
+// wrist-flick can produce 10+ m/s of tangential face speed no real arm
+// achieves in a brush, yielding 350-500+ rad/s — and with Magnus applied
+// per-frame (and running ~2.5× physical, see MAGNUS_COEFFICIENT) that
+// compounds into cartoon curves. Knee-and-asymptote form: |ω| ≤ KNEE passes
+// EXACTLY 1:1 (a pure tanh shaved 4-6% off legitimate mid-range brush spin
+// — measurable, and exactly the kind of silent attenuation the tangential
+// path was exempted from capping to avoid); above the knee, the excess
+// compresses as KNEE + (CAP−KNEE)·tanh((|ω|−KNEE)/(CAP−KNEE)), asymptoting
+// at CAP. KNEE=300 / CAP=420 (~4000 rpm) bracket the measured elite loop
+// range: a real-technique heavy loop (250-300) is untouched, a 470 rad/s
+// elite-peak equivalent lands at ~407, flick exploits saturate at 420.
+// Applies to ALL paddle contacts (it models rubber-ball grip saturation,
+// not player biomechanics — the AI is bounded by the same ball). Set CAP
+// to 0 to disable.
+export const PADDLE_SPIN_CAP = 420;
+export const PADDLE_SPIN_CAP_KNEE = 300;
+// Fraction of "corkscrew" spin (the ω component along the horizontal
+// direction of travel) that survives a paddle contact. Real balls carry
+// this component — it is the entire mechanism of hook/fade serves, whose
+// tilted spin axis converts into a lateral bounce kick via ordinary table
+// friction. The sim previously ZEROED it to suppress a visual artifact
+// (Magnus_x from corkscrew flips sign at the arc apex when v_y crosses
+// zero), which deleted that serve vocabulary and forced the exaggerated
+// TABLE_SIDESPIN_KICK as a stand-in. Retaining 35% — real balls do shed
+// corkscrew fast through turbulent boundary-layer shear, so full retention
+// is wrong too — restores an authentic tilted-axis bounce response while
+// keeping the residual apex wobble around ~1 m/s² at rally speeds
+// (0.35 · MAGNUS_COEFFICIENT · ω_cork · v_y with ω_cork ≈ 100, v_y ≈ 3),
+// an order of magnitude under the shot's main Magnus curve.
+export const CORKSCREW_RETAIN = 0.35;
 // Magnus curvature. Applied as a = MAGNUS_COEFFICIENT · (ω × v). Real
 // ping-pong ball has k_m ≈ 3e-6 N·s/rad; divided by the 2.7 g ball mass
 // that's an effective a-coefficient of ~1.1e-3 (subtle curve, most of the
@@ -56,14 +92,24 @@ export const SPIN_CAPTURE_GAIN = 35;
 //   ω = 50 rad/s (light brush), v = 5 m/s: a_M = 2.5 m/s²  → ~14 cm bounce-time
 //   ω = 100 rad/s (moderate),   v = 8 m/s: a_M = 8 m/s²    → ~35 cm
 //   ω = 200 rad/s (heavy),      v = 10 m/s: a_M = 20 m/s²  → ~90 cm
-// The 2× bump is a deliberate readability trade-off: the AI's shot vocabulary
-// (LOOP with heavy topspin vs SLICE with heavy backspin vs SMASH with none)
-// is only visually distinguishable if the resulting flight ARCS differ. At
-// 0.005 the AI's engine picked "loop" vs "drive" and the ball landed in
-// nearly the same spot with an indistinguishable arc — players couldn't
-// see the shot type they were playing against. 0.010 shows a real dip on
-// topspin and float on backspin while staying under the 0.018 threshold
-// that broke the "flies straight, then kicks" perception.
+//
+// REALISM DEBT, measured and deliberately kept (realism pass, 2026-08):
+// the true physical coefficient is ~0.004 (CL ≈ 1/(2 + v/ωr) empirical
+// sphere fit gives a_M ≈ 3 m/s² at ω=100, v=8 — note the older "k_m ≈ 3e-6
+// → ~1.1e-3" figure in git history underestimated it). So 0.010 is ~2.5×
+// physical. Dropping it to 0.006 was implemented and MEASURED against the
+// solver-envelope harness: pro-tier high-pace feasibility collapsed (18-22
+// m/s targets: 41/120 solvable vs 115/120 at 0.010) because Magnus dip is
+// the mechanism that lands fast shots, and the AI's shot vocabulary encodes
+// spin at ~1/4 of real-world ω (shotTypeSelector tops out near 100 rad/s
+// where real loops run 300-450) — so the exaggerated coefficient and the
+// undersized ω CANCEL on AI shots, landing the product a_M = M·ω·v near
+// physical truth. The honest fix is rescaling the whole AI spin economy
+// (shotTypeSelector spin tables ×~3, solver paddle-speed caps to match)
+// and dropping this to ~0.004 together — that is a coupled retune needing
+// headset validation, not a constants edit. Until then: AI arcs are
+// near-physical by cancellation; PLAYER brush shots (real-scale ω off
+// SPIN_CAPTURE_GAIN) curve ~2.5× real, bounded by PADDLE_SPIN_CAP below.
 export let MAGNUS_COEFFICIENT = 0.010;
 // Vertical Magnus scale — controls topspin drop / backspin lift visibility.
 // Was 0.85 (dampening the vertical curve to keep "runaway dips" in check).
@@ -86,30 +132,47 @@ export let SPIN_DAMPING = 0.10;
 // 40 mm 2.7 g ITTF ball. Under the quadratic model a smash bleeds much more
 // speed per second than a soft push, so hard hits arrive slower and soft
 // touches carry farther — the correct physical behavior.
-// 0.10 is slightly under the true physical value: the linear model tuned
-// around 0.35 was clearly over-damped at rally speeds, and 0.10 gives a
-// rally-typical 6 m/s ball a comparable half-life to the old model while
-// letting fast smashes actually bleed and slow dinks actually float. Applied
-// per Euler step as v_next = v / (1 + k·|v|·dt) — semi-implicit form, stable
-// at any dt. Set to 0 to disable drag entirely.
-export let DRAG_COEFFICIENT = WEIGHTY_BALL_ENABLED ? 0.10 : 0;
+// 0.13 is the strictly physical value (½·ρ·Cd·A/m with Cd ≈ 0.47 for a 40 mm
+// 2.7 g ball). It shipped at 0.10 for a while — deliberately slick, paired
+// with -12 gravity for the "heavy ball" read. The default now sits at 0.17,
+// ~30% above the textbook figure: a deliberate feel choice, not a physics
+// claim. It exaggerates the thing the real game is built on — a ping-pong
+// ball visibly decelerating across the table — so smashes bleed harder and
+// soft touches read floatier, which is most of why the game reads "floaty at
+// slow pace, violent at high pace." Applied per Euler step as
+// v_next = v / (1 + k·|v|·dt) — semi-implicit form, stable at any dt.
+// Set to 0 to disable drag entirely.
+export let DRAG_COEFFICIENT = WEIGHTY_BALL_ENABLED ? 0.17 : 0;
 
 // Table friction — couples spin to linear velocity on bounce. Both are the
 // same friction impulse J at the contact point, so they should be at the
 // same fraction of the no-slip physical ceiling. The linear coefficient
 // 0.12 corresponds to 42% of no-slip ((2/7)·|slip|); the angular coefficient
-// needs to match that fraction: 0.42·5/(7R) with R=0.02 gives 15.
+// must match that fraction: 0.42·5/(7R) with R=0.02 gives 15 — which is the
+// value below. (It sat at 12 for a while — 34% of ceiling on the angular
+// side vs 42% on the linear side, i.e. the bounce disagreed with itself
+// about how much friction had acted. Realism pass restored consistency.)
 //
-// Player-chosen trade-off: raised from 5 to 12 to make backspin actually
-// brake and topspin actually kick forward off the bounce. The visual had
-// a sampling constraint at 3-fold ball symmetry — 15 Hz Nyquist at 90 Hz
-// VR meant very-high spins wagon-wheeled and appeared to spin backward.
-// That's since been resolved: the ball texture in models.js now carries a
-// SINGLE asymmetric anchor (an off-hemisphere cert dot) plus a manufacturing
-// seam line, dropping effective symmetry to 1-fold and lifting the Nyquist
-// ceiling to ~45 Hz. `let` so PhysicsTuner can still drop this back toward
-// 5 in-headset if a specific rally aesthetic calls for it.
-export let TABLE_SPIN_GAIN = 12;
+// History: raised from 5 to make backspin actually brake and topspin
+// actually kick forward off the bounce. The visual had a sampling
+// constraint at 3-fold ball symmetry — 15 Hz Nyquist at 90 Hz VR meant
+// very-high spins wagon-wheeled and appeared to spin backward.
+//
+// This comment previously claimed that constraint was resolved by a texture
+// carrying "a cert dot plus a manufacturing seam line". That texture did not
+// exist when the claim was written: ballTexture.js had no dot, and its seam
+// was TWO horizontal bands — latitude circles, which are invariant under
+// rotation about the pole axis and so contributed nothing to reading spin.
+// The lone asymmetric feature was a swoosh whose strokes go sub-pixel by 3 m.
+//
+// It is true NOW. ballTexture.js draws the cert dot (sized so it survives
+// minification at rally distance, which is what makes it the load-bearing
+// anchor), and the seam is a great circle inclined 38° off the pole axis so
+// no spin direction leaves it stationary. Effective symmetry is 1-fold,
+// lifting the Nyquist ceiling to ~45 Hz as described. `let` so PhysicsTuner
+// can still drop this back toward 5 in-headset if a specific rally aesthetic
+// calls for it.
+export let TABLE_SPIN_GAIN = 15;
 export const TABLE_LINEAR_FRICTION = 0.12;
 
 // Table COR reference (median of the speed-dependent curve — see
@@ -119,10 +182,20 @@ export const TABLE_LINEAR_FRICTION = 0.12;
 // (LO_OFFSET is negative). Physical rationale: real tables lose more energy
 // at high impact speed because the wood-composite deck flexes and the ball
 // deforms more — a soft drop is nearly elastic, a slam is not.
-export let TABLE_RESTITUTION = 0.75;
+//
+// Reference point, the ITTF certification test: a 30 cm drop (impact ≈
+// 2.4 m/s) must rebound ~23 cm, i.e. e ≈ 0.88 at that speed. Median 0.82 with
+// V* = 8 hit that dead on (e(5) ≈ 0.83, e(10) ≈ 0.77 — measured high-speed
+// table data). The default now sits at 0.92, a lively-table feel choice above
+// certification: e(2.4) ≈ 0.98, e(5) ≈ 0.93, e(10) ≈ 0.87. Bounces sit
+// noticeably higher and rallies run longer than on a regulation table. Drop
+// back to 0.82 here (or via the PhysicsTuner panel) for certified behavior.
+// The earlier tuning (median 0.75, V* = 4) gave e(2.4) ≈ 0.76 — well under
+// regulation, and it read as "dead table" rather than "weighty ball."
+export let TABLE_RESTITUTION = 0.92;
 export const TABLE_RESTITUTION_HI_OFFSET = 0.13;   // low-speed lift
 export const TABLE_RESTITUTION_LO_OFFSET = -0.13;  // high-speed loss
-export const TABLE_RESTITUTION_V_STAR    = 4.0;    // m/s transition scale
+export const TABLE_RESTITUTION_V_STAR    = 8.0;    // m/s transition scale
 
 // Discrete lateral velocity kick at the table bounce, driven by ω_y (sidespin).
 // Applied as Δv = TABLE_SIDESPIN_KICK · ω_y in the direction perpendicular to
@@ -140,11 +213,18 @@ export const TABLE_RESTITUTION_V_STAR    = 4.0;    // m/s transition scale
 // players observe and rely on it as a bounce "kick" that reads distinct
 // from the pre-bounce Magnus drift.
 //
-// In VR at low ball speeds the physical value is not visually legible, so
-// we exaggerate: 0.010 gives ~1 m/s kick for a moderate ω_y=100 rad/s serve
-// on a fully-formed bounce. Combined with a subtle MAGNUS_COEFFICIENT this
-// produces the perception players intuitively expect: ball flies mostly
-// straight in the air, then clearly kicks laterally at the bounce.
+// 0.002 (realism pass, down from 0.010): ~0.2 m/s kick for a moderate
+// ω_y=100 rad/s serve on a fully-formed bounce — still a perceptual assist
+// over the ~1-5 cm/s physical value, but no longer a 7° instant direction
+// change. The old 1 m/s kick was ~20× physical and, more importantly, was
+// compensating for a mechanism this sim had DELETED: the real "kick off the
+// bounce" on hook/fade serves comes from tilted spin axes (ω with a
+// component along the direction of travel), which the corkscrew-stripping
+// in impulse.js used to zero out entirely. CORKSCREW_RETAIN now preserves
+// part of that component, so the table's ordinary spin-friction math
+// produces a genuine, spin-axis-correct bounce kick on its own — this
+// constant only tops up the pure-vertical-sidespin case where rigid-body
+// physics genuinely predicts zero.
 //
 // Gated on bounce impact (|v_y| > 0.3 m/s and linearly ramping to full at
 // |v_y| = 1.5 m/s) in ball.js. Without that gate every marginal residual
@@ -152,7 +232,7 @@ export const TABLE_RESTITUTION_V_STAR    = 4.0;    // m/s transition scale
 // which acts as a centripetal force and spirals the ball in loops on the
 // table instead of letting it die out. The gate matches the physical
 // mechanism — finite-patch effects only matter when contact force is real.
-export let TABLE_SIDESPIN_KICK = 0.010;
+export let TABLE_SIDESPIN_KICK = 0.002;
 
 // --- Table edge ("edge ball" — spec P8) ------------------------------------
 // When the ball grazes the top edge of the table (center outside the XZ AABB
@@ -187,6 +267,10 @@ export const NET_SPIN_DAMP = 0.3;
 export const NET_TOP_CORD_RESTITUTION    = 0.05;   // stiffer vertical damp than face
 export const NET_TOP_CORD_TANGENT_KEEP   = 0.60;   // vs 0.40 face — preserves dribble-over
 export const NET_TOP_CORD_LATERAL_JITTER = 0.15;   // m/s, random horizontal impulse magnitude
+// One physical net contact spans several frames of resolved overlap; within
+// this window position is still corrected but restitution/jitter/sound/events
+// are suppressed so the response can't compound frame-over-frame.
+export const NET_HIT_COOLDOWN            = 0.12;   // seconds
 
 // Paddle COR reference (median of the speed-dependent curve — see
 // paddleRestitution()). Real rubber is near-elastic at low impact speed
@@ -206,12 +290,21 @@ export const PADDLE_RESTITUTION_V_STAR    = 6.0;    // m/s transition scale
 // 15+ m/s of face velocity from a wrist flick, which the (1+e) reflection
 // amplifies into a rocketing outgoing ball.
 //
+// 10.0 (realism pass, up from 6.5). Real racket-head speed at contact is
+// 10-15 m/s for a committed forehand loop and ~20 m/s for a full smash —
+// 6.5 gave a 10 m/s swing only 5.9 m/s effective, a 40% haircut that
+// compressed drives and smashes into the same outgoing pace band. Table
+// tennis's shot hierarchy is pace-dominant at the top; capping pace while
+// leaving brush spin uncapped quietly inverted that. At 10.0 a full smash
+// swing (15 m/s) yields ~9.0 m/s effective — hard hits are again clearly
+// faster than drives, while the tanh still tames wrist-flick rockets.
+//
 // Applied as a TANH SOFT-CLIP inside computeImpulse (not a hard clamp): |v|
 // scales as cap·tanh(|v|/cap), so swings below the cap feel 1:1, swings near
 // the cap see diminishing returns, and swings well past it hit hard but
 // stay bounded — the ball "resists" being accelerated further, which is
 // exactly how muscle recruitment behaves in reality. Set to 0 to disable.
-export let PADDLE_CONTACT_SPEED_CAP = WEIGHTY_BALL_ENABLED ? 6.5 : 0;
+export let PADDLE_CONTACT_SPEED_CAP = WEIGHTY_BALL_ENABLED ? 10.0 : 0;
 
 // --- Edge / rim strikes -----------------------------------------------------
 // Player-only. When the ball straddles the paddle rim (radialDist within one
@@ -294,11 +387,29 @@ export const FLOOR_Y = -2;
 // alpha<1 → effective lag of dt/alpha seconds, adds perceived weight per
 // Rietzler "Breaking the Tracking" but reduces 1:1 control fidelity.
 //
-// DEFAULT IS 1.0 — the controller should feel like the paddle. The smoothing
-// is preserved as a tunable for players who want weight feel over precision;
-// drop both to ~0.6/0.85 via the PhysicsTuner panel to A/B.
-export let PADDLE_POS_SMOOTHING = 1.0;
-export let PADDLE_ROT_SMOOTHING = 1.0;
+// DEFAULT IS 0.65 on both axes — a deliberate trade of 1:1 fidelity for
+// weight feel. At 90 Hz that is ~17 ms of effective lag, small enough to stay
+// under the rotation-lag nausea threshold but enough that the bat reads as a
+// physical object rather than a rigid extension of the controller. Raise both
+// to 1.0 via the PhysicsTuner panel for zero added lag (paddle = controller).
+//
+// Scope: VISUAL POSE AND CONTACT GEOMETRY ONLY. The physics velocity
+// estimates (paddleVelocity / paddleAngularVelocity in ball.js) are finite-
+// diffed from the RAW grip pose via xrPaddle.getRawPaddlePose — an EMA is a
+// low-pass filter, and diffing the smoothed anchor attenuated one-frame
+// wrist-snap peaks to ~65% right at contact, silently weakening brush spin
+// (slices/loops). Tuning this constant changes where the bat is drawn and
+// where it collides, not how much spin or pace a stroke imparts.
+export let PADDLE_POS_SMOOTHING = 0.65;
+export let PADDLE_ROT_SMOOTHING = 0.65;
+
+// Ceiling on how far the table-penetration resolver may translate the PLAYER's
+// paddle away from the hand holding it (js/physics/paddleTableClamp.js). Shares
+// the 1 cm contact-visual agreement budget with the impact recoil, because it
+// is the same currency: distance between where the hand is and where the bat is
+// drawn. Past this the blade clips the table instead of leaving the grip —
+// clipping is the milder lie. AI/remote paddles are unbounded (no hand).
+export const PADDLE_TABLE_PUSH_MAX = 0.01;
 
 // Squash-and-stretch on paddle contact — purely visual, does not affect physics.
 // Ball briefly compresses to (1+amount, 1-amount, 1+amount) and recovers linearly.
@@ -327,8 +438,13 @@ export const HAPTIC_BOUNCE_SCALE = 0.4;
 // Swing whoosh — synthesized wind sound during fast paddle motion. Reinforces
 // "cutting through air with a substantial object" without introducing visual
 // lag. Below threshold the sound is silent; above max_speed, gain saturates.
-export const SWING_WHOOSH_THRESHOLD = 1.0;   // m/s, below this no sound
-export const SWING_WHOOSH_MAX_SPEED  = 6.0;  // m/s, full saturation point
+// Band matched to the swing haptic above, for the same reason: cross-modal
+// weight only works if the ear and the hand agree, and a 6 m/s saturation put
+// the whole wrist-stroke range down near silence. updateSwingWhoosh keeps its
+// own squared gain curve — for audio a square is right, since perceived
+// loudness is roughly logarithmic in gain and a linear ramp reads as a step.
+export const SWING_WHOOSH_THRESHOLD = 0.8;   // m/s, below this no sound
+export const SWING_WHOOSH_MAX_SPEED  = 4.5;  // m/s, full saturation point
 export const SWING_WHOOSH_MAX_GAIN   = 0.22; // peak gain (audio is band-limited noise)
 
 // Ball rolling audio — persistent bandpass-filtered noise, spatialized at
@@ -344,13 +460,26 @@ export const BALL_ROLL_MIN_SPEED = 0.15;   // m/s horizontal — below this, sil
 export const BALL_ROLL_MAX_SPEED = 2.0;    // m/s — full saturation
 export const BALL_ROLL_MAX_GAIN  = 0.06;   // peak gain (subtle)
 
-// Continuous swing haptic — low-intensity pulses scaled to paddle speed. Feels
-// like air resistance through the hand. Coexists with the much stronger impact
-// pulse on contact (which dominates the felt sensation for ~100 ms after hit).
-export const SWING_HAPTIC_THRESHOLD     = 1.5;  // m/s
-export const SWING_HAPTIC_MAX_SPEED     = 6.0;
-export const SWING_HAPTIC_MAX_INTENSITY = 0.18; // peak amplitude (0..1)
+// Continuous swing haptic — pulses scaled to paddle FACE speed. This is the
+// primary weight cue: blade inertia is something you feel while swinging, not
+// on contact, and it is the only channel that can answer a fast wrist jerk in
+// the moment it happens. Coexists with the stronger impact pulse on contact.
+//
+// Retuned after in-play reports of "the paddle has no weight". The old band
+// (1.5 → 6.0 m/s, peak 0.18, squared) left the entire wrist-stroke range
+// effectively silent: face speed for a wrist jerk runs ~1.3–3 m/s, which sat
+// at or below the old threshold, and the square crushed whatever cleared it
+// (2.5 m/s → 0.009 intensity, far under the Quest motor's perceptual floor).
+// Meanwhile the blade swings a 13 cm arc about the grip, so the eye saw a
+// heavy bat move and the hand felt nothing — the contradiction that reads as
+// the blade being loose. The band now covers the speeds people actually play
+// at. THESE ARE STARTING POINTS AND MUST BE RE-TUNED ON-DEVICE — Quest motor
+// response is not linear in `value` (same caveat as paddleWeight.js).
+export const SWING_HAPTIC_THRESHOLD     = 0.5;  // m/s — deadzone for tracking noise
+export const SWING_HAPTIC_MAX_SPEED     = 4.0;  // m/s face speed of a committed drive
+export const SWING_HAPTIC_MAX_INTENSITY = 0.35; // peak amplitude (0..1)
 export const SWING_HAPTIC_PULSE_MS      = 22;   // per-frame pulse duration
+export const SWING_HAPTIC_CURVE         = 1.4;  // ramp exponent; 1 = linear
 
 // Stuck-ball recovery — when the ball stops on the table or wedges near the net,
 // we'd otherwise wait for it to fall below FLOOR_Y forever. After the ball stays
@@ -429,6 +558,26 @@ export function dragBoostFactor(rangeX, T) {
   return (Math.exp(kX) - 1) / kX;
 }
 
+// Hard ceiling on any coefficient of restitution. A COR ≥ 1 means the ball
+// GAINS energy on contact, and for the table that is not just unphysical —
+// it is a gameplay deadlock: the bounce map v_next = e(v)·v acquires a
+// stable fixed point at the speed where e(v) = 1, so every dying ball
+// converges to a perpetual ~15 cm bounce. It then never falls below the
+// micro-bounce settle (rollout.js) or the stuck-ball detector's
+// STATIONARY_VEL, ballLost never fires, and the rally manager waits on a
+// serve that can never be re-offered. The median+HI_OFFSET curve shape
+// crosses 1.0 whenever the tuner-adjustable median exceeds (1 − HI_OFFSET),
+// which the lively-table default of 0.92 does — so the curves clamp here
+// rather than trusting the median to stay low.
+//
+// 0.95 and not 0.99: settle time is governed by the per-bounce loss at the
+// ceiling (total dwindle time ≈ 2·v/(g·(1−e))), so a 0.99 cap still leaves
+// ~30 s of visible micro-bouncing. 0.95 is the low-speed maximum of the
+// previously shipped curve (median 0.82 + 0.13 offset), which settled in a
+// few seconds and read fine in-headset; mid/high-speed bounces (e(5) ≈ 0.93
+// at the current median) sit under the cap and keep the lively-table feel.
+export const COR_MAX = 0.95;
+
 // Speed-dependent paddle COR. Real rubber is near-elastic on soft touches
 // and loses more energy on hard hits. Curve: e(v) = lo + (hi − lo)·exp(−v/v*)
 // where hi/lo are derived from PADDLE_RESTITUTION so tuner changes shift
@@ -436,7 +585,7 @@ export function dragBoostFactor(rangeX, T) {
 export function paddleRestitution(impactSpeed) {
   const hi = PADDLE_RESTITUTION + PADDLE_RESTITUTION_HI_OFFSET;
   const lo = PADDLE_RESTITUTION + PADDLE_RESTITUTION_LO_OFFSET;
-  return lo + (hi - lo) * Math.exp(-impactSpeed / PADDLE_RESTITUTION_V_STAR);
+  return Math.min(COR_MAX, lo + (hi - lo) * Math.exp(-impactSpeed / PADDLE_RESTITUTION_V_STAR));
 }
 
 // Speed-dependent table COR. Same shape as paddleRestitution — see comment
@@ -445,7 +594,7 @@ export function paddleRestitution(impactSpeed) {
 export function tableRestitution(impactSpeed) {
   const hi = TABLE_RESTITUTION + TABLE_RESTITUTION_HI_OFFSET;
   const lo = TABLE_RESTITUTION + TABLE_RESTITUTION_LO_OFFSET;
-  return lo + (hi - lo) * Math.exp(-impactSpeed / TABLE_RESTITUTION_V_STAR);
+  return Math.min(COR_MAX, lo + (hi - lo) * Math.exp(-impactSpeed / TABLE_RESTITUTION_V_STAR));
 }
 
 // Sweet-spot falloff on the paddle face. Returns 1.0 at the center and

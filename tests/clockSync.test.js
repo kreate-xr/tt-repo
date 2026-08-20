@@ -102,6 +102,29 @@ describe('ClockSync', () => {
     expect(c.offset).toBe(TRUE_OFFSET);
   });
 
+  test('queuingDelayMs is null before any pong, ~0 on a stable link', () => {
+    const c = new ClockSync();
+    expect(c.queuingDelayMs()).toBe(null);
+    let t = 1000;
+    for (let i = 0; i < 8; i++) {
+      exchange(c, t, 20, 20); // constant rtt 40
+      t += PING_INTERVAL_MS;
+    }
+    expect(c.queuingDelayMs()).toBeCloseTo(0, 6);
+  });
+
+  test('queuingDelayMs rises under bufferbloat and decays on recovery', () => {
+    const c = new ClockSync();
+    let t = 1000;
+    for (let i = 0; i < 8; i++) { exchange(c, t, 20, 20); t += PING_INTERVAL_MS; }
+    // Bufferbloat: rtt jumps 40 → 200 while the windowed min still holds 40.
+    for (let i = 0; i < 8; i++) { exchange(c, t, 20, 180); t += PING_INTERVAL_MS; }
+    expect(c.queuingDelayMs()).toBeGreaterThan(100);
+    // Load removed: smoothed rtt decays back toward the 40 ms base.
+    for (let i = 0; i < 24; i++) { exchange(c, t, 20, 20); t += PING_INTERVAL_MS; }
+    expect(c.queuingDelayMs()).toBeLessThan(5);
+  });
+
   test('makePing / makePong round-trip carries t0 through', () => {
     const c = new ClockSync();
     const ping = c.makePing(1234);

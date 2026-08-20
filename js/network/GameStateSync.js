@@ -22,7 +22,9 @@
 //                by the injected integrator every frame. This is what the
 //                player sees; it is smooth regardless of packet phase.
 //   target     — on packet arrival, the packet state projected forward by
-//                clamp(now - tLocal, 0, BALL_EXTRAP_CAP_MS).
+//                clamp(now - tLocal, 0, extrapCapMs) — the cap starts at
+//                BALL_EXTRAP_CAP_MS and adapts upward to measured latency
+//                via setLatencyMs, up to BALL_EXTRAP_CAP_MAX_MS.
 //   correction — target minus displayed. |err| < deadzone: ignored (sub-3 cm
 //                is invisible on a 4 cm ball in flight). Mid-range: folded in
 //                exponentially with τ = CORRECTION_TAU_S (halves every
@@ -38,8 +40,10 @@
 
 import { PacketType } from './serialization.js';
 
-export const BALL_EXTRAP_CAP_MS = 120;        // regular packet projection cap
-export const AUTHORITATIVE_EXTRAP_CAP_MS = 150; // handoff / reconciliation cap
+export const BALL_EXTRAP_CAP_MS = 120;        // regular packet projection cap (floor)
+export const BALL_EXTRAP_CAP_MAX_MS = 250;    // adaptive-cap ceiling (see setLatencyMs)
+export const EXTRAP_LATENCY_MARGIN_MS = 40;   // send interval + jitter allowance
+export const AUTHORITATIVE_EXTRAP_CAP_MS = 150; // handoff / reconciliation cap (floor)
 export const BALL_EXTRAP_SUBSTEP_MS = 8;
 export const CORRECTION_TAU_S = 0.05;
 export const CORRECTION_DEADZONE_M = 0.03;
@@ -65,6 +69,10 @@ export class GameStateSync {
     // { ts (receiver clock), capMs, p, v, s }
     this.latest = null;
     this.latestConsumed = true;
+
+    // Current projection cap for regular packets; raised above the
+    // BALL_EXTRAP_CAP_MS floor by setLatencyMs on slow links.
+    this.extrapCapMs = BALL_EXTRAP_CAP_MS;
 
     // The displayed mini-sim state (pre-allocated, reused as the return value).
     this.displayed = {
@@ -115,6 +123,19 @@ export class GameStateSync {
   setOwner(who) { this.owner = who; }
   isLocalOwner() { return this.owner === 'self'; }
 
+  // Adapt the projection cap to measured latency. With the fixed floor cap,
+  // any link whose packet age exceeds it leaves the mirrored ball permanently
+  // (age - cap) behind truth; covering one-way + send interval + jitter keeps
+  // the projection reaching "now". Ceiling at BALL_EXTRAP_CAP_MAX_MS — beyond
+  // that, accumulated bounce-timing divergence makes a long projection worse
+  // than the honest lag it hides. Pass ClockSync.oneWayMs(); null (no pong
+  // yet) leaves the cap unchanged.
+  setLatencyMs(oneWayMs) {
+    if (typeof oneWayMs !== 'number' || !Number.isFinite(oneWayMs)) return;
+    const cap = oneWayMs + EXTRAP_LATENCY_MARGIN_MS;
+    this.extrapCapMs = Math.min(BALL_EXTRAP_CAP_MAX_MS, Math.max(BALL_EXTRAP_CAP_MS, cap));
+  }
+
   // Drop remote state and reset seq tracking. Use on ownership change so
   // stale pre-flip packets don't poison the mini-sim, and after a reconnect
   // swap when the seq stream restarts from a new NetworkManager.
@@ -155,7 +176,7 @@ export class GameStateSync {
     // compared against the local clock — the two origins are unrelated.
     this.latest = {
       ts: packet.tLocal,
-      capMs: BALL_EXTRAP_CAP_MS,
+      capMs: this.extrapCapMs,
       p: { x:  p[0], y:  p[1], z: cz2 - p[2] },
       v: { x:  v[0], y:  v[1], z:      -v[2] },
       s: { x: -s[0], y: -s[1], z:       s[2] },
@@ -171,7 +192,10 @@ export class GameStateSync {
     if (!decoded) return;
     this.latest = {
       ts: typeof tsLocal === 'number' ? tsLocal : now,
-      capMs: AUTHORITATIVE_EXTRAP_CAP_MS,
+      // Authoritative snapshots keep their extra allowance above whatever the
+      // adaptive regular-packet cap currently is.
+      capMs: Math.max(AUTHORITATIVE_EXTRAP_CAP_MS,
+        this.extrapCapMs + (AUTHORITATIVE_EXTRAP_CAP_MS - BALL_EXTRAP_CAP_MS)),
       p: { x: decoded.pos.x,  y: decoded.pos.y,  z: decoded.pos.z },
       v: { x: decoded.vel.x,  y: decoded.vel.y,  z: decoded.vel.z },
       s: { x: decoded.spin.x, y: decoded.spin.y, z: decoded.spin.z },

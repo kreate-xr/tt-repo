@@ -285,9 +285,20 @@ describe('custom feed controls', () => {
 
   test('cycling a segment changes the config', () => {
     const menu = openCustom();
-    const before = menu.model.config.depth;
-    clickById(menu, 'cycle:depth:1');
-    expect(menu.model.config.depth).not.toBe(before);
+    const before = menu.model.config.arc;
+    clickById(menu, 'cycle:arc:1');
+    expect(menu.model.config.arc).not.toBe(before);
+  });
+
+  test('the zone grid alone changes the landing row (no Depth field needed)', () => {
+    // The row used to be owned by a separate Depth segment, which made six of
+    // the nine zone cells do nothing. The grid is authoritative now.
+    const menu = openCustom();
+    expect(menu.panel.get('cycle:depth:1')).toBeFalsy();
+    clickById(menu, 'zone:1');
+    expect(menu.model.config.depth).toBe('short');
+    clickById(menu, 'zone:8');
+    expect(menu.model.config.depth).toBe('deep');
   });
 
   test('toggling the audio cue flips it', () => {

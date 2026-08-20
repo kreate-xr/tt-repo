@@ -153,11 +153,14 @@ describe('event registration', () => {
 });
 
 describe('the other tiles still work', () => {
-  test('free play emits freeplay', () => {
+  test('the PLAY tile opens the Machine Play menu', () => {
+    // It used to emit 'freeplay' and drop straight onto an empty table. It
+    // now opens a menu, so the tile emits its own event and the mode is
+    // chosen in there — Free Hit is that menu's fifth row.
     const menu = new WristMenu();
     let n = 0;
-    menu.on('freeplay', () => { n++; });
-    const [u, v] = uvOfButton(menu, 'mode-freeplay');
+    menu.on('machinePlay', () => { n++; });
+    const [u, v] = uvOfButton(menu, 'mode-machinePlay');
     menu.setHovered(menu.hitTestUV(u, v));
     menu.selectHovered();
     expect(n).toBe(1);
@@ -175,7 +178,7 @@ describe('the other tiles still work', () => {
 
   test('every mode tile resolves to itself, none shadowed', () => {
     const menu = new WristMenu();
-    for (const id of ['mode-training', 'mode-freeplay', 'mode-aiMatch', 'mode-multiplayer']) {
+    for (const id of ['mode-training', 'mode-machinePlay', 'mode-aiMatch', 'mode-multiplayer']) {
       const [u, v] = uvOfButton(menu, id);
       expect(menu.hitTestUV(u, v)).toBe(id);
     }

@@ -16,16 +16,23 @@ export const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true }
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.xr.enabled = true;
-// Three.js's WebXR defaults are the reason in-VR UI panels look blurry and
-// shimmer on Quest: the XR framebuffer is left at 1.0× (well below panel
-// native, ~72% on Quest 2/3) and foveation is at the MAX setting (1.0),
-// which aggressively downsamples the periphery — where the wrist menu
-// above the net often sits when the player isn't staring straight at it.
-// Bump the framebuffer above native and disable foveation so panel text
-// stays crisp regardless of gaze direction. Must be set before the XR
-// session starts to take effect.
-renderer.xr.setFramebufferScaleFactor(1.5);
-renderer.xr.setFoveation(0);
+// XR framebuffer budget. History: this shipped at 1.5× scale + foveation 0
+// to keep panel text crisp (three.js's default 1.0× is below Quest panel
+// native, and max foveation blurs a menu sitting in the periphery). But that
+// combination costs ~3× the fragment work of the defaults, and on device it
+// pushed GPU frame time past the 11.1 ms 90 Hz budget — the compositor then
+// reprojects, which keeps head rotation smooth but double-steps every
+// ANIMATED object. The ball, the fastest mover on screen, is where that
+// judder is seen, and a smooth ball matters more than a tack-sharp menu.
+//
+// 1.2× keeps a useful amount of supersampling for text; foveation 0.4 only
+// discounts the far periphery (a panel you're actually reading sits in the
+// fovea and is unaffected). If panels need more sharpness later, the right
+// tool is a WebXR quad layer (compositor samples the panel at full
+// resolution independent of the eye buffer), NOT a global scale bump.
+// Must be set before the XR session starts to take effect.
+renderer.xr.setFramebufferScaleFactor(1.2);
+renderer.xr.setFoveation(0.4);
 // P16: shadow map disabled in XR. The ball's blob shadow (ballShadow.js) is
 // the sole ground-contact cue; every other caster we might want (paddle,
 // arena props) either flickers at ball size, costs a full shadow pass, or

@@ -19,15 +19,32 @@ import {
 } from '../scene/models.js';
 import { hudLog } from '../scene/hud.js';
 import { resetPaddleTracking, setPaddleRecoilHandler } from '../physics/ball.js';
-import { PADDLE_POS_SMOOTHING, PADDLE_ROT_SMOOTHING, WEIGHTY_BALL_ENABLED } from '../physics/constants.js';
+import {
+  PADDLE_POS_SMOOTHING, PADDLE_ROT_SMOOTHING, WEIGHTY_BALL_ENABLED,
+  PADDLE_TABLE_PUSH_MAX,
+} from '../physics/constants.js';
 import { resolvePaddleTablePenetration } from '../physics/paddleTableClamp.js';
 import * as haptics from '../xr/haptics.js';
 import {
   composeCalibratedPose,
   setFilterFlushHandler as setCalibFilterFlushHandler,
   loadForProfile as loadCalibForProfile,
+  getPresetName as getCalibPresetName,
+  subscribe as subscribeCalibration,
+  getPosOffset as getCalibPosOffset,
+  getRotOffset as getCalibRotOffset,
 } from '../xr/calibration.js';
+import { presetWeightClass } from '../xr/calibrationPresets.js';
+import {
+  getSetting as getProfileSetting,
+  subscribe as subscribeProfile,
+} from '../profile/store.js';
+import { paddleHandFromSetting, shouldSwitchPaddleHand } from '../xr/handedness.js';
 import { shouldFreezePaddle as trackingShouldFreezePaddle } from '../xr/trackingLossGuard.js';
+import {
+  applyRecoilAboutPivot, recoilEnvelope, recoilPeakForImpact,
+} from '../xr/paddleRecoil.js';
+import { recoilWeightScale, setPaddleWeightClass } from '../physics/paddleWeight.js';
 
 // Wire calibration setters to flush the median-of-3 velocity buffer in ball.js
 // (spec C7: offset change makes old blade velocities invalid). Registered
@@ -35,7 +52,54 @@ import { shouldFreezePaddle as trackingShouldFreezePaddle } from '../xr/tracking
 // ball.js present.
 setCalibFilterFlushHandler(resetPaddleTracking);
 
-const PREFERRED_PADDLE_HAND = 'right';
+// Adapter presets describe a physical controller→paddle mount, so their
+// assembled mass is a known quantity — adopt the matching weight class when
+// one is selected. Bare-controller presets return null and leave the player's
+// weight preference alone: with nothing real in their hand, how heavy the bat
+// should feel is their call, not something we can infer from a profile string.
+// This bridge lives here rather than in calibration.js so that module keeps
+// its spec-C6 property of never importing anything that changes how the blade
+// behaves — it only ever decides where the blade is.
+subscribeCalibration(() => {
+  const cls = presetWeightClass(getCalibPresetName());
+  if (cls) setPaddleWeightClass(cls);
+  logCalibrationState();
+});
+
+// T_cal is persisted per device (localStorage, keyed by controller profile)
+// and silently re-applied on every controller connect — a stale wizard run or
+// an adapter preset on a bare controller renders the blade centimeters away
+// from the grip and reads as a tracking/sync bug. One HUD line whenever it
+// changes or the paddle re-binds makes the active calibration self-evident.
+const CAL_WARN_OFFSET_CM = 5;
+const CAL_WARN_TILT_DEG = 30;
+function logCalibrationState() {
+  const off = getCalibPosOffset();
+  const rot = getCalibRotOffset();
+  const cm = off.length() * 100;
+  const deg = 2 * Math.acos(Math.min(1, Math.abs(rot.w))) * (180 / Math.PI);
+  hudLog(`[cal] preset=${getCalibPresetName()}  offset=${cm.toFixed(1)}cm  tilt=${deg.toFixed(0)}deg`);
+  if (cm > CAL_WARN_OFFSET_CM || deg > CAL_WARN_TILT_DEG) {
+    hudLog('[cal] LARGE OFFSET ACTIVE — paddle will sit away from the controller. If unintended, set calibration preset to "default" in the menu');
+  }
+}
+
+// Which hand holds the paddle. Sourced from the player's profile setting
+// (M10 `dominantHand`, stored as 'L'/'R') rather than hardcoded. Read through
+// a function, never cached, so flipping the setting mid-session takes effect
+// on the next attach/sweep. The policy itself lives in xr/handedness.js where
+// it can be unit tested — see the note there.
+function preferredPaddleHand() {
+  return paddleHandFromSetting(getProfileSetting('dominantHand'));
+}
+
+// `?gripAxes` — draw RGB axis triads at each controller's gripSpace origin
+// (large) and at the calibrated paddle anchor (small). Makes the runtime's
+// idea of "where the fist is / which way -Z points" visible in headset, so a
+// calibration offset can be judged against the true grip frame instead of
+// guessed at. Red=+X, green=+Y, blue=+Z (the handle extends along MINUS Z).
+const SHOW_GRIP_AXES = typeof location !== 'undefined' &&
+  new URLSearchParams(location.search).has('gripAxes');
 
 export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
   let paddleOwner = null;
@@ -56,6 +120,7 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
   const paddleAnchor = new THREE.Object3D();
   paddleAnchor.name = 'paddleAnchor';
   scene.add(paddleAnchor);
+  if (SHOW_GRIP_AXES) paddleAnchor.add(new THREE.AxesHelper(0.05));
   let anchorPoseInitialized = false;
   const tmpTargetPos = new THREE.Vector3();
   const tmpTargetQuat = new THREE.Quaternion();
@@ -71,27 +136,42 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
   const smoothedGripPos = new THREE.Vector3();
   const smoothedGripQuat = new THREE.Quaternion();
 
-  // Impact recoil — post-hit visual kick-back on paddleAnchor that decays to
-  // zero. Restores the pseudo-haptic "the ball has mass" cue we gave up when
-  // PADDLE_POS_SMOOTHING was set to 1.0. Fires AFTER contact so the collision
-  // pose is unchanged (no precision hit), but the eye sees the paddle jerk
-  // backward for ~130 ms, which the brain reads as momentum transfer.
+  // Raw grip pose from the SAME frame the smoothed pose was last updated
+  // (i.e. frozen together with it during tracking loss). Served — with T_cal
+  // composed — via getRawPaddlePose() as the physics VELOCITY measurement
+  // source. The pseudo-haptic smoothing above is an EMA low-pass, and finite-
+  // differencing the smoothed anchor attenuated exactly the one-frame wrist-
+  // snap peaks that generate brush spin (the same signal ball.js deliberately
+  // exempts from its median filter). Contact GEOMETRY still reads the
+  // smoothed anchor so "what you see is what collides" holds; only the
+  // velocity estimate bypasses the smoothing.
+  const rawGripPos = new THREE.Vector3();
+  const rawGripQuat = new THREE.Quaternion();
+  let rawPoseValid = false;
+
+  // Impact recoil — post-hit "the ball has mass" cue. Restores the
+  // pseudo-haptic weight we gave up when PADDLE_POS_SMOOTHING was set to 1.0.
+  // Fires AFTER contact, so the collision that spawned the kick used the
+  // pre-recoil pose.
   //
-  // Peak magnitude scales with impact speed; RECOIL_PEAK_M at 8 m/s or above.
+  // This is a ROTATION about the grip pivot, not a translation of the anchor:
+  // a held object cannot slide relative to the hand holding it, and the old
+  // 12 mm translation read as the paddle coming loose from the grip (as well as
+  // putting the rendered paddle outside the 1 cm agreement budget from the true
+  // grip pose). Rotating about the hand leaves the grip point exactly fixed
+  // while the blade tip kicks back by the same distance. See paddleRecoil.js.
+  //
+  // Peak magnitude scales with impact speed, saturating at RECOIL_MAX_SPEED.
   // Direction is -reflectNormal (into the paddle body).
-  const RECOIL_PEAK_M = 0.012;      // 12 mm max offset
-  const RECOIL_DURATION = 0.13;     // seconds, cosine decay to zero
-  const RECOIL_MAX_SPEED = 8.0;     // m/s at which peak saturates
   const recoilDir = new THREE.Vector3();
-  const tmpRecoilOffset = new THREE.Vector3();
+  const tmpRecoilFace = new THREE.Vector3();
   let recoilMagnitude = 0;
   let recoilStart = 0;
 
   function triggerPaddleRecoil(worldNormal, impactSpeed) {
     if (!worldNormal || impactSpeed <= 0) return;
-    const norm = Math.min(impactSpeed / RECOIL_MAX_SPEED, 1.0);
     recoilDir.copy(worldNormal).multiplyScalar(-1);
-    recoilMagnitude = RECOIL_PEAK_M * norm;
+    recoilMagnitude = recoilPeakForImpact(impactSpeed, recoilWeightScale());
     recoilStart = performance.now() * 0.001;
   }
 
@@ -125,6 +205,17 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     return activeHandedness === 'left' ? 'right' : 'left';
   }
 
+  // Raw XRInputSource for the off-hand grip (the one getOffHandGrip returns).
+  // Needed by consumers that poll off-hand buttons — e.g. the player-serve
+  // controller's grip-hold/release toss. Null until both controllers exist.
+  function getOffHandInputSource() {
+    if (!activeController) return null;
+    for (let i = 0; i < grips.length; i++) {
+      if (grips[i] && grips[i] !== activeController) return inputSources[i];
+    }
+    return null;
+  }
+
   function onPaddleAttached(fn) { attachListeners.push(fn); }
   function emitAttached() {
     for (const fn of attachListeners) fn();
@@ -137,12 +228,9 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     if (paddleOwner === grip) return;
 
     // Already attached to another grip. Only switch if the new grip is the
-    // preferred hand (right) and we're currently on the non-preferred (left).
+    // player's preferred hand and we're currently on the other one.
     if (paddleOwner) {
-      const shouldSwitch =
-        hand === PREFERRED_PADDLE_HAND &&
-        activeHandedness !== PREFERRED_PADDLE_HAND;
-      if (!shouldSwitch) return;
+      if (!shouldSwitchPaddleHand(activeHandedness, hand, preferredPaddleHand())) return;
     }
 
     // Parent the visual paddle to the anchor (not the grip directly). The
@@ -166,6 +254,27 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     // there's no visible "drift" when switching hands.
     anchorPoseInitialized = false;
     hudLog(`paddle attached to ${label}${hand ? ' (' + hand + ')' : ''}`);
+
+    // Per-controller-profile calibration (spec §C5). This loads for the grip
+    // that ACTUALLY ends up owning the paddle, which is the rule the old code
+    // stated but only approximated by gating on handedness === 'right' in the
+    // 'connected' handler. That approximation meant a left-handed player's
+    // T_cal was never loaded at all (their paddle hand never matched the
+    // literal), and a mid-session hand switch kept the previous hand's
+    // transform. Doing it here is also the only placement that survives a
+    // re-bind, since 'connected' fires once per controller per session.
+    //
+    // event.data.profiles is an ordered array (most-specific first — e.g.
+    // ["oculus-touch-v3", "oculus-touch", "generic-trigger"]); the first entry
+    // is the storage key.
+    const profiles = (activeInputSource && activeInputSource.profiles) || [];
+    if (profiles[0]) {
+      try { loadCalibForProfile(profiles[0]); }
+      catch (e) { hudLog('calibration load failed: ' + (e && e.message)); }
+    }
+    // Announce the T_cal in effect for this binding even when loadForProfile
+    // applied it without a change event (persisted value == current value).
+    logCalibrationState();
     emitAttached();
   }
 
@@ -204,6 +313,14 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     activeController.getWorldPosition(tmpTargetPos);
     activeController.getWorldQuaternion(tmpTargetQuat);
 
+    // Persist this frame's raw grip pose for getRawPaddlePose. Not updated
+    // during the tracking-loss freeze above, so raw and smoothed poses freeze
+    // together and the raw finite-diff velocity in ball.js reads zero instead
+    // of a teleport spike when tracking resumes.
+    rawGripPos.copy(tmpTargetPos);
+    rawGripQuat.copy(tmpTargetQuat);
+    rawPoseValid = true;
+
     // Smooth the *grip pose* first (still uncalibrated), then compose T_cal
     // on top (plan Gotcha c). smoothedGripPos/Quat are persistent module
     // state — see their declaration above for why we don't lerp on the
@@ -223,18 +340,26 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     // compose T_cal again inside ball.js (plan Gotcha e).
     composeCalibratedPose(smoothedGripPos, smoothedGripQuat, paddleAnchor.position, paddleAnchor.quaternion);
 
-    // Apply impact recoil AFTER pose smoothing so it composes with 1:1 tracking
-    // (paddle snaps to hand + kickback offset). Cosine-half decay: peak at t=0,
-    // zero at t=RECOIL_DURATION. Purely visual — physics already used the
-    // pre-recoil pose for the collision that spawned this kick.
+    // Apply impact recoil AFTER pose composition so it composes with 1:1
+    // tracking. Cosine-quarter decay: peak at t=0, zero at RECOIL_DURATION.
+    // Physics already used the pre-recoil pose for the collision that spawned
+    // this kick; for the remainder of the window the rotated pose is what BOTH
+    // the mesh and the physics tick see, so they never disagree.
+    //
+    // The pivot is the smoothed grip position — the hand — so the grip point is
+    // a fixed point of the rotation and the paddle stays welded to it.
     if (recoilMagnitude > 0) {
-      const t = (performance.now() * 0.001 - recoilStart) / RECOIL_DURATION;
-      if (t >= 1) {
+      const decay = recoilEnvelope(performance.now() * 0.001 - recoilStart);
+      if (decay <= 0) {
         recoilMagnitude = 0;
       } else {
-        const decay = Math.cos(t * Math.PI * 0.5);
-        tmpRecoilOffset.copy(recoilDir).multiplyScalar(recoilMagnitude * decay);
-        paddleAnchor.position.add(tmpRecoilOffset);
+        tmpRecoilFace.copy(paddleFaceOffset)
+          .applyQuaternion(paddleAnchor.quaternion)
+          .add(paddleAnchor.position);
+        applyRecoilAboutPivot(
+          smoothedGripPos, tmpRecoilFace, recoilDir, recoilMagnitude * decay,
+          paddleAnchor.position, paddleAnchor.quaternion,
+        );
       }
     }
 
@@ -257,10 +382,15 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
       tmpFaceNormal.copy(paddleFaceNormalLocal)
         .applyQuaternion(paddleAnchor.quaternion)
         .normalize();
+      // Bounded: this delta moves the bat relative to the hand holding it, so
+      // it is capped at the contact-visual agreement budget. Unbounded, a hand
+      // driven through the felt pushed the rendered paddle a full penetration
+      // depth off the grip — a detachment artifact of the same family as the
+      // old translational recoil. See paddleTableClamp.js for the trade.
       resolvePaddleTablePenetration(
         tmpFaceCenter, tmpFaceNormal,
         paddleHitRadius, paddleHalfThickness,
-        tableBox, tmpDelta,
+        tableBox, tmpDelta, PADDLE_TABLE_PUSH_MAX,
       );
       paddleAnchor.position.add(tmpDelta);
     }
@@ -268,6 +398,17 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
 
   function getPaddleAnchor() {
     return activeController ? paddleAnchor : null;
+  }
+
+  // Raw calibrated paddle pose — this frame's grip pose with T_cal composed,
+  // BYPASSING the pseudo-haptic smoothing. ball.js finite-differences this
+  // for paddleVelocity / paddleAngularVelocity so brush-stroke peaks reach
+  // the impulse un-attenuated (see rawGripPos declaration). Returns false
+  // until the first tracked frame; frozen at last-good during tracking loss.
+  function getRawPaddlePose(outPos, outQuat) {
+    if (!rawPoseValid || !activeController) return false;
+    composeCalibratedPose(rawGripPos, rawGripQuat, outPos, outQuat);
+    return true;
   }
 
   // Returns the paddle-hand's smoothed grip pose (BEFORE T_cal is composed).
@@ -290,10 +431,13 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     const sources = session.inputSources;
     hudLog(`sweep (${reason}): ${sources.length} source(s)`);
 
-    // Prefer the right hand (the default paddle hand). Fall back to whatever's tracked.
+    // Prefer the player's paddle hand. Fall back to whatever's tracked, so a
+    // single-controller session still gets a paddle regardless of which hand
+    // it is — the preference orders the search, it does not gate it.
+    const preferred = preferredPaddleHand();
     const order = [];
     for (let i = 0; i < grips.length; i++) {
-      if (handedness[i] === PREFERRED_PADDLE_HAND) order.unshift(i);
+      if (handedness[i] === preferred) order.unshift(i);
       else order.push(i);
     }
 
@@ -316,6 +460,7 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     const grip = renderer.xr.getControllerGrip(i);
     scene.add(ctrl);
     scene.add(grip);
+    if (SHOW_GRIP_AXES) grip.add(new THREE.AxesHelper(0.1));
     grips[i] = grip;
     targetRays[i] = ctrl;
 
@@ -325,24 +470,10 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
       inputSources[i] = event.data || null;  // stash raw XRInputSource for TrackingLossGuard
       hudLog(`grip[${i}] connected (${hand})`);
 
-      // Per-controller-profile calibration (spec §C5). event.data.profiles
-      // is an ordered array (most-specific first — e.g. ["oculus-touch-v3",
-      // "oculus-touch", "generic-trigger"]). Use the first entry as the
-      // storage key. Only fire on the paddle hand — the off-hand grip
-      // doesn't hold a paddle and its profile shouldn't overwrite T_cal.
-      // Guard: setup order is such that attachPaddleToGrip may not switch
-      // ownership to this grip if a preferred-hand grip is already active,
-      // so we only load calibration for the grip that actually ends up
-      // owning the paddle.
-      if (hand === PREFERRED_PADDLE_HAND) {
-        const profiles = (event.data && event.data.profiles) || [];
-        const profileString = profiles[0];
-        if (profileString) {
-          try { loadCalibForProfile(profileString); }
-          catch (e) { hudLog('calibration load failed: ' + (e && e.message)); }
-        }
-      }
-
+      // Calibration is loaded inside attachPaddleToGrip, for whichever grip
+      // actually takes the paddle — see the note there. Loading it here would
+      // let the off-hand's controller profile overwrite the paddle hand's
+      // T_cal, and would miss every re-bind after the first connect.
       attachPaddleToGrip(grip, `grip[${i}]`, hand);
     });
 
@@ -370,6 +501,18 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     setTimeout(() => sweepAndAttach('inputsourceschange'), 50);
   });
 
+  // Player flipped dominant hand from the settings screen mid-session. Re-run
+  // the sweep so the paddle moves across immediately instead of on the next
+  // controller event — a setting that only takes effect after you take the
+  // headset off and back on reads as broken. The sweep is a no-op when the
+  // paddle is already on the preferred hand, and falls back to the currently
+  // bound grip when the preferred hand's controller isn't tracked.
+  const unsubscribeProfile = subscribeProfile(() => {
+    if (activeHandedness === preferredPaddleHand()) return;
+    sweepAndAttach('hand-preference-changed');
+  });
+  session.addEventListener('end', () => { unsubscribeProfile(); });
+
   setTimeout(() => sweepAndAttach('timeout-1500ms'), 1500);
 
   return {
@@ -379,10 +522,29 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     getActiveInputSource,
     getOffHandGrip,
     getOffHandHandedness,
+    getOffHandInputSource,
     onPaddleAttached,
     getPaddleAnchor,
+    getRawPaddlePose,
     getSmoothedGripPose,
     updatePaddleVisual,
     triggerPaddleRecoil,
+    // Re-run the attach sweep on demand. Needed when setup is called before
+    // the paddle GLB exists: 'connected' events that arrive mid-download
+    // attach nothing (attachPaddleToGrip guards on paddleModel), so the
+    // caller re-sweeps once the model is in.
+    resweep: (reason = 'manual') => {
+      sweepAndAttach(reason);
+      // Retry if it missed. The 1500 ms startup sweep fires during the asset
+      // download and is spent by the time the paddle GLB exists, so a
+      // controller that is asleep or not yet tracked at models-loaded would
+      // otherwise never bind — the only remaining triggers are
+      // connect/disconnect/inputsourceschange (i.e. the player has to open and
+      // close the Quest system menu to get a paddle).
+      if (paddleOwner) return;
+      for (const ms of [500, 2000]) {
+        setTimeout(() => { if (!paddleOwner) sweepAndAttach(`${reason}-retry-${ms}ms`); }, ms);
+      }
+    },
   };
 }

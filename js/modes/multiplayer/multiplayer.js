@@ -22,7 +22,7 @@
 import * as THREE from 'three';
 import { scene } from '../../scene/sceneSetup.js';
 import {
-  paddleModel, ballModel, tableBox, tableSurfaceY, ballRadius,
+  paddleModel, ballModel, tableBox, tableSurfaceY, ballRadius, netBox,
   paddleFaceOffset, paddleFaceNormalLocal, paddleHitRadius, paddleHalfThickness,
 } from '../../scene/models.js';
 import { integrateFlightStep, applyTableBounce, isTableBounce } from '../../physics/rollout.js';
@@ -31,6 +31,7 @@ import {
   paddleFaceCenterWorld, paddleFaceNormalWorld, paddleVelocity,
 } from '../../physics/ball.js';
 import { resolvePaddleTablePenetration } from '../../physics/paddleTableClamp.js';
+import { GRAVITY } from '../../physics/constants.js';
 import { playBounceSound } from '../../scene/audio.js';
 import { PaddleSync } from '../../network/PaddleSync.js';
 import { GameStateSync, AUTHORITATIVE_EXTRAP_CAP_MS, BALL_EXTRAP_SUBSTEP_MS } from '../../network/GameStateSync.js';
@@ -41,11 +42,21 @@ import { TelemetryReporter } from '../../network/TelemetryReporter.js';
 import { ReconnectHandler } from '../../network/ReconnectHandler.js';
 import { SessionState } from '../../lobby/SessionState.js';
 import { hudLog } from '../../scene/hud.js';
+import { createMatchModel, createRallyTracker } from './matchModel.js';
+import { createPlayerServeController } from '../aiMatch/playerServe.js';
+import { createScoreboard } from '../../scene/scoreboard.js';
+import { faultRuleText } from '../../scene/faultText.js';
+import { pulseFoul } from '../../xr/haptics.js';
+import { createNetTouchWatcher } from '../../scene/netTouch.js';
+import { playFoulWhistle } from '../../scene/audio.js';
+import { createServeArrow } from '../../scene/serveArrow.js';
+import { createPointBurst } from '../../scene/pointBurst.js';
 
 export const MULTIPLAYER = { id: 'multiplayer', label: 'Multiplayer', usesFeeder: false };
 
-const SERVE_DELAY_MS = 1200;
-const RESPAWN_DELAY_MS = 1200;
+// Inter-rally window before the next serve arms: long enough to read the
+// serve indicator + scoreboard update (mirrors rallyManager's pacing).
+const NEXT_SERVE_DELAY_MS = 2500;
 const RECONCILIATION_INTERVAL_S = 1.5;
 
 // Remote state is evaluated on the sender's (clock-translated) timeline at
@@ -72,7 +83,7 @@ const TELEMETRY_URL = (() => {
   return `${proto}://${host}:8081/telemetry`;
 })();
 
-export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) {
+export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = null, arenaAnchor = null } = {}) {
   if (!multiplayer || !multiplayer.networkManager) {
     throw new Error('createMultiplayerDrill requires { multiplayer: { networkManager, role } }');
   }
@@ -88,6 +99,53 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
   sessionState.ballOwner = role === 'host' ? 'self' : 'opponent';
 
   const tableCenterZ = tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;
+
+  // --- Match state (scoring, serve turns, game end) ---
+  // Absolute side names ('host'/'guest') keep the model identical on both
+  // peers; myAbs/oppAbs translate to/from this peer's perspective.
+  const myAbs = role === 'host' ? 'host' : 'guest';
+  const oppAbs = myAbs === 'host' ? 'guest' : 'host';
+  const match = createMatchModel({ firstServer: 'host' });
+  // Full ITTF rulebook, shared with the AI match (js/modes/rallyRules.js).
+  // Geometry is read live so service-position and obstruction tests use the
+  // same table the physics does.
+  const tracker = createRallyTracker({
+    getGeometry: () => ({ tableBox, tableSurfaceY, centerZ: tableCenterZ, gravity: GRAVITY }),
+  });
+  // Net-assembly touch watcher — the one rule the ball's event stream can't
+  // see. Probes the paddle face centre that PaddleSync already samples.
+  const netTouchWatcher = createNetTouchWatcher({
+    getProbe: () => paddleFaceCenterWorld,
+    getNetBox: () => netBox,
+  });
+  // With the xr handle the physical toss is available (off-hand GRIP hold /
+  // release); the trigger auto-toss remains the fallback path.
+  const playerServe = createPlayerServeController({ xr });
+  const scoreboard = createScoreboard({
+    config: { bestOf: 1, playerName: 'YOU', aiName: 'OPPONENT' },
+    anchor: arenaAnchor,
+  });
+  // On-table serve cue, same as the AI match: pulsing chevrons on the
+  // LOCAL player's half whenever it's their serve. Both peers render their
+  // own half at tableBox.max.z (the opponent is mirrored across
+  // tableCenterZ by paddleSync), so a single unmirrored arrow is correct on
+  // each client — host and guest each see it on their own serve.
+  const serveArrow = createServeArrow();
+  // Over-net "+1" / "FOUL" flash at the moment a point is called; the
+  // scoreboard and HUD log carry the detail.
+  const pointBurst = createPointBurst();
+  let tossLive = false;             // my serve toss is airborne, not yet struck
+  // A point (or let) has been called and the dead ball is still on the table
+  // until openServeWindow hides it. Contacts and verdicts are ignored in that
+  // window — see onPaddleHit.
+  let rallyDecided = false;
+  // Fires for BOTH toss paths (off-hand grip release AND trigger auto-toss),
+  // so the serve UI hides here rather than in the launch() wrapper — the
+  // grip-release path never goes through launch() at all.
+  playerServe.onLaunch(() => {
+    tossLive = true;
+    if (serveArrow) serveArrow.hide();
+  });
 
   const paddleSync = new PaddleSync(tableCenterZ);
 
@@ -196,6 +254,19 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
     gameSync.clear();
     gameSync.setOwner('self');
     sessionState.ballOwner = 'self';
+    // Match bookkeeping: a handoff IS "the opponent struck the ball". From
+    // here every bounce runs in our sim, so our tracker can decide the rally.
+    //
+    // Two deliberate asymmetries, both because we only integrated the ball
+    // from this moment on and never saw their contact:
+    //   - the returned verdict is DISCARDED. Their contact is theirs to
+    //     judge (their sim has the ground-truth paddle pose), and they
+    //     publish any fault of their own.
+    //   - assumeServeBounced: on a slow link the handoff can arrive after
+    //     their serve already bounced on their half, and we'd read a legal
+    //     serve as one that skipped it. Never fault them for a bounce we
+    //     might simply not have been watching for.
+    tracker.registerHit('opponent', { assumeServeBounced: true });
   }
 
   // --- Remote paddle visual ---
@@ -260,10 +331,21 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
       }
       case PacketType.BALL_LOST: {
         if (ballModel) ballModel.visible = false;
-        // Other side observed the loss; sync ownership + (if host) schedule
-        // the next serve.
-        resetOwnershipToHost();
-        scheduleRespawn();
+        // The owner observed the loss. Hide the mirrored ball and drop any
+        // buffered remote state; the rally verdict + next serve arrive via
+        // the owner's RALLY_END (sent just after this message, same ordered
+        // channel).
+        releaseBallAuthority(match.getState().currentServer === myAbs ? 'self' : 'opponent');
+        break;
+      }
+      case PacketType.RALLY_END: {
+        // Only apply a verdict for the rally we're currently in — a stale or
+        // duplicated verdict (both sides deciding the same rally in a race)
+        // arrives with a rallySeq that no longer matches and is dropped.
+        // Named rallySeq (not seq): sendEvent stamps the transport sequence
+        // number into `seq` in place, which would clobber this field.
+        if (typeof msg.rallySeq === 'number' && msg.rallySeq !== match.getState().rallySeq) break;
+        applyRallyEnd(msg.winner || null, msg.reason || 'remote', msg.detail || null, msg.foul || null);
         break;
       }
       case PacketType.RECONCILIATION: {
@@ -311,6 +393,20 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
         sessionState.scoreOpponent = snap.scoreSelf | 0;
         sessionState.scoreSelf     = snap.scoreOpponent | 0;
         sessionState.rallyCount    = snap.rallyCount | 0;
+        // Match snapshot uses absolute host/guest sides — no inversion needed.
+        if (snap.match) {
+          match.restore(snap.match);
+          refreshScoreUi();
+          // The outage voided any in-flight rally; restart from a clean serve.
+          // Marked decided so a swing at the orphaned ball can't start a
+          // phantom rally before the serve window reopens.
+          tracker.reset();
+          rallyDecided = true;
+          tossLive = false;
+          playerServe.disarm();
+          if (serveArrow) serveArrow.hide();
+          if (!match.getState().gameOver) scheduleServeWindow();
+        }
         hudLog(`restored from host: owner=${invertedOwner}  rally=${sessionState.rallyCount}`);
         break;
       }
@@ -340,6 +436,11 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
   function onPaddleHit(info) {
     if (!info || info.origin !== 'player') return;
     if (!ballModel) return;
+    // Swings at a ball whose point is already decided are not play. The
+    // corpse stays visible until the next serve window opens 2.5s later, and
+    // a reflex return of a let (which the player has no way to know was a
+    // let) must not restart the rally or read as an obstruction.
+    if (rallyDecided) return;
     hm.localHit(gameSync.encodeForWire(ballModel.position, ballVelocity, ballAngularVelocity));
     // Keep (or grab — an early swing at a still-incoming dead-reckoned ball
     // can fire before we adopted the opponent's handoff) full authority for
@@ -348,14 +449,38 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
     gameSync.clear();
     gameSync.setOwner('self');
     sessionState.ballOwner = 'self';
+    // Match bookkeeping: our strike (serve or return) starts/continues the
+    // rally. It can also END it on the spot — an illegal volley, a double
+    // hit, or a serve struck from over the table. Only the ball owner may
+    // publish a verdict; during a handoff the adopting peer sees the same
+    // contact and issues it from their side.
+    const verdict = tracker.registerHit('self', {
+      contactPos: info.contactPos, inVel: info.inVel,
+    });
+    tossLive = false;
+    // Serve struck (or rally shot) — the "serve toward the net" cue has done
+    // its job. launch() already hides it on the toss; this covers the case
+    // where the strike lands first (fast toss-and-hit).
+    if (serveArrow) serveArrow.hide();
+    // Our own fault: we're the authority on our own paddle, so publish it
+    // even mid-handoff — the opponent's sim never saw our contact.
+    applyVerdictLocal(verdict);
   }
   // While our handoff is pending, exactly one authority may emit wire events
   // — the new owner. Local sounds/haptics already fired inside ball.js, so
   // suppressing the wire send loses nothing on our side, and the adopting
   // peer's own sim produces the bounce/net events locally.
   function onTableBounce(info) {
+    // Bounce events only fire while our sim integrates the ball (owner or
+    // pending hitter), so the tracker sees exactly the flight we're
+    // authoritative for.
+    const verdict = tracker.registerBounce(info.z, info.x);
     if (!gameSync.isLocalOwner() || hm.isPending()) return;
     nm.sendEvent({ type: PacketType.TABLE_BOUNCE, x: info.x, z: info.z, volume: 0.5 });
+    // Where the ball lands is what ends rallies: a double bounce on the
+    // receiver's side, a return that came down on the hitter's own half, an
+    // illegal serve — or a cord serve that still landed good, which is a let.
+    applyVerdictLocal(verdict);
   }
   function onNetHit(info) {
     if (!gameSync.isLocalOwner() || hm.isPending()) return;
@@ -364,6 +489,11 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
     netEidCounter += 2;
     nm.sendGame({ type: PacketType.NET_HIT_G, eid: netEidCounter, axis: info.axis });
     nm.sendEvent({ type: PacketType.NET_HIT, eid: netEidCounter, axis: info.axis });
+    // A net contact is NOT a point. This used to end the rally with "last
+    // hitter loses", which is not an ITTF rule and contradicted the AI match:
+    // a cord ball may dribble over and play on, and where it comes down
+    // decides. Recorded only so a cord SERVE that lands good becomes a let.
+    tracker.registerNetHit();
   }
   function onBallLost(info) {
     if (!gameSync.isLocalOwner()) return;
@@ -377,56 +507,165 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
       return;
     }
     nm.sendEvent({ type: PacketType.BALL_LOST, reason: info.reason });
-    // Both sides will reset ownership to "host owns next"; this side is the
-    // owner side, fire it locally.
-    resetOwnershipToHost();
-    scheduleRespawn();
+    // Stop retransmitting the dead ball's final state.
+    nm.outboundState.ball = null;
+    if (tossLive && !tracker.isActive()) {
+      // Serve toss whiffed before the strike — re-offer the serve, no point.
+      finishRallyLocal(null, 'serveTossLost');
+    } else if (tracker.isActive()) {
+      // A live rally always yields a verdict here (someone struck the ball,
+      // so someone owns the miss). Void it rather than hang the match if the
+      // rulebook ever has nothing to say.
+      if (!applyVerdictLocal(tracker.decideBallLost())) {
+        finishRallyLocal(null, 'ballLost');
+      }
+    }
+    // else: leftover ball from an already-decided rally (netHit/doubleBounce
+    // verdict) — the serve window is already scheduled; nothing to score.
   }
   ballEvents.onPaddleHit(onPaddleHit);
   ballEvents.onTableBounce(onTableBounce);
   ballEvents.onNetHit(onNetHit);
   ballEvents.onBallLost(onBallLost);
 
-  // --- Serve / respawn (host-driven) ---
-  // The host owns serves: both initial and post-miss respawn. Guest never
-  // spawns the ball; it always arrives via BALL_STATE packets. This keeps a
-  // single authority for the ball's existence — no race between peers about
-  // who serves after a missed rally.
+  // --- Serve turns + rally end (match-driven) ---
+  // The shared match model says whose serve it is; both peers run identical
+  // deterministic transitions, so they always agree. When the serve window
+  // opens, the server takes ball authority and arms a trigger toss (same
+  // press-trigger-to-toss controller the AI match uses); the receiver
+  // releases authority and waits for BALL_STATE packets. The serve strike is
+  // an ordinary paddle hit — the existing handoff protocol takes over.
   let serveTimer = null;
-  function hostServe() {
-    if (!tableBox || !ballModel) return;
-    const x = (tableBox.min.x + tableBox.max.x) / 2;
-    const y = tableSurfaceY + 0.6;
-    const z = tableBox.max.z - 0.1; // host's near edge
-    spawnBallAt(
-      new THREE.Vector3(x, y, z),
-      new THREE.Vector3((Math.random() - 0.5) * 0.5, 1.6, -1.8),
-      new THREE.Vector3(),
-    );
-    gameSync.setOwner('self');
-    sessionState.ballOwner = 'self';
-  }
-  function scheduleRespawn() {
-    if (role !== 'host') return;
-    if (serveTimer) return; // already pending — don't double-schedule
+  function scheduleServeWindow(delayMs = NEXT_SERVE_DELAY_MS) {
+    if (serveTimer) clearTimeout(serveTimer);
     serveTimer = setTimeout(() => {
       serveTimer = null;
-      hostServe();
-    }, RESPAWN_DELAY_MS);
+      openServeWindow();
+    }, delayMs);
   }
-  // Initial serve on entry
-  if (role === 'host') {
-    serveTimer = setTimeout(() => { serveTimer = null; hostServe(); }, SERVE_DELAY_MS);
+  function openServeWindow() {
+    if (match.getState().gameOver) return;
+    // Retire the previous rally's ball on both sides BEFORE authority flips —
+    // a dead ball still rolling in the ex-owner's sim would freeze mid-air
+    // the moment tickPhysics stops integrating for the new non-owner.
+    if (ballModel) ballModel.visible = false;
+    const iServe = match.getState().currentServer === myAbs;
+    // Tell the rulebook whose serve this is — the service-position and
+    // first-bounce rules key off it.
+    tracker.reset({ server: iServe ? 'self' : 'opponent' });
+    rallyDecided = false;
+    tossLive = false;
+    if (iServe) {
+      releaseBallAuthority('self');
+      playerServe.arm();
+      if (serveArrow) serveArrow.show();
+    } else {
+      releaseBallAuthority('opponent');
+      if (serveArrow) serveArrow.hide();
+    }
   }
 
-  // Ball-lost ownership reset: regardless of which peer's physics emitted the
-  // loss, the next ball will come from the host's serve, so both sides snap
-  // ownership accordingly. Called from local onBallLost and wire BALL_LOST.
-  function resetOwnershipToHost() {
-    // A guest that owned the ball when it was lost must also stop
-    // retransmitting its final ball packet — same bug as onPaddleHit.
-    releaseBallAuthority(role === 'host' ? 'self' : 'opponent');
+  // Push the current match state onto the scoreboard + session snapshot.
+  function refreshScoreUi() {
+    const s = match.getState();
+    sessionState.scoreSelf = myAbs === 'host' ? s.scoreHost : s.scoreGuest;
+    sessionState.scoreOpponent = myAbs === 'host' ? s.scoreGuest : s.scoreHost;
+    sessionState.rallyCount = s.rallySeq;
+    if (scoreboard) {
+      scoreboard.update({
+        playerScore: sessionState.scoreSelf,
+        aiScore: sessionState.scoreOpponent,
+        currentServer: s.currentServer === myAbs ? 'player' : 'ai',
+      });
+    }
   }
+
+  // Turn a rulebook verdict into a rally end. Returns true if it ended one.
+  // A let carries no winner: same server replays, nobody scores.
+  function applyVerdictLocal(verdict) {
+    if (!verdict || rallyDecided) return false;
+    if (verdict.let) {
+      finishRallyLocal(null, 'let');
+      return true;
+    }
+    finishRallyLocal(verdict.winner, verdict.reason, verdict.detail, verdict.foul);
+    return true;
+  }
+
+  // The ball owner decided the rally: broadcast the verdict (rallySeq =
+  // pre-apply rally counter for dedupe), then run the same transition locally.
+  // `foul` travels as an absolute side so each peer can work out whether the
+  // offender was them (and show the corrective coaching) or the opponent.
+  function finishRallyLocal(winnerLocal, reason, detail = null, foulLocal = null) {
+    const toAbs = (side) => (side === 'self' ? myAbs : side === 'opponent' ? oppAbs : null);
+    const winnerAbs = toAbs(winnerLocal);
+    nm.sendEvent({
+      type: PacketType.RALLY_END,
+      rallySeq: match.getState().rallySeq,
+      winner: winnerAbs,
+      reason,
+      detail,
+      foul: toAbs(foulLocal),
+    });
+    applyRallyEnd(winnerAbs, reason, detail, toAbs(foulLocal));
+  }
+
+  // Shared transition — runs on the deciding peer right after sending
+  // RALLY_END and on the other peer when the message arrives. Identical
+  // inputs (absolute winner) + identical model = identical resulting state.
+  function applyRallyEnd(winnerAbs, reason, detail = null, foulAbs = null) {
+    const s = match.applyRallyEnd(winnerAbs);
+    // The rally is over but the ball is still on the table until the serve
+    // window opens. Nothing that happens to it from here counts.
+    rallyDecided = true;
+    tracker.reset();
+    tossLive = false;
+    playerServe.disarm();
+    // Rally's over — the serve window is closed until openServeWindow()
+    // reopens it, so the on-table cue must not survive into the READY window
+    // (covers a whiffed toss, where no paddle hit ever fired).
+    if (serveArrow) serveArrow.hide();
+    refreshScoreUi();
+    if (winnerAbs) {
+      hudLog(`point ${winnerAbs === myAbs ? 'YOU' : 'OPPONENT'} (${reason})  ${sessionState.scoreSelf}-${sessionState.scoreOpponent}`);
+      // Instant over-net flash where the point just happened (skipped for
+      // lets — nobody scored). Fires on the deciding peer and, via
+      // RALLY_END, on the other peer too.
+      if (pointBurst) {
+        pointBurst.burst({
+          winner: winnerAbs === myAbs ? 'player' : 'ai',
+          foul: foulAbs ? (foulAbs === myAbs ? 'player' : 'ai') : null,
+        });
+      }
+    } else if (reason === 'let') {
+      hudLog('LET — net-cord serve landed good, replay');
+    }
+    // A fault of ours gets the umpire treatment: the whistle buzz on the
+    // paddle hand at the moment it's called, and the rule spelled out in the
+    // log.
+    if (foulAbs && foulAbs === myAbs) {
+      pulseFoul();
+      playFoulWhistle();
+      hudLog(`[FOUL] ${faultRuleText(reason, detail)}`);
+    }
+    if (s.gameOver) {
+      if (scoreboard) {
+        scoreboard.setMatchOverBanner(
+          s.gameWinner === myAbs
+            ? `YOU WIN ${sessionState.scoreSelf}-${sessionState.scoreOpponent}`
+            : `OPPONENT WINS ${sessionState.scoreOpponent}-${sessionState.scoreSelf}`,
+        );
+      }
+      hudLog(`game over: ${s.gameWinner === myAbs ? 'you win' : 'opponent wins'}`);
+      return;
+    }
+    scheduleServeWindow();
+  }
+
+  // Initial serve on entry: host serves first, both peers arrive at the same
+  // conclusion from the shared model — no wire coordination needed.
+  refreshScoreUi();
+  scheduleServeWindow();
 
   // --- Telemetry: pc.getStats() every 2 s → POST to telemetry server ---
   // Reassigned on reconnect (new pc).
@@ -461,6 +700,13 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
   function wireConnection() {
     nm.on('gameMessage', onGameMessage);
     nm.on('eventMessage', onEventMessage);
+    // Congestion governor transitions (NetworkManager halves/restores the
+    // send rate itself; this is just operator visibility).
+    nm.on('congestion', ({ congested, bufferedBytes, queuingDelayMs }) => {
+      hudLog(congested
+        ? `net congestion: backing off (buffered=${bufferedBytes}B queue=${queuingDelayMs === null ? '?' : queuingDelayMs.toFixed(0)}ms)`
+        : 'net congestion: clear — rate restored');
+    });
     nm.startSendLoop(60);
     startTelemetry();
   }
@@ -508,7 +754,20 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
       nm = newNm;
       wireConnection();
       reconnect.watch(nm);
-      nm.sendEvent({ type: PacketType.RECONNECT_RESTORE, snapshot: sessionState.serialize() });
+      // Match snapshot rides along in absolute host/guest sides; the guest
+      // adopts it verbatim (host is ground truth after an outage).
+      nm.sendEvent({
+        type: PacketType.RECONNECT_RESTORE,
+        snapshot: { ...sessionState.serialize(), match: match.serialize() },
+      });
+      // The outage voided any in-flight rally on this side too — restart
+      // from a clean serve window (no point awarded).
+      tracker.reset();
+      rallyDecided = true;
+      tossLive = false;
+      playerServe.disarm();
+      if (serveArrow) serveArrow.hide();
+      if (!match.getState().gameOver) scheduleServeWindow();
     });
     reconnect.on('failed', ({ attempts }) => {
       hudLog(`reconnect failed after ${attempts} attempts — ending session`);
@@ -537,8 +796,20 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
       releaseBallAuthority('opponent');
     }
 
+    // 0c. Feed measured one-way latency into the ball projection cap so slow
+    // links dead-reckon to "now" instead of lagging by (packet age − cap).
+    if (nm.clock) gameSync.setLatencyMs(nm.clock.oneWayMs());
+
     // 1. Sample local paddle face → outbound paddle packet.
     paddleSync.writeLocal(nm.outboundState, paddleFaceCenterWorld, paddleFaceNormalWorld, paddleVelocity);
+
+    // 1b. ITTF Law 2.10 — touching the net assembly while the ball is in
+    // play. Each peer is the only authority on where its own paddle is, so
+    // we call our own and publish it like any other verdict. Guarded on an
+    // undecided, active rally.
+    if (!rallyDecided && tracker.isActive() && netTouchWatcher.update()) {
+      applyVerdictLocal(tracker.registerNetTouch('self'));
+    }
 
     // 2. If owner, sample local ball → outbound ball packet.
     //    If non-owner, overwrite local ball state with interpolated remote.
@@ -598,6 +869,15 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
     remoteGroup.position.copy(aiFaceCenter);
     tmpQuat.setFromUnitVectors(paddleFaceNormalLocal, aiFaceNormal);
     remoteGroup.quaternion.copy(tmpQuat);
+
+    // 4. Serve/score UI.
+    // Off-hand grip poll for the physical serve toss — only does work while
+    // this peer is armed to serve or mid-hold.
+    playerServe.update(dt);
+    // Drives the arrow's fade ramp, opacity pulse and chevron UV scroll —
+    // without this call the mesh never becomes visible at all.
+    if (serveArrow) serveArrow.update(dt);
+    if (pointBurst) pointBurst.update(dt);
   }
 
   // Pending counts as owning: tickPhysics must keep integrating our post-hit
@@ -605,9 +885,23 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
   // pending window, so the || is belt-and-braces).
   function isLocalOwner() { return gameSync.isLocalOwner() || hm.isPending(); }
   function isFinished() { return false; }
+  // Trigger pull routed from inGame.js — spawns the auto-toss when armed
+  // (i.e. it's our serve and the window is open); no-op otherwise, including
+  // while the ball is held in the off-hand. UI hiding lives in the
+  // playerServe.onLaunch subscription above (covers both toss paths).
+  function launch() {
+    return playerServe.launch();
+  }
   function liveLine() {
+    const s = match.getState();
+    const my = myAbs === 'host' ? s.scoreHost : s.scoreGuest;
+    const opp = myAbs === 'host' ? s.scoreGuest : s.scoreHost;
+    if (s.gameOver) {
+      return `Multiplayer — ${s.gameWinner === myAbs ? 'YOU WIN' : 'OPPONENT WINS'}  ${my}-${opp}`;
+    }
     const own = isLocalOwner() ? (hm.isPending() ? 'OWN*' : 'OWN') : 'OPP';
-    return `Multiplayer (${role})  ball=${own}`;
+    const serve = s.currentServer === myAbs ? 'your serve' : 'opponent serves';
+    return `Multiplayer ${my}-${opp}  ${serve}  ball=${own}`;
   }
   function dispose() {
     if (serveTimer) clearTimeout(serveTimer);
@@ -618,6 +912,17 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
     if (telemetry) telemetry.stop();
     if (reconnect) reconnect.dispose();
     document.removeEventListener('visibilitychange', onVisibilityChange);
+    if (scoreboard) scoreboard.dispose();
+    if (serveArrow) serveArrow.dispose();
+    if (pointBurst) pointBurst.dispose();
+    playerServe.dispose();
+    // Unsubscribe ball events so a re-entered multiplayer session doesn't
+    // score through this dead drill's handlers (same double-scoring leak
+    // rallyManager guards against).
+    if (ballEvents.offPaddleHit)   ballEvents.offPaddleHit(onPaddleHit);
+    if (ballEvents.offTableBounce) ballEvents.offTableBounce(onTableBounce);
+    if (ballEvents.offNetHit)      ballEvents.offNetHit(onNetHit);
+    if (ballEvents.offBallLost)    ballEvents.offBallLost(onBallLost);
     // Note: NetworkManager teardown is owned by the session end handler in
     // inGame.js, not the drill — so quitting back to the wrist menu doesn't
     // drop the peer connection.
@@ -626,6 +931,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks } = {}) 
   return {
     update,
     isFinished,
+    launch,
     liveLine,
     dispose,
     isLocalOwner,

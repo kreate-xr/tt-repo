@@ -331,11 +331,12 @@ describe('createIntermediateEngine.computeTarget', () => {
       history.push([i, i * 100, 0.5, 0.8, 0, 50, 6, 0]);
     }
     // Even with clustered struggle data, fewer than 5 shots = no exploit.
-    // Payload is now 6 elements: [x, z, speed, spin, conf, shotType].
+    // Payload is 7 elements: [x, z, speed, spin, conf, shotType, sidespin].
     const t = engine.computeTarget(history, {});
-    expect(t).toHaveLength(6);
+    expect(t).toHaveLength(7);
     expect(t[4]).toBe(1.0);
     expect(typeof t[5]).toBe('string');
+    expect(Number.isFinite(t[6])).toBe(true);
   });
 
   test('with 10+ shots clustered, output is inside safe-zone bounds', () => {

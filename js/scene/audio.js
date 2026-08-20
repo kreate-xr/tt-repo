@@ -317,11 +317,19 @@ export function playBounceSound(volume, position) {
 // sub-bass "body" frequency. Heavier-feeling hits use a lower-pitched thud
 // (bigger objects ring at lower frequencies — cross-modal weight cue). If
 // intensity is omitted, falls back to volume.
-export function playPaddleHitSound(volume, intensity, position) {
+//
+// `shape` is the optional blade-weight shaping from physics/paddleWeight.js
+// ({ bodyFreqScale, bodyDecayScale, bodyGainScale }). It moves the sub-bass
+// body only — the rubber click on top is a property of the rubber, not the
+// blade mass. Omitted → neutral, byte-identical to the pre-weight sound.
+export function playPaddleHitSound(volume, intensity, position, shape) {
   const a = ensureAudioGraph();
   const t = a.currentTime;
   const vol = Math.min(volume, 1.0);
   const k = intensity != null ? Math.min(Math.max(intensity, 0), 1) : vol;
+  const freqScale  = shape && shape.bodyFreqScale  > 0 ? shape.bodyFreqScale  : 1;
+  const decayScale = shape && shape.bodyDecayScale > 0 ? shape.bodyDecayScale : 1;
+  const gainScale  = shape && shape.bodyGainScale  > 0 ? shape.bodyGainScale  : 1;
 
   // Sub-bass gets less reverb than the click — real halls carry mids further,
   // but a wet low-end here would smear into a boom on hard smashes.
@@ -353,27 +361,39 @@ export function playPaddleHitSound(volume, intensity, position) {
   // harder hits (matches real heavy-object physics). Sub-bass is *felt* more
   // than *heard* on the Quest 3s speakers; a longer envelope and higher gain
   // register in the chest, which reads as mass. 100 ms exponential decay.
-  const bodyFreq = 160 - 70 * k;  // 160 Hz soft → 90 Hz smash
+  //
+  // Blade weight shifts this layer: a heavier bat rings lower and slightly
+  // longer. Floored at 40 Hz — below that the Quest speakers reproduce nothing
+  // and the "hit" loses its body entirely instead of gaining weight.
+  const bodyFreq = Math.max(40, (160 - 70 * k) * freqScale);  // 160 Hz soft → 90 Hz smash
+  const bodyDecay = 0.1 * decayScale;
   const body = a.createOscillator();
   const bodyGain = a.createGain();
   body.type = 'sine';
   body.frequency.setValueAtTime(bodyFreq, t);
-  body.frequency.exponentialRampToValueAtTime(Math.max(50, bodyFreq * 0.7), t + 0.09);
-  bodyGain.gain.setValueAtTime(vol * 0.58, t);
-  bodyGain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  body.frequency.exponentialRampToValueAtTime(
+    Math.max(40, bodyFreq * 0.7), t + bodyDecay * 0.9,
+  );
+  bodyGain.gain.setValueAtTime(Math.min(1, vol * 0.58 * gainScale), t);
+  bodyGain.gain.exponentialRampToValueAtTime(0.001, t + bodyDecay);
 
   body.connect(bodyGain).connect(head);
   body.start(t);
-  body.stop(t + 0.11);
+  body.stop(t + bodyDecay + 0.01);
 }
 
 // Wood-edge strike — sharp, dry "clack" for when the ball hits the paddle
 // rim instead of the rubber face.
-export function playPaddleEdgeSound(volume, intensity, position) {
+// `shape` as in playPaddleHitSound. Here it moves the tonal ring of the clack
+// (the wood itself) but leaves the noise burst alone — the burst is the ball
+// skidding off the rim, which does not care how heavy the blade is.
+export function playPaddleEdgeSound(volume, intensity, position, shape) {
   const a = ensureAudioGraph();
   const t = a.currentTime;
   const vol = Math.min(volume, 1.0);
   const k = intensity != null ? Math.min(Math.max(intensity, 0), 1) : vol;
+  const freqScale  = shape && shape.bodyFreqScale  > 0 ? shape.bodyFreqScale  : 1;
+  const decayScale = shape && shape.bodyDecayScale > 0 ? shape.bodyDecayScale : 1;
 
   // Edge clacks are the most dramatic hall echo in real play — bumped wet.
   const head = makeSpatialHead(position, { dry: 0.85, wet: 0.75 });
@@ -399,16 +419,17 @@ export function playPaddleEdgeSound(volume, intensity, position) {
   noiseSrc.start(t);
   noiseSrc.stop(t + dur);
 
+  const ringDecay = 0.035 * decayScale;
   const osc = a.createOscillator();
   const oscGain = a.createGain();
   osc.type = 'sine';
-  osc.frequency.setValueAtTime(2800 + 400 * k, t);
-  osc.frequency.exponentialRampToValueAtTime(1800, t + 0.03);
+  osc.frequency.setValueAtTime((2800 + 400 * k) * freqScale, t);
+  osc.frequency.exponentialRampToValueAtTime(1800 * freqScale, t + ringDecay * 0.85);
   oscGain.gain.setValueAtTime(vol * 0.22, t);
-  oscGain.gain.exponentialRampToValueAtTime(0.001, t + 0.035);
+  oscGain.gain.exponentialRampToValueAtTime(0.001, t + ringDecay);
   osc.connect(oscGain).connect(head);
   osc.start(t);
-  osc.stop(t + 0.04);
+  osc.stop(t + ringDecay + 0.005);
 }
 
 // ---------------------------------------------------------------------------
@@ -619,4 +640,82 @@ export function playMenuSelectClick() {
   osc.connect(oscGain).connect(head);
   osc.start(t);
   osc.stop(t + 0.075);
+}
+
+// Umpire's whistle — two short blasts, called when the local player fouls.
+//
+// Synthesized rather than sampled: public/ carries only the three crowd
+// tracks, and a rules call needs a sound that is unmistakably NOT part of
+// the rally. A real pea whistle is a strong ~2.4kHz tone plus a slightly
+// detuned partial, warbling as the pea rattles, over a breathy noise floor.
+// That combination is what makes it read as a whistle rather than a beep,
+// so all three parts are here.
+//
+// Non-spatial (position null): the umpire is not an object in the arena, and
+// panning the call would make the player look for a source that isn't there.
+const WHISTLE_BLAST_S = 0.16;
+const WHISTLE_GAP_S = 0.09;
+const WHISTLE_FREQ_HZ = 2400;
+// The pea's rattle. Fast enough to hear as texture, not as vibrato.
+const WHISTLE_WARBLE_HZ = 28;
+const WHISTLE_WARBLE_CENTS = 55;
+
+function whistleBlast(a, head, startAt, duration) {
+  // Body: two oscillators a few cents apart beat against each other, which
+  // is most of the "air" in a whistle tone.
+  for (const [detune, level] of [[0, 0.10], [WHISTLE_WARBLE_CENTS, 0.055]]) {
+    const osc = a.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(WHISTLE_FREQ_HZ, startAt);
+    osc.detune.setValueAtTime(detune, startAt);
+    // Pea rattle: a small periodic pitch wobble on the upper partial only.
+    if (detune !== 0) {
+      const lfo = a.createOscillator();
+      lfo.type = 'sine';
+      lfo.frequency.value = WHISTLE_WARBLE_HZ;
+      const lfoGain = a.createGain();
+      lfoGain.gain.value = 30; // cents of swing
+      lfo.connect(lfoGain).connect(osc.detune);
+      lfo.start(startAt);
+      lfo.stop(startAt + duration);
+    }
+    const g = a.createGain();
+    // Fast but not instant attack — a clicked-on sine sounds like a beep.
+    g.gain.setValueAtTime(0.0001, startAt);
+    g.gain.exponentialRampToValueAtTime(level, startAt + 0.012);
+    g.gain.setValueAtTime(level, startAt + duration - 0.03);
+    g.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+    osc.connect(g).connect(head);
+    osc.start(startAt);
+    osc.stop(startAt + duration + 0.01);
+  }
+
+  // Breath: bandpassed noise around the fundamental.
+  const bufSize = Math.max(1, Math.floor(a.sampleRate * duration));
+  const buf = a.createBuffer(1, bufSize, a.sampleRate);
+  const data = buf.getChannelData(0);
+  for (let i = 0; i < bufSize; i++) data[i] = Math.random() * 2 - 1;
+  const noise = a.createBufferSource();
+  noise.buffer = buf;
+  const bp = a.createBiquadFilter();
+  bp.type = 'bandpass';
+  bp.frequency.value = WHISTLE_FREQ_HZ;
+  bp.Q.value = 6;
+  const nGain = a.createGain();
+  nGain.gain.setValueAtTime(0.0001, startAt);
+  nGain.gain.exponentialRampToValueAtTime(0.045, startAt + 0.015);
+  nGain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+  noise.connect(bp).connect(nGain).connect(head);
+  noise.start(startAt);
+  noise.stop(startAt + duration);
+}
+
+export function playFoulWhistle() {
+  const a = ensureAudioGraph();
+  const t = a.currentTime;
+  // Dry-heavy: a whistle in a hall has some tail, but too much wet turns the
+  // two blasts into one smear.
+  const head = makeSpatialHead(null, { dry: 1.0, wet: 0.25 });
+  whistleBlast(a, head, t, WHISTLE_BLAST_S);
+  whistleBlast(a, head, t + WHISTLE_BLAST_S + WHISTLE_GAP_S, WHISTLE_BLAST_S);
 }

@@ -30,12 +30,14 @@ import { PacketType } from './serialization.js';
 export const PING_INTERVAL_MS = 250;
 const SAMPLE_WINDOW = 16; // ~4 s of history at 250 ms cadence
 const EWMA_ALPHA = 0.2;
+const RTT_EWMA_ALPHA = 0.25; // smoothed-RTT tracker for queuingDelayMs()
 
 export class ClockSync {
   constructor() {
     this.samples = []; // { offset, rtt }, newest last
     this.offset = 0;   // peer clock minus local clock, ms
     this.hasSync = false;
+    this.srtt = null;  // EWMA of raw RTT, ms — feeds queuingDelayMs()
   }
 
   // Build a ping packet. Caller sends it on the game channel.
@@ -57,6 +59,7 @@ export class ClockSync {
 
     this.samples.push({ offset: pong.t1 - (pong.t0 + now) / 2, rtt });
     if (this.samples.length > SAMPLE_WINDOW) this.samples.shift();
+    this.srtt = this.srtt === null ? rtt : this.srtt + RTT_EWMA_ALPHA * (rtt - this.srtt);
 
     let best = this.samples[0];
     for (const s of this.samples) {
@@ -85,6 +88,19 @@ export class ClockSync {
       if (s.rtt < min) min = s.rtt;
     }
     return min / 2;
+  }
+
+  // Smoothed RTT above the windowed minimum — an estimate of standing
+  // queuing delay in the path. Sits near 0 on an idle link regardless of its
+  // base latency; climbs when send load (ours or cross-traffic) is filling a
+  // slow link's buffers (bufferbloat). Null before the first pong.
+  queuingDelayMs() {
+    if (this.srtt === null || this.samples.length === 0) return null;
+    let min = Infinity;
+    for (const s of this.samples) {
+      if (s.rtt < min) min = s.rtt;
+    }
+    return Math.max(0, this.srtt - min);
   }
 
   isReady() {

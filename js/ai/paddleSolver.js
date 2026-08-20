@@ -136,6 +136,14 @@ const CORRECTION_MAX_SCALE = 1.8;
 // bar.
 const CORRECTION_TARGET_ERROR_M = 0.05;
 
+// Aim-shift budget for sidespin shots (see the aim-shift pass in solvePaddle).
+// Each iteration is one pass-1 closed form + one pass-2 rollout. The lateral
+// drift is near-linear in the aim offset, so the fixed-point iteration
+// converges fast — 3 covers the tier sidespin bands with margin, and shots
+// that haven't converged by then still enter the range-correction loop with
+// the best shifted solution found.
+const AIM_SHIFT_MAX_ITERS = 3;
+
 // Launch-angle bisection budget. Each iteration is one closed-form evaluation
 // (no rollout), so this is cheap — but raising it past ~10 does not help,
 // because beyond the deliverable speed band the extra precision only finds
@@ -272,7 +280,7 @@ function rolloutToFirstBounce(startPos, startVel, startSpin, env) {
 
 // Pass-1 analytical inverse. Returns { paddleV_out, faceNormal, paddle_v_normal_mag,
 //                                       paddle_v_tangent_mag, feasible } or { feasible: false }.
-function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, maxPaddleSpeed) {
+function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed) {
   // Iterate launch angle to find a velocity vector whose flight from
   // contactPos arrives at targetWorld with magnitude ≈ targetSpeed at
   // landing. Spec is intentionally loose ("interpret target_speed as
@@ -416,9 +424,25 @@ function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targe
   // the spin request, masking the bug.
   const paddleTangentMag = (targetSpin * 2 * Math.PI) / SPIN_CAPTURE_GAIN;
 
+  // Sidespin: a SECOND tangential component, along the horizontal face-plane
+  // axis (tiltAxis) instead of the vertical one. Horizontal slip crosses the
+  // face normal into a vertical Δω — spin about the up axis, which Magnus
+  // turns into lateral curl. Same slip inversion as the vertical component
+  // above; the face normal is NOT re-tilted for it (the top/back tilt is a
+  // telegraph of elevation intent — sidespin lives purely in the brush).
+  //
+  // The lateral curl this produces lands the ball OFF the ballistic aim
+  // point; solvePaddle cancels that systematically with the aim-shift pass
+  // rather than asking pass 1 to model Magnus (see the measurement note
+  // above on why folding Magnus into the closed form makes things worse).
+  const paddleSideTangentMag = (targetSideSpin * 2 * Math.PI) / SPIN_CAPTURE_GAIN;
+
   const paddleV = new THREE.Vector3()
     .addScaledVector(faceNormal, paddleNormalMag)
     .addScaledVector(tangentDir, paddleTangentMag);
+  if (paddleSideTangentMag !== 0 && tiltAxis.lengthSq() > 1e-8) {
+    paddleV.addScaledVector(tiltAxis, paddleSideTangentMag);
+  }
 
   const paddleSpeed = paddleV.length();
   const feasible = paddleSpeed <= maxPaddleSpeed;
@@ -457,6 +481,9 @@ function pass2Verify(contactPos, contactVel, contactSpin, paddleV, faceNormal, e
 //   targetX, targetZ           spec coords (signed x, non-negative "from net" z on player side)
 //   targetSpeed                m/s, AI's intended OUTGOING landing speed
 //   targetSpin                 rps, signed (+ topspin, - slice)
+//   targetSideSpin             rps, signed, optional (default 0) — spin about
+//                              the vertical axis; the ball curls laterally in
+//                              flight. Sign convention follows Δω = slip × n.
 //   contactPos                 Vector3 world — predicted AI contact point
 //   contactVel                 Vector3 world — predicted ball velocity at contact
 //   contactSpin                Vector3 world — predicted ball angular velocity at contact
@@ -473,7 +500,7 @@ function pass2Verify(contactPos, contactVel, contactSpin, paddleV, faceNormal, e
 //     landingError:       number m  (distance to target; null if no bounce)
 //   }
 export function solvePaddle({
-  targetX, targetZ, targetSpeed, targetSpin,
+  targetX, targetZ, targetSpeed, targetSpin, targetSideSpin = 0,
   contactPos, contactVel, contactSpin,
   difficulty, env,
 }) {
@@ -482,7 +509,7 @@ export function solvePaddle({
   specTargetToWorld(targetX, targetZ, env.tableCenterZ, env.tableSurfaceY, targetWorld);
 
   // Pass 1.
-  const pass1 = pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, maxPaddleSpeed);
+  const pass1 = pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed);
   if (!pass1.feasible) {
     return {
       feasible: false,
@@ -525,6 +552,52 @@ export function solvePaddle({
     };
   }
 
+  // Aim-shift pass — sidespin only.
+  //
+  // Sidespin Magnus curls the flight LATERALLY, so the ball lands off to the
+  // side of the ballistic aim point. The range-correction loop below can only
+  // scale pace along the solved direction — a lateral miss is invisible to it
+  // — so without this pass every sidespin shot over the curl budget came back
+  // infeasible and aiFSM's fallback re-solved at spin 0: the feature would
+  // strip itself exactly when it was asked for.
+  //
+  // Fix is how a human hits a sidespin shot: aim off-target and let the curl
+  // bring it back. Re-run pass 1 at a virtual target displaced opposite the
+  // observed miss (fixed-point iteration, cumulative shift), keeping the best
+  // verified solution. Not folded into pass 1 analytically for the same
+  // measured reason Magnus isn't (see the note above pass1Analytical).
+  let base = pass1;
+  let baseLanding = verify.landing;
+  let baseError = error;
+  if (targetSideSpin !== 0) {
+    const virtualTarget = targetWorld.clone();
+    for (let i = 0; i < AIM_SHIFT_MAX_ITERS && baseError > ACCEPTABLE_LANDING_ERROR_M; i++) {
+      virtualTarget.x += targetWorld.x - baseLanding.x;
+      virtualTarget.z += targetWorld.z - baseLanding.z;
+      const p = pass1Analytical(contactPos, contactVel, virtualTarget, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed);
+      if (!p.feasible) break;
+      const vv = pass2Verify(contactPos, contactVel, contactSpin, p.paddleV, p.faceNormal, env);
+      if (!vv.landing) break;
+      const e = Math.hypot(vv.landing.x - targetWorld.x, vv.landing.z - targetWorld.z);
+      if (e < baseError) {
+        base = p;
+        baseLanding = vv.landing;
+        baseError = e;
+      }
+    }
+    if (baseError <= ACCEPTABLE_LANDING_ERROR_M) {
+      return {
+        feasible: true,
+        reason: null,
+        paddleV: base.paddleV,
+        faceNormal: base.faceNormal,
+        paddleSpeed: base.paddleV.length(),
+        predictedLanding: { x: baseLanding.x, z: baseLanding.z },
+        landingError: baseError,
+      };
+    }
+  }
+
   // Iterative range correction — a damped shooting method around pass 2.
   //
   // This is where the solver's accuracy actually comes from. Pass 1 is a
@@ -542,12 +615,12 @@ export function solvePaddle({
   //
   // We keep the BEST iterate rather than the last, so an overshooting step can
   // never make the returned answer worse than what we already had.
-  let corrected = pass1.paddleV.clone();
-  let lastLanding = verify.landing;
-  let bestPaddleV = pass1.paddleV.clone();
-  let bestLanding = verify.landing;
-  let bestError = error;
-  let correctedSpeed = pass1.paddleSpeed;
+  let corrected = base.paddleV.clone();
+  let lastLanding = baseLanding;
+  let bestPaddleV = base.paddleV.clone();
+  let bestLanding = baseLanding;
+  let bestError = baseError;
+  let correctedSpeed = base.paddleV.length();
 
   const distTarget = Math.hypot(targetWorld.x - contactPos.x, targetWorld.z - contactPos.z);
 
@@ -561,8 +634,8 @@ export function solvePaddle({
 
     // Re-decompose: scale only the normal component, preserve the tangent so
     // the requested spin is not disturbed by a range correction.
-    const normalVec = pass1.faceNormal.clone()
-      .multiplyScalar(corrected.dot(pass1.faceNormal));
+    const normalVec = base.faceNormal.clone()
+      .multiplyScalar(corrected.dot(base.faceNormal));
     const tangentVec = corrected.clone().sub(normalVec);
     corrected = normalVec.multiplyScalar(scale).add(tangentVec);
 
@@ -572,14 +645,14 @@ export function solvePaddle({
         feasible: false,
         reason: SOLVER_REASONS.CORRECTED_SPEED_CAP,
         paddleV: corrected,
-        faceNormal: pass1.faceNormal,
+        faceNormal: base.faceNormal,
         paddleSpeed: correctedSpeed,
         predictedLanding: { x: bestLanding.x, z: bestLanding.z },
         landingError: bestError,
       };
     }
 
-    const v = pass2Verify(contactPos, contactVel, contactSpin, corrected, pass1.faceNormal, env);
+    const v = pass2Verify(contactPos, contactVel, contactSpin, corrected, base.faceNormal, env);
     if (!v.landing) break;
     lastLanding = v.landing;
     const err = Math.hypot(v.landing.x - targetWorld.x, v.landing.z - targetWorld.z);
@@ -596,7 +669,7 @@ export function solvePaddle({
     feasible,
     reason: feasible ? null : SOLVER_REASONS.LANDING_ERROR,
     paddleV: bestPaddleV,
-    faceNormal: pass1.faceNormal,
+    faceNormal: base.faceNormal,
     paddleSpeed: bestPaddleV.length(),
     predictedLanding: { x: bestLanding.x, z: bestLanding.z },
     landingError: bestError,

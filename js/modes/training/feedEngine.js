@@ -68,7 +68,7 @@ const THETA_MIN = -0.9;
 // launch, and clamping at 1.35 rad (77°) stopped Newton converging on exactly
 // those shots. The peak-range angle sits far below this, so widening it costs
 // the search nothing and only gives the high branch room.
-const THETA_MAX = 1.45;
+const THETA_MAX = 1.50;
 
 const TERNARY_ITERS = 14;
 const BISECT_ITERS = 18;
@@ -97,16 +97,13 @@ const _up = new THREE.Vector3(0, 1, 0);
 
 // --- Geometry ---------------------------------------------------------------
 
-// Rows of the 3×3 grid, near-net first. Depth overrides which row is used
-// (M1: "depth — overrides placement y-band"), so the two share this mapping.
-const DEPTH_ROW = { short: 0, 'half-long': 1, deep: 2 };
-
 /**
  * Centre of a 3×3 placement zone on the PLAYER's half.
  *
  * Zones read like a phone keypad with 5 in the middle: 1–3 nearest the net,
- * 7–9 nearest the player's end line. Row is taken from `depth` rather than
- * from the zone, per the spec's override rule; the zone supplies the column.
+ * 7–9 nearest the player's end line. The zone is authoritative for both row
+ * and column; configs that carry a separate `depth` are expected to encode it
+ * in the zone number (see zoneForDepth in drillConfig.js).
  *
  * Player half is +z (the feeder sits at −z), matching the existing feeder and
  * models.js.
@@ -129,7 +126,7 @@ export function zoneTarget(config, env, out = new THREE.Vector3()) {
   }
 
   const col = (config.placement.zone - 1) % 3;
-  const row = DEPTH_ROW[config.depth];
+  const row = Math.floor((config.placement.zone - 1) / 3);
 
   // Band centres at 1/6, 3/6, 5/6 across each axis — a sixth in from each
   // edge, which keeps the outer zones clear of the edge without collapsing

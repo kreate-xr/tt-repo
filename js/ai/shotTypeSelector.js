@@ -743,11 +743,69 @@ export function selectShotType({ difficulty, incoming, recentTypes, rng, momentu
   return weightedSample(w, rng) || SHOT_TYPES.TOPSPIN_DRIVE;
 }
 
+// --- Sidespin ---------------------------------------------------------------
+//
+// The scalar `spin` above is topspin/backspin — rotation about the lateral
+// axis, bending the ball down or floating it. Sidespin is rotation about the
+// VERTICAL axis: the ball curls left or right in flight and kicks sideways
+// off the bounce. Real rally shots carry it constantly — a brushed slice, a
+// sidespin push, a hooked loop — and its absence is one of the tells that
+// the opponent is a machine: every ball flies in a vertical plane.
+//
+// How likely a stroke is to be brushed sideways, as a multiplier on the
+// tier's base probability. Grounded in how the strokes are actually hit:
+// slices/chops/pushes are wrist-brushed (easy to angle sideways), the flip
+// is the banana flick (sidespin is half the point), loops hook/fade, the
+// smash is hit flat and hard through the ball — no sidespin, ever.
+export const SIDESPIN_TYPE_FACTOR = Object.freeze({
+  slice:         1.0,
+  flip:          0.9,
+  chop:          0.8,
+  push:          0.7,
+  loop:          0.6,
+  block:         0.5,
+  drop_shot:     0.5,
+  topspin_drive: 0.35,
+  lob:           0.2,
+  smash:         0.0,
+});
+
+// Per-tier base probability and magnitude band (rps, always positive here —
+// the sign is a fair coin at sample time; left and right are equally easy).
+//
+// Magnitudes are deliberately BELOW the topspin numbers for each tier:
+// MAGNUS_COEFFICIENT is ~9x physical (see PROFILE_OVERRIDES notes), so even
+// a few rps of vertical-axis spin produces a visible curl, and the solver
+// must cancel the lateral drift by aiming off-target (see the aim-shift
+// pass in paddleSolver.js) — the bigger the request, the bigger the aim
+// offset it has to find. These bands are inside what that pass converges on
+// reliably; raise them only against tests/paddleSolver.test.js sidespin
+// feasibility numbers.
+export const SIDESPIN_BY_DIFFICULTY = Object.freeze({
+  beginner:     { prob: 0.45, min: 2.0, max: 6.0 },
+  intermediate: { prob: 0.55, min: 3.0, max: 9.0 },
+  pro:          { prob: 0.60, min: 4.0, max: 11.0 },
+});
+
+// Signed sidespin (rps) for one shot, or 0 — most shots still fly straight.
+export function sampleSideSpin({ shotType, difficulty, rng }) {
+  const tier = SIDESPIN_BY_DIFFICULTY[difficulty] || SIDESPIN_BY_DIFFICULTY.intermediate;
+  const factor = SIDESPIN_TYPE_FACTOR[shotType] !== undefined
+    ? SIDESPIN_TYPE_FACTOR[shotType]
+    : SIDESPIN_TYPE_FACTOR.topspin_drive;
+  if (factor <= 0 || rng() >= tier.prob * factor) return 0;
+  const mag = tier.min + rng() * (tier.max - tier.min);
+  return rng() < 0.5 ? -mag : mag;
+}
+
 // Draw concrete speed/spin from the type's Gaussian distribution for THIS
 // difficulty (base profile merged with the tier override), clipped first to
 // that profile's characteristic bounds and then to the difficulty rail. The
 // rail is set clear of every profile bound, so in normal play only the
 // profile bounds bite — see PROFILE_OVERRIDES.
+//
+// sideSpin rides along in the same draw (see sampleSideSpin) so the three
+// engines get the full spin state from one call.
 export function sampleShotParameters({ shotType, difficulty, rng }) {
   const profile = profileFor(shotType, difficulty);
   const caps    = DIFFICULTY_CAPS[difficulty] || DIFFICULTY_CAPS.intermediate;
@@ -757,5 +815,6 @@ export function sampleShotParameters({ shotType, difficulty, rng }) {
                       caps.minSpeed, caps.maxSpeed);
   const spin = clamp(clamp(spinRaw, profile.spinMin, profile.spinMax),
                      -caps.maxSpin, caps.maxSpin);
-  return { speed, spin };
+  const sideSpin = sampleSideSpin({ shotType, difficulty, rng });
+  return { speed, spin, sideSpin };
 }

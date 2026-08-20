@@ -9,11 +9,12 @@
 import * as THREE from 'three';
 import { scene } from './sceneSetup.js';
 import * as P from '../physics/constants.js';
+import * as W from '../physics/paddleWeight.js';
 
 const CANVAS_W = 640;
-const CANVAS_H = 1310;   // grew to fit 13 knob rows (spin damping / magnus / table spin gain / sidespin bounce kick added) without overlapping Back button
+const CANVAS_H = 1396;   // grew to fit 14 knob rows (paddle weight added) without overlapping Back button
 const PLANE_W = 0.34;
-const PLANE_H = 0.696;   // PLANE_W * CANVAS_H / CANVAS_W to preserve aspect
+const PLANE_H = 0.742;   // PLANE_W * CANVAS_H / CANVAS_W to preserve aspect
 
 const COLORS = {
   bg:        '#0a0e18',
@@ -41,6 +42,15 @@ const KNOBS = [
     set:   (v) => P.setPaddleRestitution(v),
     step:  0.05,
     fmt:   (v) => v.toFixed(2),
+  },
+  {
+    id:    'paddleWeight',
+    label: 'Paddle Weight',
+    desc:  'How heavy the bat feels. Higher = longer haptic thud and a deeper contact sound.',
+    get:   () => W.PADDLE_WEIGHT,
+    set:   (v) => W.setPaddleWeight(v),
+    step:  0.1,
+    fmt:   (v) => W.paddleWeightGrams(v).toFixed(0) + ' g',
   },
   {
     id:    'contactCap',

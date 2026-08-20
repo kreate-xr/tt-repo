@@ -1,0 +1,169 @@
+<!-- TEMPORARY dev-only preview for the ball surface/material pass.
+     Not part of the game — safe to delete. Open at /ball-preview.html
+
+     Imports sceneSetup.js directly, so the renderer, color space, tone
+     mapping (Neutral, exposure 1.0), light rig (key 2.6 / hemi 1.4 / rim 0.7)
+     and ballEnvMap are the SAME OBJECTS the headset uses. The ball itself is
+     rebuilt from the same three lines models.js uses: SphereGeometry(0.02,32,24)
+     + createBallSeamTexture() + MeshStandardMaterial(roughness .6, metalness 0,
+     envMapIntensity .15, toneMapped true).
+
+     Panels:
+       TL  white ball, macro, tumbling on a tilted axis  — material read
+       TR  orange ball, macro, same motion               — tint read
+       BL  white ball at 1.5 m, true 40 mm angular size  — headset legibility
+       BR  white ball spinning about WORLD Y (sidespin)  — spin-axis legibility
+     Bottom strip: the raw 1024x512 source canvas, 1:1 with what gets sampled. -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Ball surface preview</title>
+<style>
+  body { background:#0e1116; margin:0; font-family:system-ui,sans-serif; color:#dde; overflow:hidden; }
+  canvas { display:block; }
+  #labels { position:fixed; inset:0; pointer-events:none; }
+  .lbl { position:absolute; font-size:13px; letter-spacing:.03em; text-shadow:0 1px 3px #000; }
+  .lbl .sub { font-size:11px; color:#8ab; margin-top:3px; font-family:ui-monospace,monospace; }
+  #texwrap { position:fixed; left:0; right:0; bottom:0; height:150px; background:#05070a;
+             border-top:1px solid #223; display:flex; align-items:center; gap:16px; padding:0 16px; }
+  #texwrap canvas { border:1px solid #334; image-rendering:pixelated; height:120px; width:auto; }
+  #texinfo { font-size:11px; font-family:ui-monospace,monospace; color:#9ab; line-height:1.7; }
+  #hint { position:fixed; bottom:158px; right:14px; font-size:11px; color:#667; }
+</style>
+</head>
+<body>
+<div id="labels">
+  <div class="lbl" id="l0"></div><div class="lbl" id="l1"></div>
+  <div class="lbl" id="l2"></div><div class="lbl" id="l3"></div>
+</div>
+<div id="texwrap"><div id="texinfo"></div></div>
+<div id="hint">space = pause tumble</div>
+
+<script type="module">
+  import * as THREE from 'three';
+  // The game's own renderer / scene / lights / envMap — not a lookalike rig.
+  import { scene, renderer, ballEnvMap } from '/js/scene/sceneSetup.js';
+  import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+  import { compositeSpinMarkings } from '/js/scene/ballTexture.js';
+  import { BALL_COLORS } from '/js/scene/models.js';
+
+  const STRIP = 150;                       // bottom texture strip height
+  const view = () => ({ w: innerWidth, h: innerHeight - STRIP });
+
+  scene.background = new THREE.Color(0x0e1116);
+
+  // --- The ball, exactly as models.js builds it: Ball.glb + material tuning
+  // + compositeSpinMarkings on the baked map ---------------------------------
+  const ballGltf = await new GLTFLoader().loadAsync('/models/Ball.glb');
+  let srcMesh = null;
+  ballGltf.scene.traverse((n) => { if (!srcMesh && n.isMesh && n.geometry) srcMesh = n; });
+  const ballTex = compositeSpinMarkings(srcMesh.material.map);
+  function makeBall(colorHex) {
+    const mat = srcMesh.material.clone();
+    mat.map = ballTex;
+    if (mat.color) mat.color.set(colorHex);
+    mat.roughness = 0.6;
+    mat.metalness = 0.0;
+    mat.envMap = ballEnvMap;
+    mat.envMapIntensity = 0.40;
+    mat.toneMapped = true;
+    if (mat.specularColor) mat.specularColor.setRGB(1, 1, 1);
+    if ('specularIntensity' in mat) mat.specularIntensity = 0.3;
+    return new THREE.Mesh(srcMesh.geometry, mat);
+  }
+
+  // Four independent rigs, spaced 10 m apart so each panel's narrow view
+  // cone sees only its own ball. Directional + hemi lights are position-
+  // independent, so all four are lit identically.
+  const PANELS = [
+    { title: 'WHITE — macro',        sub: 'tumble on tilted axis · roughness .6 · envMap .40', color: BALL_COLORS.white.base,  dist: 0.085, mode: 'tumble' },
+    { title: 'ORANGE — macro',       sub: 'same rig · pure-white base → authored #ff6600 survives',         color: BALL_COLORS.orange.base, dist: 0.085, mode: 'tumble' },
+    { title: 'TRUE SIZE @ 1.5 m',    sub: '40 mm at typical rally distance',                   color: BALL_COLORS.white.base,  dist: 1.5,   mode: 'tumble' },
+    { title: 'SIDESPIN — about Y',   sub: 'spin axis = world up · island anchors must sweep visibly', color: BALL_COLORS.white.base, dist: 0.085, mode: 'spinY' },
+  ];
+
+  PANELS.forEach((p, i) => {
+    p.origin = new THREE.Vector3(i * 10, 0, 0);
+    p.mesh = makeBall(p.color);
+    p.mesh.position.copy(p.origin);
+    scene.add(p.mesh);
+    // Game camera intrinsics (fov 70, near 0.02, far 40) — same lens the
+    // headset composites through, so apparent size judgments transfer.
+    p.cam = new THREE.PerspectiveCamera(70, 1, 0.02, 40);
+    p.cam.position.copy(p.origin).add(new THREE.Vector3(0, 0, p.dist));
+    p.cam.lookAt(p.origin);
+  });
+
+  // Exposed for live tuning from the devtools/automation console:
+  //   __preview.setEnv(0.35)   → envMapIntensity on every ball
+  //   __preview.setHemi(...)   → hemisphere fill
+  window.__preview = {
+    panels: PANELS,
+    setEnv(v) { PANELS.forEach(p => { p.mesh.material.envMapIntensity = v; p.mesh.material.needsUpdate = true; }); return v; },
+  };
+
+  // --- Source texture strip -------------------------------------------------
+  document.getElementById('texwrap').appendChild(ballTex.image);
+  document.getElementById('texinfo').innerHTML =
+    `SOURCE TEXTURE  ${ballTex.image.width}x${ballTex.image.height}  Ball.glb baked map + compositeSpinMarkings<br>` +
+    `per hemisphere island: cert dot + faint arc + counter-dot (spin-legibility anchors; authored map is near-uniform gray)<br>` +
+    `colorSpace ${ballTex.colorSpace} &middot; flipY ${ballTex.flipY} &middot; anisotropy ${ballTex.anisotropy}`;
+
+  // --- Layout / render loop -------------------------------------------------
+  let paused = false;
+  addEventListener('keydown', e => { if (e.code === 'Space') { paused = !paused; e.preventDefault(); } });
+
+  function layout() {
+    const v = view();
+    renderer.setSize(v.w, v.h, false);
+    renderer.domElement.style.width = v.w + 'px';
+    renderer.domElement.style.height = v.h + 'px';
+    const hw = v.w / 2, hh = v.h / 2;
+    PANELS.forEach((p, i) => {
+      p.rect = { x: (i % 2) * hw, y: (i < 2 ? hh : 0), w: hw, h: hh };
+      p.cam.aspect = hw / hh;
+      p.cam.updateProjectionMatrix();
+      const el = document.getElementById('l' + i);
+      el.style.left = ((i % 2) * hw + 14) + 'px';
+      el.style.top  = ((i < 2 ? 0 : hh) + 12) + 'px';
+      el.innerHTML = `${p.title}<div class="sub">${p.sub}</div>`;
+    });
+  }
+  addEventListener('resize', layout);
+  layout();
+
+  const tiltAxis = new THREE.Vector3(0.35, 1, 0.15).normalize();
+  const yAxis    = new THREE.Vector3(0, 1, 0);
+  let t = 0;
+
+  renderer.setAnimationLoop(() => {
+    if (!paused) {
+      t += 1 / 60;
+      PANELS.forEach(p => {
+        p.mesh.quaternion.identity();
+        // Deliberately slow (~0.11 rev/s). At playable spin rates this panel
+        // strobes against any fixed capture cadence and looks frozen — which
+        // is itself the finding, but useless as a demo.
+        if (p.mode === 'spinY') p.mesh.quaternion.setFromAxisAngle(yAxis, t * 0.7);
+        else                    p.mesh.quaternion.setFromAxisAngle(tiltAxis, t * 1.1);
+      });
+    }
+    renderer.setScissorTest(true);
+    PANELS.forEach(p => {
+      const r = p.rect;
+      renderer.setViewport(r.x, r.y, r.w, r.h);
+      renderer.setScissor(r.x, r.y, r.w, r.h);
+      renderer.render(scene, p.cam);
+    });
+    renderer.setScissorTest(false);
+  });
+
+  // Measured apparent size of the true-size panel, for the legibility note.
+  const p2 = PANELS[2];
+  const px = (0.04 / (2 * p2.dist * Math.tan(THREE.MathUtils.degToRad(70) / 2))) * (view().h / 2);
+  document.getElementById('l2').insertAdjacentHTML('beforeend',
+    `<div class="sub">~${px.toFixed(0)} px across in this panel</div>`);
+</script>
+</body>
+</html>

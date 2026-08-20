@@ -35,8 +35,9 @@
 // are preceded by a TACTICAL_PROBABILITY roll (0.50) that can pick a curated
 // placement zone instead.
 //
-// Output is the 6-element wire payload:
-//   [target_x, target_z, target_speed_mps, target_spin_rps, confidence, shotType]
+// Output is the 7-element wire payload:
+//   [target_x, target_z, target_speed_mps, target_spin_rps, confidence,
+//    shotType, target_sidespin_rps]
 // in spec coords: target_x in [-0.7, 0.7] signed, target_z in [0.1, 1.3]
 // non-negative "meters from net" on player side.
 //
@@ -514,7 +515,7 @@ export function createIntermediateEngine({ rng = Math.random } = {}) {
       // Placement is already decided; the stroke must fit it.
       targetZ: target[1],
     });
-    let { speed: target_speed, spin: target_spin } = sampleShotParameters({
+    let { speed: target_speed, spin: target_spin, sideSpin: target_sidespin } = sampleShotParameters({
       shotType,
       difficulty: 'intermediate',
       rng,
@@ -547,7 +548,9 @@ export function createIntermediateEngine({ rng = Math.random } = {}) {
     // FSM can telegraph the intended shot instead of reverse-labelling
     // from (speed, spin) — that reverse-labelling was destructive
     // (negative spin → SLICE regardless of speed, so PUSH never rendered).
-    return [target[0], target[1], target_speed, target_spin, confidence, shotType];
+    // [6] = signed sidespin rps (see sampleSideSpin).
+    return [target[0], target[1], target_speed, target_spin, confidence, shotType,
+            target_sidespin];
   }
 
   function reset() {

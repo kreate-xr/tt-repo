@@ -43,7 +43,7 @@ export class LobbyManager {
     const code = generateRoomCode();
     this.role = 'host';
     this.code = code;
-    const ready = this._connectAs('host', code);
+    const ready = this._connectAs('host', code, { create: true });
     return { code, ready };
   }
 
@@ -51,7 +51,7 @@ export class LobbyManager {
     if (!code || typeof code !== 'string') throw new Error('joinRoom requires a code');
     this.role = 'guest';
     this.code = code.toUpperCase();
-    return this._connectAs(this.role, this.code);
+    return this._connectAs(this.role, this.code, { create: false });
   }
 
   // Tear down the existing peer connection + signaling socket, then run the
@@ -63,17 +63,18 @@ export class LobbyManager {
     try { if (this.signaling) this.signaling.close(); } catch {}
     this.signaling = null;
     this.networkManager = null;
-    return this._connectAs(this.role, this.code);
+    // Host re-creates the room fresh (clearing the stale guest/offer/answer
+    // from the dropped session); guest re-joins it. If the guest lands first
+    // it sees its own stale slot as ROOM_FULL — ReconnectHandler's retry
+    // covers the gap until the host has recreated.
+    return this._connectAs(this.role, this.code, { create: this.role === 'host' });
   }
 
-  async _connectAs(_intentRole, code) {
-    // _intentRole is informational only — the SignalingClient's Firestore
-    // transaction is authoritative. If two peers race on `createRoom` for
-    // the same code, one of them gets assigned 'guest' atomically.
+  async _connectAs(role, code, { create = false } = {}) {
     this.signaling = new SignalingClient();
     let assignedRole;
     try {
-      const result = await this.signaling.connect(code);
+      const result = await this.signaling.connect(code, { create });
       assignedRole = result.role;
     } catch (err) {
       this.signaling.close();
@@ -100,7 +101,14 @@ export class LobbyManager {
 
   async teardown() {
     if (this.networkManager) await this.networkManager.teardown();
-    if (this.signaling) this.signaling.close();
+    if (this.signaling) {
+      // Best-effort room cleanup so the code doesn't rot in Firestore and
+      // block retries with ROOM_FULL. (nm.teardown() already closed the
+      // signaling listeners; the doc write only needs the ref.)
+      if (this.role === 'host') await this.signaling.deleteRoom();
+      else if (this.role === 'guest') await this.signaling.leaveRoom();
+      this.signaling.close();
+    }
     this.networkManager = null;
     this.signaling = null;
   }

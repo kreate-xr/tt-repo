@@ -1,7 +1,7 @@
 // M0 training menu model — navigation and Custom Feed editing.
 
 const {
-  TrainingMenuModel, SCREENS, ROOT_ITEMS, CUSTOM_FIELDS, BURST_STOPS,
+  TrainingMenuModel, SCREENS, ROOT_ITEMS, SETTING_ROWS, CUSTOM_FIELDS, BURST_STOPS,
   describeConfig, formatField,
 } = require('../js/modes/training/menuModel.js');
 const { INFINITE, SPIN_MAX_RAD_S, validateConfig } = require('../js/modes/training/drillConfig.js');
@@ -363,10 +363,12 @@ describe('saved presets', () => {
 describe('custom feed editing', () => {
   test('exposes the M1 attributes', () => {
     const keys = CUSTOM_FIELDS.map((f) => f.key);
-    for (const k of ['speed', 'spinType', 'spinMagnitude', 'placement', 'depth',
+    for (const k of ['speed', 'spinType', 'spinMagnitude', 'placement',
       'arc', 'scatterSigma', 'interval', 'burstCount', 'feedOrigin', 'audioCue']) {
       expect(keys).toContain(k);
     }
+    // Depth is deliberately NOT a custom field: the zone grid owns the row.
+    expect(keys).not.toContain('depth');
   });
 
   test('the spin slider stops at the feasible envelope, not the spec 900', () => {
@@ -405,11 +407,21 @@ describe('custom feed editing', () => {
 
   test('cycling a segment wraps in both directions', () => {
     const m = new TrainingMenuModel();
-    const first = m.config.depth;
-    m.cycleField('depth', 1);
-    expect(m.config.depth).not.toBe(first);
-    m.cycleField('depth', -1);
-    expect(m.config.depth).toBe(first);
+    const first = m.config.arc;
+    m.cycleField('arc', 1);
+    expect(m.config.arc).not.toBe(first);
+    m.cycleField('arc', -1);
+    expect(m.config.arc).toBe(first);
+  });
+
+  test('setZone keeps depth in step with the zone row', () => {
+    const m = new TrainingMenuModel();
+    m.setZone(3);
+    expect(m.config.depth).toBe('short');
+    m.setZone(5);
+    expect(m.config.depth).toBe('half-long');
+    m.setZone(7);
+    expect(m.config.depth).toBe('deep');
   });
 
   test('cycling wraps past the ends without going out of bounds', () => {
@@ -496,5 +508,151 @@ describe('formatting', () => {
     const scatter = CUSTOM_FIELDS.find((f) => f.key === 'scatterSigma');
     // 0.01 steps need two decimals or the display quantises to nothing.
     expect(formatField(scatter, m.config)).toMatch(/0\.\d\d/);
+  });
+});
+
+describe('rapid fire menu placement', () => {
+  test('sits directly in the Drills menu, not inside Pattern Drills', () => {
+    const m = new TrainingMenuModel();
+    m.selectItem('drills');
+    expect(m.items().map((i) => i.id)).toContain('rapidFire');
+    m.selectItem('patternDrills');
+    expect(m.items().map((i) => i.id)).not.toContain('rapidFire');
+  });
+
+  test('selecting it starts the drill immediately with the current config', () => {
+    const m = new TrainingMenuModel();
+    m.selectItem('drills');
+    const res = m.selectItem('rapidFire');
+    expect(res.action).toBe('start');
+    expect(res.options.pattern).toBe('rapidFire');
+    expect(res.options.random).toBe(false);
+    expect(res.config).toBeTruthy();
+  });
+
+  test('a stale Random Mode visit cannot shuffle it', () => {
+    // randomMode is remembered from the last Patterns-screen entry; the
+    // Rapid Fire row pins random: false so that state cannot leak into it.
+    const m = new TrainingMenuModel();
+    m.selectItem('drills');
+    m.selectItem('randomMode');   // patterns screen, randomMode = true
+    m.back();                     // back on the Drills screen
+    const res = m.selectItem('rapidFire');
+    expect(res.options.random).toBe(false);
+  });
+
+  test('pattern rows still inherit how the Patterns screen was entered', () => {
+    const m = new TrainingMenuModel();
+    m.selectItem('drills');
+    m.selectItem('randomMode');
+    const res = m.selectItem('falkenberg');
+    expect(res.options.random).toBe(true);
+  });
+});
+
+// --- M10 settings screen ------------------------------------------------------
+
+// Fake settings store with the same contract as profile/store.js: setSetting
+// returns what was actually stored, and rejects unknown keys.
+const fakeSettings = (initial = {}) => {
+  const values = { dominantHand: 'R', audioCues: true, ...initial };
+  return {
+    getSetting: (k) => values[k],
+    setSetting: (k, v) => {
+      if (!(k in values)) return undefined;
+      values[k] = v;
+      return v;
+    },
+    _values: values,
+  };
+};
+
+describe('settings screen', () => {
+  test('lists every M10 setting, with the unwired ones disabled and noted', () => {
+    const m = new TrainingMenuModel({ settings: fakeSettings() });
+    m.navigate(SCREENS.SETTINGS);
+    const items = m.items();
+    expect(items).toHaveLength(SETTING_ROWS.length);
+
+    // A setting that changes nothing is worse than no setting (store.js), so
+    // anything not yet wired must be visibly unavailable and say why.
+    for (const i of items.filter((x) => !x.available)) expect(i.note).toBeTruthy();
+    const hand = items.find((i) => i.id === 'setting:dominantHand');
+    expect(hand.available).toBe(true);
+  });
+
+  test('the dominant-hand row shows its current value', () => {
+    const m = new TrainingMenuModel({ settings: fakeSettings({ dominantHand: 'L' }) });
+    m.navigate(SCREENS.SETTINGS);
+    const hand = m.items().find((i) => i.id === 'setting:dominantHand');
+    expect(hand.subtitle).toMatch(/^Left/);
+  });
+
+  test('selecting the row cycles the value and persists it', () => {
+    const store = fakeSettings({ dominantHand: 'R' });
+    const m = new TrainingMenuModel({ settings: store });
+    m.navigate(SCREENS.SETTINGS);
+
+    expect(m.selectItem('setting:dominantHand')).toBeNull(); // stays on screen
+    expect(store._values.dominantHand).toBe('L');
+    expect(m.screen).toBe(SCREENS.SETTINGS);
+
+    // Two values, so it cycles back rather than dead-ending.
+    m.selectItem('setting:dominantHand');
+    expect(store._values.dominantHand).toBe('R');
+  });
+
+  test('a disabled setting row cannot be cycled', () => {
+    const store = fakeSettings({ audioCues: true });
+    const m = new TrainingMenuModel({ settings: store });
+    m.navigate(SCREENS.SETTINGS);
+    expect(m.selectItem('setting:audioCues')).toBeNull();
+    expect(store._values.audioCues).toBe(true);
+  });
+
+  test('without a store the rows are disabled rather than crashing', () => {
+    const m = new TrainingMenuModel();
+    m.navigate(SCREENS.SETTINGS);
+    const hand = m.items().find((i) => i.id === 'setting:dominantHand');
+    expect(hand.available).toBe(false);
+    expect(hand.note).toBeTruthy();
+    expect(m.selectItem('setting:dominantHand')).toBeNull();
+  });
+
+  test('cycleSetting refuses unknown keys', () => {
+    const m = new TrainingMenuModel({ settings: fakeSettings() });
+    expect(m.cycleSetting('nonesuch')).toBeNull();
+  });
+});
+
+describe('handedness reaches the drills', () => {
+  test('defaults to right-handed with no store attached', () => {
+    expect(new TrainingMenuModel().hand).toBe('R');
+  });
+
+  test('patterns are started with the profile handedness, not a fixed R', () => {
+    // patterns.js mirrors backhand/forehand columns off this flag, so a
+    // left-hander getting 'R' here drills the wrong wing all session.
+    const m = new TrainingMenuModel({ settings: fakeSettings({ dominantHand: 'L' }) });
+    m.selectItem('drills');
+    const res = m.selectItem('rapidFire');
+    expect(res.options.hand).toBe('L');
+  });
+
+  test('ladders carry handedness too', () => {
+    const m = new TrainingMenuModel({ settings: fakeSettings({ dominantHand: 'L' }) });
+    m.selectItem('drills');
+    m.selectItem('ladders');
+    const res = m.selectItem('bronze');
+    expect(res.options.hand).toBe('L');
+  });
+
+  test('changing the setting is picked up without rebuilding the model', () => {
+    const store = fakeSettings({ dominantHand: 'R' });
+    const m = new TrainingMenuModel({ settings: store });
+    expect(m.hand).toBe('R');
+    m.navigate(SCREENS.SETTINGS);
+    m.selectItem('setting:dominantHand');
+    expect(m.hand).toBe('L');
   });
 });

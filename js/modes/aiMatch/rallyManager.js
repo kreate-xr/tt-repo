@@ -6,23 +6,53 @@
 // the serve, checks for game/match end, and triggers the next serve (AI via
 // the serve subsystem, player via a courtesy ball-spawn on their side).
 //
+// THE RULES THEMSELVES LIVE IN ../rallyRules.js, shared with multiplayer so
+// the two modes can't drift apart (they had: multiplayer used to end the point
+// on any net contact, and had no service-legality test at all). This module
+// feeds ball events in and turns the verdicts that come back into score.
+// Everything below documents what that engine decides on our behalf.
+//
 // Spec §section_6.rally_end_conditions maps to the rules below:
 //   - Two consecutive table bounces on the same side without a paddle hit
 //     in between = the side that DIDN'T return loses the point.
-//   - onNetHit = the player who just hit it INTO the net loses the point.
+//   - A rally return that touches the hitter's OWN half = hitter loses
+//     immediately (ITTF: a return must land directly in the opponent's court).
 //   - onBallLost with no bounce on the opponent's side after the hitter's
 //     contact = hitter's shot went out/short, hitter loses.
 //   - onBallLost AFTER a bounce on the opponent's side = opponent failed
 //     to return, opponent loses.
+//
+// Two further ITTF faults are decided at CONTACT time rather than by where
+// the ball lands, so they can't come from the bounce bookkeeping above. Both
+// are judged by the pure geometry in ittfFaults.js:
+//   - Obstruction (volley): striking the ball before it has bounced on your
+//     own half, while it was genuinely heading for your court. Point to the
+//     opponent. A ball already sailing past the end line is NOT obstruction —
+//     that shot was out, so the point goes to the striker instead.
+//   - Service position: the serve must be struck from behind the server's end
+//     line and above the level of the playing surface. Point to the receiver.
+//
+// Serve legality (ITTF): the server's first stroke of the rally must bounce
+// once on the server's own half, then land on the receiver's half. A serve
+// that lands directly on the receiver's half, or dies on the server's half,
+// is a serveFault — point to the receiver. A serve that touches the net and
+// STILL arrives legally is a let: no point, same server replays.
+//
+// Net touches do not end the rally by themselves: ball.js models the
+// top-cord hit preserving horizontal drift, so a cord ball can genuinely
+// dribble over and play on (legal in a rally). Where the ball comes down
+// after the touch decides the point via the bounce rules above.
 //
 // "Persistent state across rallies" (spec): shot history + heatmap live in
 // the worker; this module only tracks current-game / current-match score
 // and the per-rally bounce bookkeeping.
 
 import * as THREE from 'three';
-import { spawnBallAt } from '../../physics/ball.js';
+import { spawnBallAt, despawnBall } from '../../physics/ball.js';
 import { tableBox, tableSurfaceY, ballModel } from '../../scene/models.js';
+import { GRAVITY } from '../../physics/constants.js';
 import { hudLog } from '../../scene/hud.js';
+import { createRallyRules } from '../rallyRules.js';
 
 // AI paddle id from physics — string-matched against paddleHit.origin.
 const AI_PADDLE_ORIGIN = 'ai-opponent';
@@ -36,10 +66,15 @@ const DEFAULT_CONFIG = Object.freeze({
 });
 
 // Inter-rally delay before triggering next serve. Long enough for the
-// between-point "READY" indicator (js/scene/serveIndicator.js) to fade in,
-// let the player read who's serving next, and fade out again without feeling
-// rushed. Was 1200ms — too short to breathe.
+// player to register the point (over-net burst, scoreboard update) and see
+// who serves next without feeling rushed. Was 1200ms — too short to breathe.
 const NEXT_SERVE_DELAY_MS = 2500;
+
+// Once a point (or let) is decided, the old ball is removed after this beat.
+// Long enough for the player to SEE the deciding event (the second bounce,
+// the ball sailing long); short enough that nobody keeps rallying a dead
+// ball into the next serve window and mistakes it for live play.
+const POINT_END_DESPAWN_MS = 700;
 
 export function createRallyManager({
   ballEvents,
@@ -60,20 +95,50 @@ export function createRallyManager({
   let matchOver = false;
   let initialServerForGame = currentServer;
 
-  // Per-rally bookkeeping.
+  // Every rally rule — who struck what, service legality, obstruction, lets,
+  // double bounces — lives in the shared engine, which multiplayer runs too.
+  // This module keeps only the things a rulebook has no opinion about:
+  // scoring, serve rotation, timers and ball spawning.
+  const rules = createRallyRules({
+    near: 'player',   // player owns +Z, matching the rest of the codebase
+    far: 'ai',
+    // Read live: tableBox/tableSurfaceY are null until the models load, and
+    // GRAVITY is runtime-tunable from the in-XR physics panel.
+    getGeometry: () => ({ tableBox, tableSurfaceY, gravity: GRAVITY }),
+  });
+
+  // Per-rally bookkeeping owned here.
+  //   rallyInProgress — this rally is live and undecided; also the re-entry
+  //     guard that stops one event from scoring twice.
+  //   waitingForServeStrike — a player-serve toss ball is airborne, unstruck.
+  //   ballDead — a point/let was just decided and the corpse ball is still on
+  //     the table. Swings at it are ignored outright (see onPaddleHitInternal).
   let rallyInProgress = false;
-  let lastHitter = null;          // 'ai' | 'player' | null
-  let aiSideBounces = 0;
-  let playerSideBounces = 0;
-  let waitingForServeStrike = false; // player-serve: ball spawned, no paddle yet
-  // Per-rally paddle-hit counters. Used to detect "return of serve" — the
-  // first time the receiver strikes the ball in a rally after the server's
-  // serve. AI's return of serve should use specialized weights
-  // (push/block/flip, no loops/smashes).
-  let aiHitsThisRally = 0;
-  let playerHitsThisRally = 0;
+  let waitingForServeStrike = false;
+  let ballDead = false;
 
   let nextServeTimer = null;
+  let despawnTimer = null;
+
+  // Remove the dead ball a beat after the point/let is decided, so play
+  // visibly stops between points (one ball at a time, no phantom rallies).
+  // Called by both finishRally and callLet immediately after they clear
+  // rallyInProgress, which makes it the one place that always marks the ball
+  // dead — the flag onPaddleHitInternal uses to ignore swings at a corpse.
+  function scheduleBallDespawn() {
+    ballDead = true;
+    if (despawnTimer) clearTimeout(despawnTimer);
+    despawnTimer = setTimeout(() => {
+      despawnTimer = null;
+      // The corpse is gone, so there is nothing left to swing at and nothing
+      // left to ignore. Clearing here rather than at the next serve keeps the
+      // dead window exactly as long as the dead BALL — a rally started by a
+      // paddle hit alone (headless callers, and the player's own serve
+      // stroke) still works the moment the table is clear.
+      ballDead = false;
+      despawnBall();
+    }, POINT_END_DESPAWN_MS);
+  }
 
   // External event subscribers.
   const listeners = {
@@ -82,6 +147,7 @@ export function createRallyManager({
     onMatchEnd: [],
     onServerChange: [],
     onServeRequested: [], // emitted when next-serve fires (UI hooks)
+    onLet: [],            // net-cord serve landed good — replayed, no point
   };
   function on(eventName, fn) { if (listeners[eventName]) listeners[eventName].push(fn); }
   function emit(eventName, payload) {
@@ -90,18 +156,23 @@ export function createRallyManager({
     for (const fn of arr) fn(payload);
   }
 
-  function tableCenterZ() {
-    return tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;
-  }
-
   function resetRallyState() {
     rallyInProgress = false;
-    lastHitter = null;
-    aiSideBounces = 0;
-    playerSideBounces = 0;
+    ballDead = false;
     waitingForServeStrike = false;
-    aiHitsThisRally = 0;
-    playerHitsThisRally = 0;
+    rules.beginRally({ server: currentServer });
+  }
+
+  // Route a rules verdict into scoring. Everything the rulebook can say ends
+  // up here: a point (with the fault flag the UI needs), or a let.
+  function applyVerdict(verdict) {
+    if (!verdict) return false;
+    if (verdict.let) {
+      callLet();
+      return true;
+    }
+    finishRally(verdict.winner, verdict.reason, verdict.detail, verdict.foul);
+    return true;
   }
 
   // --- Ball event handlers -----------------------------------------------
@@ -111,42 +182,65 @@ export function createRallyManager({
     const origin = info.origin === 'player' ? 'player'
                  : info.origin === AI_PADDLE_ORIGIN ? 'ai' : null;
     if (!origin) return;
-    lastHitter = origin;
+    // Ignore contacts on a ball whose point is already decided. The ball stays
+    // visible for POINT_END_DESPAWN_MS and the next serve is 2.5s out, so a
+    // player swinging at it in that window must not be scored against — the
+    // rally is over, they just can't tell yet.
+    //
+    // A let makes that certain rather than likely: the cord serve lands good,
+    // callLet ends the rally, and the receiver — who has no way to know it was
+    // a let — plays the ball on reflex. Without this guard that swing restarted
+    // the rally bookkeeping mid-air, and because a let is called BEFORE the
+    // receiver-side bounce is counted, it read as an illegal volley and cost
+    // them the point they were just handed a replay of.
+    //
+    // Deliberately NOT `!rallyInProgress`: a rally may legitimately begin with
+    // a paddle hit (the player's serve stroke, and every headless caller that
+    // drives a rally without a serve). Only a rally that has ENDED is dead.
+    if (ballDead) return;
     waitingForServeStrike = false;
+    // Set before consulting the rules: a service fault is decided by the very
+    // stroke that starts the rally, and finishRally's re-entry guard requires
+    // the rally to be live.
     rallyInProgress = true;
-    // Reset the count on the side the ball is heading to.
-    if (origin === 'player') {
-      aiSideBounces = 0;
-      playerHitsThisRally += 1;
-    } else {
-      playerSideBounces = 0;
-      aiHitsThisRally += 1;
-    }
+    applyVerdict(rules.registerHit(origin, {
+      contactPos: info.contactPos, inVel: info.inVel,
+    }));
   }
 
   function onTableBounceInternal(info) {
     if (!info || matchOver || !rallyInProgress) return;
-    const onAISide = info.z < tableCenterZ();
-    if (onAISide) {
-      aiSideBounces += 1;
-    } else {
-      playerSideBounces += 1;
-    }
-    // Two bounces on the same side without an intervening paddle hit from
-    // that side = miss by the receiver on that side.
-    if (lastHitter === 'player' && aiSideBounces >= 2) {
-      finishRally('player', 'doubleBounce');
-    } else if (lastHitter === 'ai' && playerSideBounces >= 2) {
-      finishRally('ai', 'doubleBounce');
-    }
+    applyVerdict(rules.registerBounce(info));
   }
 
   function onNetHitInternal(/* info */) {
     if (matchOver || !rallyInProgress) return;
-    // Net hit = the side that hit it loses the point. lastHitter loses.
-    if (lastHitter) {
-      finishRally(lastHitter === 'player' ? 'ai' : 'player', 'netHit');
-    }
+    // A net touch is not a point by itself — the ball can still dribble over
+    // the cord (ball.js preserves horizontal drift on top-cord hits). Where
+    // it comes down decides the point via the bounce rules: falling back on
+    // the hitter's half is an ownSideBounce/serveFault, carrying over plays
+    // on, and a net-cord SERVE that lands legally becomes a let.
+    rules.registerNetHit();
+  }
+
+  // Law 2.10: a player, or anything they wear or carry, touching the net
+  // assembly while the ball is in play. Reported by the net-touch watcher in
+  // aiMatch's update loop — nothing in the ball's own event stream can see it.
+  function reportNetTouch(side) {
+    if (matchOver || !rallyInProgress || ballDead) return;
+    applyVerdict(rules.registerNetTouch(side));
+  }
+
+  // Net-cord serve that landed legally: ITTF let — no point, the same server
+  // replays. The live ball keeps rolling but rallyInProgress is false, so its
+  // remaining bounce/lost events are ignored (same stale-ball handling as any
+  // between-points window).
+  function callLet() {
+    hudLog(`[SCORE-DBG] LET — net-cord serve landed good, replay (server=${currentServer})`);
+    rallyInProgress = false;
+    scheduleBallDespawn();
+    emit('onLet', { server: currentServer });
+    scheduleNextServe();
   }
 
   function onBallLostInternal(/* info */) {
@@ -159,40 +253,45 @@ export function createRallyManager({
       return;
     }
     if (!rallyInProgress) return;
-    let winner;
-    if (lastHitter === 'player') {
-      // Player hit toward AI. If AI never bounced (0) the player's shot
-      // went out → AI wins. Otherwise AI bounced ≥1 and then ball lost
-      // before AI returned → AI failed → player wins.
-      winner = aiSideBounces === 0 ? 'ai' : 'player';
-    } else if (lastHitter === 'ai') {
-      winner = playerSideBounces === 0 ? 'player' : 'ai';
-    } else {
-      // No one hit (e.g., AI's serve toss never connected). Default the
-      // point to the receiver.
-      winner = currentServer === 'ai' ? 'player' : 'ai';
+    // `detail` disambiguates the two very different ways a ballLost point
+    // happens, so the UI can say "SHOT WENT OUT" vs "NOT RETURNED" instead
+    // of a generic message. `reason` deliberately stays 'ballLost' — it's
+    // the coarse cause and consumers already switch on it.
+    if (!applyVerdict(rules.registerBallLost())) {
+      // The rulebook had nothing to say — no stroke was ever observed this
+      // rally. Don't freeze the match waiting for a verdict that isn't
+      // coming: kill the ball and re-offer the serve with no point.
+      rallyInProgress = false;
+      scheduleBallDespawn();
+      scheduleNextServe();
     }
-    finishRally(winner, 'ballLost');
   }
 
   // --- Scoring ------------------------------------------------------------
 
-  function finishRally(winner, reason) {
+  // `foul` names the side that broke a rule (as opposed to simply missing).
+  // It rides along on onPointScored so the UI can announce a fault as a fault
+  // — different panel treatment, a distinct haptic buzz, and a corrective
+  // hint — instead of showing "AI POINT / SERVE FAULT" in the same voice as
+  // "AI POINT / NOT RETURNED". null for ordinary rally outcomes.
+  function finishRally(winner, reason, detail = null, foul = null) {
     // Strict re-entry guard: every ball-event handler already checks
     // rallyInProgress before calling us, so entering with it already false
     // means either a stale event slipped through or something re-entered
     // finishRally itself. Either way we must not increment again.
     if (!rallyInProgress) {
-      hudLog(`[SCORE-DBG] finishRally BLOCKED reason=${reason} winner=${winner} lastHitter=${lastHitter} wait=${waitingForServeStrike} aiB=${aiSideBounces} pB=${playerSideBounces}`);
+      hudLog(`[SCORE-DBG] finishRally BLOCKED reason=${reason} winner=${winner} lastHitter=${rules.getLastHitter()} wait=${waitingForServeStrike} aiB=${rules.bouncesOn('ai')} pB=${rules.bouncesOn('player')}`);
       return;
     }
-    hudLog(`[SCORE-DBG] finishRally reason=${reason} winner=${winner} lastHitter=${lastHitter} aiB=${aiSideBounces} pB=${playerSideBounces} before P${playerScore}-AI${aiScore}`);
+    hudLog(`[SCORE-DBG] finishRally reason=${reason} winner=${winner} lastHitter=${rules.getLastHitter()} aiB=${rules.bouncesOn('ai')} pB=${rules.bouncesOn('player')} before P${playerScore}-AI${aiScore}`);
+    if (foul) hudLog(`[FOUL] ${foul}: ${reason}${detail ? '/' + detail : ''} — point to ${winner}`);
     rallyInProgress = false;
+    scheduleBallDespawn();
     if (winner === 'ai') aiScore += 1;
     else playerScore += 1;
     pointsSinceServerSwitch += 1;
 
-    emit('onPointScored', { winner, reason, aiScore, playerScore });
+    emit('onPointScored', { winner, reason, detail, foul, aiScore, playerScore });
 
     // Game-end check: leader at or above firstTo with ≥2-point lead.
     const lead = Math.abs(aiScore - playerScore);
@@ -201,7 +300,10 @@ export function createRallyManager({
       const gameWinner = aiScore > playerScore ? 'ai' : 'player';
       if (gameWinner === 'ai') aiGames += 1;
       else playerGames += 1;
-      emit('onGameEnd', { winner: gameWinner, aiGames, playerGames });
+      // playerScore/aiScore here are the game's FINAL point totals (reset
+      // happens below) — consumers use them for the per-game history row on
+      // the scoreboard.
+      emit('onGameEnd', { winner: gameWinner, aiGames, playerGames, playerScore, aiScore });
 
       // Match-end check.
       const gamesNeeded = Math.floor(config.bestOf / 2) + 1;
@@ -259,8 +361,9 @@ export function createRallyManager({
     const serverScore = currentServer === 'ai' ? aiScore : playerScore;
     const opponentScore = currentServer === 'ai' ? playerScore : aiScore;
     const isDeuce = aiScore >= config.deucePoint && playerScore >= config.deucePoint;
-    // Game point: serverScore already at firstTo - 1 AND has 2-point lead
-    // over opponent (otherwise it's just approaching-deuce, not game point).
+    // Game point: server is one point from firstTo (or past it in deuce) AND
+    // leads by at least 1 — i.e. winning the next point wins the game. A tie
+    // (e.g. 10-10) is not game point: winning only reaches advantage.
     const isGamePoint = serverScore >= config.firstTo - 1 && (serverScore - opponentScore) >= 1;
     // Match point: game point AND winning it would clinch the match.
     const gamesNeeded = Math.floor(config.bestOf / 2) + 1;
@@ -284,10 +387,14 @@ export function createRallyManager({
         // early-returns from onTableBounce / onBallLost — no point is
         // scored, no next serve scheduled, match freezes. Synthesize the
         // "AI just struck it" state here so a missed AI serve resolves.
-        lastHitter = 'ai';
+        // armServeStroke arms the ITTF service rules (own-half bounce
+        // required, net touch → let) for this stroke; the toss itself is
+        // released behind the end line, off the table footprint, so no
+        // bounce events can fire before the strike. The service POSITION
+        // rule can't apply — there is no contact event to measure — which is
+        // correct: the AI's scripted serve is legal by construction.
+        rules.armServeStroke('ai');
         rallyInProgress = true;
-        aiSideBounces = 0;
-        playerSideBounces = 0;
         server.startServe({ gameContext: buildGameContext() });
       }
     } else {
@@ -299,11 +406,18 @@ export function createRallyManager({
       // (headless tests, older callers).
       if (playerServe && typeof playerServe.arm === 'function') {
         playerServe.arm();
-        // Set the wait flag now so a stray ballLost between arm() and
-        // launch() re-schedules gracefully instead of scoring. In practice
-        // no ball exists during this window so ballLost shouldn't fire —
-        // but if it does, the courtesy path handles it.
-        waitingForServeStrike = true;
+        // waitingForServeStrike is deliberately NOT set here. Between arm()
+        // and the player's trigger pull no courtesy ball exists — the only
+        // ball that can emit events in that window is the previous rally's
+        // leftover (still rolling on the table / falling to the floor; its
+        // stuck/floor ballLost can arrive well after NEXT_SERVE_DELAY_MS).
+        // Setting the flag now made that stale ballLost read as "toss lost"
+        // → scheduleNextServe() a second time → a pending triggerNextServe
+        // firing MID-RALLY after the real serve: rally bookkeeping reset,
+        // player re-armed (phantom second ball on the next trigger pull),
+        // and the serve arrow / panel re-shown during play. The flag is set
+        // by the playerServe.onLaunch subscription below, i.e. only while a
+        // courtesy ball is actually live.
       } else {
         spawnPlayerServeBall();
         waitingForServeStrike = true;
@@ -315,13 +429,19 @@ export function createRallyManager({
     if (!tableBox || !ballModel) return;
     const x = (tableBox.min.x + tableBox.max.x) / 2;
     const y = (tableSurfaceY || 0) + 0.30;
-    const z = tableBox.max.z - 0.05;
+    // Behind the end line (ITTF: the toss starts behind the server's end
+    // line). The inward drift below carries it to roughly the line by the
+    // time the player strikes it.
+    const z = tableBox.max.z + 0.05;
     spawnBallAt(
       new THREE.Vector3(x, y, z),
       // Toss upward with a taller arc so the player clearly sees it rise
-      // before striking. Slight inward z so the ball stays over the player's
-      // half rather than drifting off the near edge.
-      new THREE.Vector3((Math.random() - 0.5) * 0.2, 2.0, -0.4),
+      // before striking. Slight inward z so the ball arcs toward the end
+      // line rather than falling further behind the player — but only
+      // slight: -0.4 carried it ~16cm inside the line over the flight,
+      // far enough that a late strike tripped the serve-position fault on
+      // the game's own toss. See playerServe.js TOSS_FORWARD_VZ_MPS.
+      new THREE.Vector3((Math.random() - 0.5) * 0.2, 2.0, -0.15),
       new THREE.Vector3(0, 0, 0),
     );
   }
@@ -337,6 +457,10 @@ export function createRallyManager({
       clearTimeout(nextServeTimer);
       nextServeTimer = null;
     }
+    if (despawnTimer) {
+      clearTimeout(despawnTimer);
+      despawnTimer = null;
+    }
     // Unsubscribe ball events so a re-created rally manager doesn't score in
     // parallel with the previous one. Function declaration below is hoisted,
     // so calling it before its textual definition is fine.
@@ -346,6 +470,7 @@ export function createRallyManager({
     listeners.onMatchEnd.length = 0;
     listeners.onServerChange.length = 0;
     listeners.onServeRequested.length = 0;
+    listeners.onLet.length = 0;
   }
 
   function getScore() {
@@ -363,9 +488,9 @@ export function createRallyManager({
   function isAINextShotServeReturn() {
     return currentServer === 'player'
         && rallyInProgress
-        && lastHitter === 'player'
-        && aiHitsThisRally === 0
-        && playerHitsThisRally === 1;
+        && rules.getLastHitter() === 'player'
+        && rules.hitsBy('ai') === 0
+        && rules.hitsBy('player') === 1;
   }
 
   function setConfig(c) {
@@ -393,6 +518,14 @@ export function createRallyManager({
   const onNetHitBound     = tagged('netHit',     onNetHitInternal);
   const onBallLostBound   = tagged('ballLost',   onBallLostInternal);
 
+  // Open the "courtesy ball is live" window only when the toss actually
+  // spawns (see the long comment in triggerNextServe's player branch). From
+  // this moment a ballLost-before-paddleHit legitimately means the player
+  // whiffed the toss and the serve should be re-offered.
+  if (playerServe && typeof playerServe.onLaunch === 'function') {
+    playerServe.onLaunch(() => { waitingForServeStrike = true; });
+  }
+
   // Subscribe to ball events. ballEvents follows the shotAdapter pattern —
   // each onX(fn) registers a listener.
   ballEvents.onPaddleHit(onPaddleHitBound);
@@ -410,5 +543,8 @@ export function createRallyManager({
     hudLog(`[SCORE-DBG ${instanceTag}] rally manager UNSUBSCRIBED`);
   }
 
-  return { start, dispose, on, getScore, setConfig, isAINextShotServeReturn };
+  return {
+    start, dispose, on, getScore, setConfig, isAINextShotServeReturn,
+    reportNetTouch,
+  };
 }

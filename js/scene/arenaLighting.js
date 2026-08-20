@@ -20,6 +20,8 @@
 // Trigger surface:
 //   pulseMatchPoint() — 4 quick red pulses on the CeilingRing over ~2s.
 //                       Signals "this next point could win the match."
+//   pulsePoint(winnerSide) — one ~0.9s swell in the winner's color on the
+//                       CenterLightBox after an ordinary point.
 //   celebrateMatch(winnerSide) — 3s color-cycle on all fixtures. Winner's
 //                       color hue rotates through the ring.
 //   pulseServe() — subtle single dim + brighten on the CenterLightBox
@@ -50,6 +52,10 @@ const PULSE_COUNT = 4;
 const PULSE_PERIOD = 0.5;
 // Warm-red pulse tint. Blends between original and this at pulse peak.
 const PULSE_COLOR = new THREE.Color(0xff2a2a);
+// Per-point swell. Short and gentle — it fires after EVERY point, so
+// anything longer or stronger turns the venue into a strobe over a rally.
+const POINT_PULSE_DURATION = 0.9;
+const POINT_PULSE_STRENGTH = 0.55;
 // Celebration cycle: golden → magenta → cyan → gold. 3s total.
 const CELEBRATE_DURATION = 3.0;
 const CELEBRATE_COLORS = [
@@ -153,6 +159,30 @@ export function createArenaLighting({ fixtures = [] } = {}) {
     });
   }
 
+  // Single soft swell in the winner's color after an ordinary point.
+  // Peripheral mood only — the scoreboard is what actually tells the player
+  // who won; this just keeps the venue reacting. Uses the
+  // CenterLightBox rather than the ring so it can never be confused with
+  // pulseMatchPoint()'s urgent red ring flashing.
+  function pulsePoint(winnerSide = 'player') {
+    const mats = materialsForNames(['CenterLightBox']);
+    if (mats.length === 0) return;
+    const tint = winnerSide === 'ai'
+      ? new THREE.Color(0xff9c6b)
+      : new THREE.Color(0x8ea6ff);
+    active.push({
+      name: 'pointPulse',
+      t: 0,
+      duration: POINT_PULSE_DURATION,
+      apply(t) {
+        // Half a sine over the whole duration: swell in, swell out, once.
+        const k = Math.sin((t / POINT_PULSE_DURATION) * Math.PI);
+        for (const m of mats) setBlendedColor(m, tint, k * POINT_PULSE_STRENGTH);
+      },
+      onEnd() { restoreMaterials(mats); },
+    });
+  }
+
   function celebrateMatch(winnerSide = 'player') {
     // Winner tint biases the color cycle. player = cool blue-shifted,
     // ai = warm orange-shifted. Otherwise the cycle uses CELEBRATE_COLORS.
@@ -222,6 +252,7 @@ export function createArenaLighting({ fixtures = [] } = {}) {
 
   return {
     pulseMatchPoint,
+    pulsePoint,
     celebrateMatch,
     update,
     dispose,

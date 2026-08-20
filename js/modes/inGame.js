@@ -12,6 +12,8 @@ import {
 import { createArena, onArenaLoadProgress } from '../scene/arena.js';
 import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor } from '../scene/models.js';
 import { initDebugHud, hudLog, isDebugHudReady, refreshHud, SELF_TEST } from '../scene/hud.js';
+// FPS HUD disabled — import kept commented for easy restore.
+// import { createFpsMeter } from '../scene/fpsMeter.js';
 import {
   tickPhysics, clearListeners, spawnBallAt,
   onPaddleHit, onTableBounce, onNetHit, onBallLost,
@@ -35,7 +37,10 @@ import { getProfile } from './training/difficulty.js';
 import {
   initStatsHud, setLiveLine, hideLiveLine, showSummary, hideSummary, clearStatsHud,
 } from '../scene/statsHud.js';
-import { createM1BallMachineDrill, M1_BALL_MACHINE } from './training/drills/m1BallMachine.js';
+import {
+  createM1BallMachineDrill, M1_BALL_MACHINE, buildEnv as buildFeedEnv,
+} from './training/drills/m1BallMachine.js';
+import { solveFeed } from './training/feedEngine.js';
 import { getQuickFeed } from './training/presets.js';
 import { validateConfig, INFINITE, parseDeepLink } from './training/drillConfig.js';
 import { createTargetPracticeDrill, TARGET_PRACTICE } from './training/drills/targetPractice.js';
@@ -44,6 +49,8 @@ import { createReactionRallyDrill, REACTION_RALLY } from './training/drills/reac
 import { createTrajectoryPracticeDrill, TRAJECTORY_PRACTICE } from './training/drills/trajectoryPractice.js';
 import { createMultiplayerDrill, MULTIPLAYER } from './multiplayer/multiplayer.js';
 import { createAIMatchDrill, AI_MATCH } from './aiMatch/aiMatch.js';
+import { createMachinePlayDrill, MACHINE_PLAY } from './machinePlay/machinePlay.js';
+import { MachinePlayMenu } from '../scene/machinePlayMenu.js';
 import * as AudioContextBridge from '../network/AudioContextBridge.js';
 import { updateAudioListener } from '../scene/audio.js';
 import * as haptics from '../xr/haptics.js';
@@ -59,7 +66,93 @@ const DRILL_FACTORIES = {
   trajectoryPractice: { meta: TRAJECTORY_PRACTICE, create: createTrajectoryPracticeDrill },
   multiplayer:        { meta: MULTIPLAYER,         create: createMultiplayerDrill },
   aiMatch:            { meta: AI_MATCH,            create: createAIMatchDrill },
+  // Playing AGAINST the machine rather than drilling with it — a scorer around
+  // the same M1 feed, not a second feeder. See machinePlay/machinePlay.js.
+  machinePlay:        { meta: MACHINE_PLAY,        create: createMachinePlayDrill },
 };
+
+// Ceiling on the display rate we ask the runtime for. A Quest WebXR session
+// starts at 72 Hz and STAYS there unless the page explicitly calls
+// updateTargetFrameRate — which nothing here used to do, so every frame-rate
+// number reasoned about elsewhere in this codebase (the paddle velocity
+// sampler) was describing a session we never actually requested.
+//
+// That gap is worth closing because the cost lands on the one object the
+// whole game is about. A 40 mm ball at 8 m/s steps 111 mm between frames at
+// 72 Hz versus 89 mm at 90 Hz — 2.8 vs 2.2 ball diameters — and perceived
+// judder under smooth pursuit scales with exactly that ratio.
+//
+// Capped at 90 rather than 120 deliberately. 120 Hz would halve the step
+// again, but the renderer still supersamples at 1.2× (sceneSetup.js — panel
+// text legibility), and dropping frames at 120 would be strictly worse for
+// judder than holding 90. That trade can only be settled by measuring on
+// device. Raise this to 120 once there is confirmed headroom; the supported
+// list is logged below so the decision has numbers behind it.
+const PREFERRED_MAX_FRAME_RATE = 90;
+
+/**
+ * Ask the runtime for the highest supported display rate at or below
+ * PREFERRED_MAX_FRAME_RATE. Best-effort and never fatal: `supportedFrameRates`
+ * is absent on the WebXR emulator and on runtimes that don't implement the
+ * frame-rate extension, and `updateTargetFrameRate` can reject even when the
+ * value came out of that very list. A session at the default rate is a
+ * degraded experience, not a broken one, so every failure here is a warning.
+ *
+ * CALL ONLY AFTER renderer.xr.setSession(), and never on an awaited path —
+ * see the call site for why doing otherwise hangs session entry.
+ */
+async function requestBestFrameRate(session) {
+  const rates = session.supportedFrameRates;
+  if (!rates || !rates.length || typeof session.updateTargetFrameRate !== 'function') {
+    console.log('[XR] frame-rate control unavailable — staying at runtime default');
+    return;
+  }
+  // Copy before sorting: supportedFrameRates is a live Float32Array on the
+  // session and sorting it in place mutates runtime-owned state.
+  const sorted = Array.from(rates).sort((a, b) => a - b);
+  const target = sorted.filter(r => r <= PREFERRED_MAX_FRAME_RATE).pop();
+  console.log('[XR] supported frame rates:', sorted.join(', '), '→ requesting', target);
+  if (!target) return;
+  try {
+    await session.updateTargetFrameRate(target);
+  } catch (err) {
+    console.warn('[XR] updateTargetFrameRate failed, staying at default:', err);
+  }
+}
+
+// Billboarded in-headset progress panel, shown while the GLBs download inside
+// the live XR session (assets load AFTER requestSession — see startInGame).
+// DOM loading screens are invisible in an immersive session unless dom-overlay
+// was granted, so the feedback has to be an in-scene mesh.
+function createLoadingPanel() {
+  const canvas = document.createElement('canvas');
+  canvas.width = 1024;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.MeshBasicMaterial({
+    map: texture, transparent: true, side: THREE.DoubleSide, depthTest: false,
+  });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 0.1125), material);
+  mesh.renderOrder = 999;
+  const setText = (text) => {
+    ctx.fillStyle = 'rgba(10, 12, 24, 0.85)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#ffffff';
+    ctx.font = '48px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+    texture.needsUpdate = true;
+  };
+  setText('Loading…');
+  const dispose = () => {
+    mesh.geometry.dispose();
+    material.dispose();
+    texture.dispose();
+  };
+  return { mesh, setText, dispose };
+}
 
 export async function startInGame({ overlay, loadingScreen, statusEl, multiplayer = null, xrMode = 'ar' } = {}) {
   if (!navigator.xr) {
@@ -78,52 +171,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     const label = isVR ? 'Immersive VR' : 'Immersive AR';
     if (statusEl) statusEl.textContent = `${label} not supported on this device.`;
     return;
-  }
-
-  if (overlay) overlay.style.display = 'none';
-  await loadModels(loadingScreen, statusEl);
-  if (!isDebugHudReady()) initDebugHud();
-  initStatsHud();
-  // Arena mode: solid dark clear + dimmed base lights + build the room.
-  // AR mode keeps the historical transparent clear so passthrough shows.
-  let arena = null;
-  if (isVR) {
-    setArenaClear();
-    setArenaLighting();
-    arena = createArena(xrMode === 'vr-tt' ? 'tt' : 'stadium');
-    if (arena) arena.show();
-    // Block the XR session request until the venue GLB is mounted. Otherwise
-    // the player enters the headset and sees a black void for however long the
-    // 22 MB download + Draco decode takes, with no feedback. Reuse the
-    // pre-existing loading screen for the wait; loadModels() already hid it
-    // before we get here.
-    if (arena && arena.ready) {
-      const loadingMsg = loadingScreen ? loadingScreen.querySelector('p') : null;
-      if (loadingScreen) {
-        if (loadingMsg) loadingMsg.textContent = 'Loading arena…';
-        loadingScreen.style.display = 'flex';
-      }
-      const unsubscribe = loadingMsg ? onArenaLoadProgress((loaded, total, pct) => {
-        loadingMsg.textContent = `Loading arena… ${Math.floor(pct)}% ` +
-          `(${(loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB)`;
-      }) : null;
-      try {
-        await arena.ready;
-      } catch (err) {
-        console.error('Arena failed to load:', err);
-        if (statusEl) statusEl.textContent = 'Failed to load arena: ' + (err?.message || err);
-        if (loadingScreen) loadingScreen.style.display = 'none';
-        if (arena) arena.dispose();
-        restoreARLighting();
-        if (overlay) overlay.style.display = 'flex';
-        if (unsubscribe) unsubscribe();
-        return;
-      }
-      if (unsubscribe) unsubscribe();
-      if (loadingScreen) loadingScreen.style.display = 'none';
-    }
-  } else {
-    setTransparentClear();
   }
 
   // Quest-specific: create the shared AudioContext BEFORE the XR session so
@@ -150,6 +197,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
   }
 
+  // requestSession MUST run while the click's transient user activation is
+  // still live (~5 s in Chromium). The old flow downloaded every GLB first,
+  // so on a cold cache the first click always died here with NotAllowedError
+  // ("user activation is required") and only the second, cache-warm click got
+  // in. Assets now load INSIDE the session (below), with progress shown on an
+  // in-headset panel.
   let session;
   try {
     // P16 §5.1: 'light-estimation' requested ONLY on immersive-ar. Meta Quest
@@ -164,26 +217,198 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       optionalFeatures,
       domOverlay: { root: document.body },
     });
-    await renderer.xr.setSession(session);
-    haptics.setSession(session);
-
-    // P16 §5.1: In MR (passthrough) start with the fallback tint so the
-    // first few frames — before an XRLightProbe estimate lands — don't
-    // look like the VR-tuned key. Rim stays on for silhouette.
-    if (xrMode === 'ar') applyMRFallbackLighting();
   } catch (err) {
     console.error('Failed to start XR session:', err);
     const label = isVR ? 'VR' : 'MR';
     if (statusEl) statusEl.textContent = `Failed to start ${label} session: ` + err.message;
-    if (overlay) overlay.style.display = 'flex';
-    // Roll back arena-mode side effects so the start screen isn't left with
-    // a dimmed scene state after a failed request.
-    if (isVR) {
-      if (arena) arena.dispose();
-      restoreARLighting();
-    }
+    // Nothing to roll back — no scene or lighting state has been touched yet.
     return;
   }
+
+  if (overlay) overlay.style.display = 'none';
+  // Arena mode: solid dark clear + dimmed base lights; the room itself is
+  // built once the venue GLB arrives, below. AR mode keeps the historical
+  // transparent clear so passthrough shows.
+  let arena = null;
+  if (isVR) {
+    setArenaClear();
+    setArenaLighting();
+  } else {
+    setTransparentClear();
+  }
+
+  await renderer.xr.setSession(session);
+  haptics.setSession(session);
+
+  // MUST come after setSession, and MUST NOT be awaited on the startup path.
+  //
+  // updateTargetFrameRate() resolves on a FRAME BOUNDARY, and there are no
+  // frames until setSession installs the base layer and starts the XR render
+  // loop. Awaiting it beforehand deadlocks: the promise waits for a frame,
+  // the frame waits for setSession, and setSession waits behind the await.
+  // The session opens, the headset shows nothing, and the game never starts.
+  //
+  // Fire-and-forget for the same reason in reverse — a runtime that never
+  // settles the promise (or settles it late) must not be able to stall entry.
+  // The rate change lands a frame or two into the asset load either way,
+  // which is invisible to the player and costs nothing.
+  requestBestFrameRate(session).catch(err =>
+    console.warn('[XR] frame-rate request failed:', err));
+
+  // P16 §5.1: In MR (passthrough) start with the fallback tint so the
+  // first few frames — before an XRLightProbe estimate lands — don't
+  // look like the VR-tuned key. Rim stays on for silhouette.
+  if (xrMode === 'ar') applyMRFallbackLighting();
+
+  if (!isDebugHudReady()) initDebugHud();
+  initStatsHud();
+
+  // --- Controller binding + laser -----------------------------------------
+  // MUST run before the asset downloads below. The browser delivers the
+  // session's initial `inputsourceschange` moments after the session starts —
+  // i.e. during the (possibly long) GLB wait. If the three.js controller/grip
+  // spaces don't exist yet, that event finds no slots to bind to and the
+  // input sources are dropped; nothing re-binds them until the NEXT
+  // inputsourceschange, which in practice is the player opening and closing
+  // the Quest system menu. Symptom: no paddle and no laser until the Meta
+  // button is pressed.
+  let uiInputReady = false; // handleTrigger's menus are built further down
+  // Slider drag state. A drag is press → move → release, so it needs the
+  // trigger's RELEASE as well as its press; `draggingSliderId` pins the drag
+  // to whichever slider was grabbed.
+  let draggingSliderId = null;
+  // Last UV the laser hit on the active panel — the trigger handler needs the
+  // pointer position, but it only receives a grip.
+  let lastPanelUV = null;
+
+  const laser = createLaserLine();
+  // Start the beam just in front of the targetRay origin. This used to be
+  // 0.15 m to keep the beam off the paddle blade, but that left a visible
+  // hand-to-beam gap: the ray read as a free-floating stick near the panel
+  // rather than something emitted by the thing in your hand, which breaks the
+  // sense that you are pointing it. The beam draws with depthTest off and
+  // fades toward the hand, so overlapping the blade costs nothing. The
+  // raycast still originates at the controller — only the visual is pushed
+  // forward, and the tip disc still lands exactly on the hit point (scale
+  // compensates below).
+  const LASER_START_OFFSET = 0.03;
+  laser.position.z = -LASER_START_OFFSET;
+  scene.add(laser);
+
+  const xr = setupXRPaddle(session, {
+    onSelect: (grip) => { if (uiInputReady) handleTrigger(grip); },
+    onSelectEnd: () => { draggingSliderId = null; },
+  });
+
+  xr.onPaddleAttached(() => {
+    const targetRay = xr.getActiveTargetRay();
+    if (targetRay) {
+      if (laser.parent) laser.parent.remove(laser);
+      targetRay.add(laser);
+    }
+  });
+
+  // --- In-session asset loading -------------------------------------------
+  // The player is already in the headset while the table/paddle GLBs (and in
+  // arena mode the venue GLB — 22 MB on first visit) download. Render a
+  // billboarded progress panel on a minimal loop so the wait is never a black
+  // void; the DOM loading screen still updates in parallel for desktop and
+  // dom-overlay. The real animation loop installed at the end of setup
+  // replaces this one.
+  const loadPanel = createLoadingPanel();
+  scene.add(loadPanel.mesh);
+  const _loadCamPos = new THREE.Vector3();
+  const _loadCamFwd = new THREE.Vector3();
+  renderer.setAnimationLoop(() => {
+    const xrCam = renderer.xr.getCamera();
+    xrCam.getWorldPosition(_loadCamPos);
+    xrCam.getWorldDirection(_loadCamFwd);
+    _loadCamFwd.y = 0;
+    if (_loadCamFwd.lengthSq() < 1e-6) _loadCamFwd.set(0, 0, -1);
+    _loadCamFwd.normalize();
+    loadPanel.mesh.position.copy(_loadCamPos).addScaledVector(_loadCamFwd, 1.6);
+    loadPanel.mesh.lookAt(_loadCamPos);
+    renderer.render(scene, camera);
+  });
+
+  // Bail-out for load failures after the session is live: put the start
+  // screen back and end the session. The 'end' listener that normally
+  // restores state isn't registered yet, so clean up manually here.
+  // restoreARLighting is safe to call unconditionally — it's a no-op
+  // relative to the AR defaults.
+  const abortEntry = (message) => {
+    if (statusEl) statusEl.textContent = message;
+    renderer.setAnimationLoop(null);
+    scene.remove(loadPanel.mesh);
+    loadPanel.dispose();
+    if (arena) { arena.dispose(); arena = null; }
+    restoreARLighting();
+    setSceneBackground(new THREE.Color(0x1a1a2e));
+    if (loadingScreen) loadingScreen.style.display = 'none';
+    if (overlay) overlay.style.display = 'flex';
+    if (session && session.end) session.end().catch(() => {});
+  };
+
+  loadPanel.setText('Loading models…');
+  try {
+    await loadModels(loadingScreen, statusEl);
+  } catch (err) {
+    abortEntry('Failed to load 3D models: ' + (err?.message || err));
+    return;
+  }
+
+  // Ball colour default is mode-dependent, and only settable here because
+  // setBallColor needs the meshes loadModels just registered.
+  //
+  // models.js defaults to white: ITTF-legal, the colour most world-federation
+  // events use, and correct against the arena's navy floor. In passthrough MR
+  // it is the worst available choice — the ball is played against whatever
+  // the player's actual room is, and rooms are overwhelmingly white or beige
+  // walls. A white ball loses its silhouette against them at exactly the far
+  // distances where it is already down to ~11-15 px across, and no amount of
+  // rim light rescues a white object in front of a white wall.
+  //
+  // Orange is the other ITTF-legal colour, so this trades nothing for
+  // legibility. The wrist menu still overrides it either way.
+  if (!isVR) setBallColor('orange');
+
+  if (isVR) {
+    // createArena needs tableBox, so it can only run after loadModels.
+    arena = createArena(xrMode === 'vr-tt' ? 'tt' : 'stadium');
+    if (arena) arena.show();
+    if (arena && arena.ready) {
+      const loadingMsg = loadingScreen ? loadingScreen.querySelector('p') : null;
+      if (loadingScreen) {
+        if (loadingMsg) loadingMsg.textContent = 'Loading arena…';
+        loadingScreen.style.display = 'flex';
+      }
+      loadPanel.setText('Loading arena…');
+      const unsubscribe = onArenaLoadProgress((loaded, total, pct) => {
+        const line = `Loading arena… ${Math.floor(pct)}% ` +
+          `(${(loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB)`;
+        if (loadingMsg) loadingMsg.textContent = line;
+        loadPanel.setText(line);
+      });
+      try {
+        await arena.ready;
+      } catch (err) {
+        console.error('Arena failed to load:', err);
+        unsubscribe();
+        abortEntry('Failed to load arena: ' + (err?.message || err));
+        return;
+      }
+      unsubscribe();
+      if (loadingScreen) loadingScreen.style.display = 'none';
+    }
+  }
+
+  scene.remove(loadPanel.mesh);
+  loadPanel.dispose();
+
+  // The paddle GLB exists now — bind it to whichever controller connected
+  // during the load (attachPaddleToGrip no-ops while paddleModel is null,
+  // so the 'connected' events that fired mid-download attached nothing).
+  xr.resweep('models-loaded');
 
   // --- MR light-estimation probe (P16 §5). Requested lazily after session
   // start — Meta Quest Browser resolves the promise only once the runtime
@@ -213,7 +438,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     offPaddleHit, offTableBounce, offNetHit, offBallLost,
   };
 
-  // --- Floating menu + laser ---
+  // --- Floating menu ---
   const wristMenu = new WristMenu();
   scene.add(wristMenu.mesh); // floating in world; billboarded each frame
 
@@ -225,6 +450,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   let lastContacts = null;
   const trainingMenu = new TrainingMenu({
     presets: profileStore,
+    // Same module, separate slot — the settings screen reads/writes M10
+    // globals (dominant hand today) through this one.
+    settings: profileStore,
     getSessionLog: () => lastSessionLog,
     // Prefer the LIVE drill's contacts so review works mid-session too;
     // fall back to the last finished drill's.
@@ -234,11 +462,34 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
         : lastContacts
     ),
   });
+  // Custom Feed feasibility warning: dry-run the feed solver (no scatter, so
+  // it is deterministic) whenever the config is edited, and put the same hint
+  // the drill would show into the panel's message line. Without this an
+  // unfeedable config only reveals itself after START, as a machine that
+  // silently never fires.
+  trainingMenu.setFeasibilityProbe((config) => {
+    if (!tableBox) return null;   // arena not loaded yet — nothing to check
+    const feed = solveFeed(config, buildFeedEnv());
+    return feed.feasible ? null
+      : 'Too slow to clear the net at that placement — raise speed or pick a shorter zone';
+  });
   scene.add(trainingMenu.mesh);
-  wristMenu.show(); // visible from the moment the session starts
-  const laser = createLaserLine();
-  scene.add(laser);
 
+  // P17 Machine Play — what the wrist menu's PLAY tile now opens. It used to
+  // drop straight onto an empty table with one hardcoded warmup feed behind a
+  // B/Y toggle, which gave the tile nothing to be about. Same sub-menu
+  // machinery as the training menu (show/hide/isVisible/mesh/selectHovered/
+  // 'back'), so it needed no new input plumbing either.
+  const machinePlayMenu = new MachinePlayMenu();
+  machinePlayMenu.setFeasibilityProbe((config) => {
+    if (!tableBox) return null;   // arena not loaded yet — nothing to check
+    const feed = solveFeed(config, buildFeedEnv());
+    return feed.feasible ? null
+      : 'Too slow to clear the net at that placement — raise speed or pick a shorter zone';
+  });
+  scene.add(machinePlayMenu.mesh);
+
+  wristMenu.show(); // visible from the moment the session starts
   // --- Physics tuner (free-roaming panel, opened from the wrist menu) ---
   const tuner = new PhysicsTuner();
   // currentTuner points to whichever tuner is currently open. State stays
@@ -295,27 +546,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   let pokeArmed = false;
   let pokeTriggered = false;
 
-  // --- Paddle binding ---
-  // Slider drag state. A drag is press → move → release, so it needs the
-  // trigger's RELEASE as well as its press; `draggingSliderId` pins the drag
-  // to whichever slider was grabbed.
-  let draggingSliderId = null;
-  // Last UV the laser hit on the active panel — the trigger handler needs the
-  // pointer position, but it only receives a grip.
-  let lastPanelUV = null;
-
-  const xr = setupXRPaddle(session, {
-    onSelect: (grip) => handleTrigger(grip),
-    onSelectEnd: () => { draggingSliderId = null; },
-  });
-
-  xr.onPaddleAttached(() => {
-    const targetRay = xr.getActiveTargetRay();
-    if (targetRay) {
-      if (laser.parent) laser.parent.remove(laser);
-      targetRay.add(laser);
-    }
-  });
+  // Everything handleTrigger reaches for (menus, tuners, drill state) exists
+  // from this point on — let the trigger through. The controllers themselves
+  // were bound before the asset load, further up.
+  uiInputReady = true;
 
   // --- Wrist menu actions ---
   wristMenu.on('start', ({ drill, preset, difficulty, config }) => {
@@ -351,11 +585,37 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   trainingMenu.on('tune', () => { trainingMenu.hide(); enterTuner(tuner); });
   trainingMenu.on('exit', () => onTunerBack());
 
-  wristMenu.on('freeplay', () => enterFreePlay());
+  // The PLAY tile opens the Machine Play menu instead of entering free play
+  // directly. Free Hit is still reachable — it is that menu's fifth row, and
+  // still the training menu's "8. Free Play" — so nothing was removed, it just
+  // stopped being the only thing behind the tile.
+  wristMenu.on('machinePlay', () => enterTuner(machinePlayMenu));
+  machinePlayMenu.on('back', onTunerBack);
+  machinePlayMenu.on('start', ({ mode, config, target }) => {
+    machinePlayMenu.hide();
+    currentTuner = null;
+    const options = { machineMode: mode, target };
+    lastDrillParams = { drill: 'machinePlay', difficulty: null, config, options };
+    enterDrill('machinePlay', null, null, config, options);
+  });
+  machinePlayMenu.on('freeHit', () => {
+    machinePlayMenu.hide();
+    currentTuner = null;
+    enterFreePlay();
+  });
+  machinePlayMenu.on('calibrate', () => { machinePlayMenu.hide(); enterTuner(calibWizard); });
+  machinePlayMenu.on('tune', () => { machinePlayMenu.hide(); enterTuner(tuner); });
+
   wristMenu.on('tune', () => enterTuner(tuner));
   wristMenu.on('calibrate', () => enterTuner(calibWizard));
   wristMenu.on('ballColor', ({ colorId }) => setBallColor(colorId));
   wristMenu.on('exit', () => endSession());
+
+  // Panels that are MENUS rather than transient in-play tools. They get the
+  // wrist menu's fixed world anchor instead of head-billboarding at 1.1 m,
+  // which puts a 1.4 m-wide panel too close to read, and they own sliders that
+  // the trigger has to be able to drag.
+  const isMenuPanel = (p) => p === trainingMenu || p === machinePlayMenu;
 
   function enterTuner(target) {
     prevStateBeforeTuner = state;
@@ -566,8 +826,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     if (state === 'tuner') {
       // Grabbing a slider starts a drag that continues until release, even if
       // the ray wanders off the track.
-      if (currentTuner === trainingMenu && trainingMenu.sliderAt && lastPanelUV) {
-        draggingSliderId = trainingMenu.sliderAt(lastPanelUV.u, lastPanelUV.v);
+      if (currentTuner && currentTuner.sliderAt && lastPanelUV) {
+        draggingSliderId = currentTuner.sliderAt(lastPanelUV.u, lastPanelUV.v);
       }
       if (currentTuner) currentTuner.selectHovered();
       return;
@@ -612,12 +872,17 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   let altBtnPrev = false;
   function pollMenuToggle() {
     if (!session) return;
+    // Prefer the paddle hand, but fall back to ANY controller when the paddle
+    // hasn't bound yet. Assets now load inside the session, so a 'connected'
+    // that arrives mid-download attaches nothing (attachPaddleToGrip guards on
+    // paddleModel) and activeHandedness stays null. Gating the menu on the
+    // bind made that state unrecoverable from inside the headset — the menu is
+    // exactly what the player needs when the paddle failed to attach.
     const paddleHand = xr.getActiveHandedness();
-    if (!paddleHand) return;
     let pressed = false;
     let altPressed = false;
     for (const src of session.inputSources) {
-      if (src.handedness !== paddleHand) continue;
+      if (paddleHand && src.handedness !== paddleHand) continue;
       const buttons = src.gamepad && src.gamepad.buttons;
       // Button 4 = A (right) / X (left). Always present on Quest controllers.
       if (buttons && buttons[4] && buttons[4].pressed) pressed = true;
@@ -673,12 +938,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       placeMenuStatic();
       return;
     }
-    // The training menu is a MENU, not a transient in-play tool: it is read,
-    // scrolled and configured. Head-billboarding it at 1.1 m puts a
-    // 1.4 m-wide panel in the player's face, too close to read. It gets the
-    // wrist menu's fixed world anchor instead — same distance, same pose —
-    // so moving between the two menus doesn't change where you look.
-    if (state === 'tuner' && currentTuner === trainingMenu && trainingMenu.isVisible()) {
+    // The training and Machine Play menus are MENUS, not transient in-play
+    // tools: they are read, scrolled and configured. Head-billboarding one at
+    // 1.1 m puts a 1.4 m-wide panel in the player's face, too close to read.
+    // They get the wrist menu's fixed world anchor instead — same distance,
+    // same pose — so moving between menus doesn't change where you look.
+    if (state === 'tuner' && isMenuPanel(currentTuner) && currentTuner.isVisible()) {
       placeMenuStatic();
       return;
     }
@@ -701,8 +966,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     if (!tableBox || tableSurfaceY == null) return;
     // Whichever menu is up gets the same anchor, so switching between them
     // is a content change rather than a change of place.
-    const mesh = (state === 'tuner' && currentTuner === trainingMenu)
-      ? trainingMenu.mesh
+    const mesh = (state === 'tuner' && isMenuPanel(currentTuner))
+      ? currentTuner.mesh
       : wristMenu.mesh;
     const centerX = (tableBox.min.x + tableBox.max.x) / 2;
     // Position the panel just above the net (table Z-center) — roughly half
@@ -831,12 +1096,14 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       lastPanelUV = { u: uv.x, v: uv.y };
       // A live slider drag owns the ray: keep feeding it the pointer position
       // and don't let hover move to another widget mid-drag.
-      if (draggingSliderId && panel === trainingMenu) {
-        trainingMenu.dragAt(uv.x, uv.y, draggingSliderId);
+      if (draggingSliderId && panel.dragAt) {
+        panel.dragAt(uv.x, uv.y, draggingSliderId);
       } else {
         panel.setHovered(panel.hitTestUV(uv.x, uv.y));
       }
-      laser.scale.z = Math.max(0.05, hits[0].distance);
+      // Beam spans from the forward start offset to the hit point, so the
+      // tip disc sits exactly on the panel: offset + scale = hit distance.
+      laser.scale.z = Math.max(0.05, hits[0].distance - LASER_START_OFFSET);
       laser.visible = true;
     } else {
       panel.setHovered(null);
@@ -845,17 +1112,27 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
   }
 
+  // Frame-rate meter — billboarded chip near the top of view (dom-overlay is
+  // AR-only on Quest, so this must be an in-scene mesh to show in VR arena
+  // mode too). Hide with ?nofps.
+  // Disabled for now.
+  // const fpsMeter = createFpsMeter(scene);
+
   // --- Session end cleanup ---
   session.addEventListener('end', () => {
     teardownDrill();
     clearStatsHud();
+    // fpsMeter.dispose();
     wristMenu.hide();
     wristMenu.dispose();
     tuner.hide();
     tuner.dispose();
     if (laser.parent) laser.parent.remove(laser);
-    laser.geometry.dispose();
-    laser.material.dispose();
+    // The laser is a Group (beam tube + tip disc) — dispose its children.
+    laser.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
     // Tear down arena mode if it was active. restoreARLighting is safe to
     // call unconditionally — it's a no-op relative to the AR defaults.
     if (arena) { arena.dispose(); arena = null; }
@@ -875,10 +1152,32 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   });
 
   // --- Animation loop ---
-  const clock = new THREE.Clock();
-  renderer.setAnimationLoop((_t, frame) => {
-    let dt = clock.getDelta();
-    if (dt > 0.1) dt = 0.016;
+  // dt derives from the callback's timestamp — in an XR session that is the
+  // compositor's PREDICTED DISPLAY TIME, so consecutive deltas are exact
+  // multiples of the display interval. THREE.Clock.getDelta() (the old
+  // source) measures callback-EXECUTION intervals instead, which jitter by
+  // a few ms even at a locked refresh rate; that jitter fed straight into
+  // ball displacement (2 ms of dt error at 10 m/s is 2 cm of position error
+  // per frame — visible strobing under smooth pursuit). With timestamp
+  // deltas, a dropped frame advances physics exactly one extra display
+  // interval: correct motion, just sampled once less.
+  let lastFrameTimeMs = -1;
+  let physicsTimeS = 0; // monotonic sim clock for hit/net cooldowns + squash
+  renderer.setAnimationLoop((timeMs, frame) => {
+    let dt = (lastFrameTimeMs >= 0 && timeMs > lastFrameTimeMs)
+      ? (timeMs - lastFrameTimeMs) / 1000
+      : 1 / 90; // first frame, or a runtime handed us a non-monotonic stamp
+    lastFrameTimeMs = timeMs;
+    // Uncapped display-time delta for the FPS meter — it must see the real
+    // gap a hitch produced, not the physics-capped version of it.
+    // const rawDt = dt;
+    // Hitch cap: after a real stall (browser menu, tab focus loss, session
+    // pause) advance at most 100 ms of physics and DROP the remainder. The
+    // previous clamp substituted a fake 16 ms for the whole gap, which held
+    // the ball frozen mid-flight for the length of the stall — the single
+    // biggest "ball lags" artifact after a hiccup.
+    if (dt > 0.1) dt = 0.1;
+    physicsTimeS += dt;
 
     // Advance the tracking-loss guard first — its state feeds updatePaddleVisual
     // (freeze anchor on emulated) and tickPhysics (suppress contact). Reads
@@ -918,6 +1217,13 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // spatially anchored to the room rather than the listener origin.
     updateAudioListener(renderer.xr.getCamera());
 
+    // NOTE: no per-frame arena tick here. createArena() exposes no update() —
+    // the venue is static geometry once mounted, and the crowd wave/idle
+    // animation is owned by aiMatch.js (crowdWave.update), which builds it
+    // from arena.getCrowdAnchors(). Calling arena.update() from this loop
+    // throws, and a throw inside setAnimationLoop stops three.js from
+    // re-queueing the frame — the whole session freezes before render.
+
     // Drill drives: feeder + drill update only when active and not finished.
     if (state === 'drill' && drillInstance && !drillFinished) {
       if (feeder && drillInstance.usesFeeder !== false) feeder.update(dt);
@@ -939,8 +1245,11 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     const ballOwned = !(drillInstance && drillInstance.isLocalOwner && !drillInstance.isLocalOwner());
     // Pass the smoothed paddle anchor as the collision pose source. Falls back
     // to the raw grip if no anchor (defensive — shouldn't happen in practice).
+    // getRawPose feeds the physics VELOCITY estimate from the unsmoothed grip
+    // pose so the pseudo-haptic smoothing can't attenuate brush-stroke spin;
+    // contact geometry still reads the smoothed anchor.
     const paddleNode = xr.getPaddleAnchor() || xr.getActiveController();
-    tickPhysics(dt, paddleNode, clock.elapsedTime, { ballOwned });
+    tickPhysics(dt, paddleNode, physicsTimeS, { ballOwned, getRawPose: xr.getRawPaddlePose });
 
     // Decide where the menu lives, then run poke first (fingertip proxy) and
     // fall back to laser hover if poke didn't engage.
@@ -961,13 +1270,20 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     } else if (state === 'menu') {
       setLiveLine('Aim laser at a button  —  trigger to select');
     } else if (state === 'tuner') {
-      setLiveLine('Physics Tuner  —  changes apply live  —  A/X to close');
+      // "Physics Tuner" was shown for every panel that rides this state,
+      // including the two menus, which made the hint wrong more often than
+      // right once training gained its own sub-menu tree.
+      setLiveLine(isMenuPanel(currentTuner)
+        ? 'Aim laser at a row  —  trigger to select  —  A/X to close'
+        : 'Physics Tuner  —  changes apply live  —  A/X to close');
     }
 
     if (state === 'drill' && !drillFinished && drillInstance && drillInstance.isFinished()) {
       drillFinished = true;
       showDrillSummary();
     }
+
+    // fpsMeter.update(rawDt, renderer.xr.getCamera());
 
     if (SELF_TEST) refreshHud();
     renderer.render(scene, camera);

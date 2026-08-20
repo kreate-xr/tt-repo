@@ -137,11 +137,21 @@ export class CalibrationWizard {
     const footerY = CANVAS_H - 60 - btnH;
 
     if (this.step === STEP_PICK_PRESET) {
-      // Three presets stacked, then a Back button in the footer.
+      // Four presets stacked, then a Back button in the footer.
       const btnW = CANVAS_W - padX * 2;
-      let y = 340;
+      let y = 300;
+      // Only offered once models.js has derived it from the loaded bat's
+      // anchors — absent (broken asset), the button is simply not shown
+      // rather than silently applying 'default' under the wrong name.
+      if (PRESETS.handle_grip) {
+        this.buttons.push({
+          id: 'preset-handle-grip', label: 'Handle in grip (measured fit)', primary: true,
+          x: padX, y, w: btnW, h: btnH,
+        });
+        y += btnH + gap;
+      }
       this.buttons.push({
-        id: 'preset-shakehand', label: 'Shakehand grip', primary: true,
+        id: 'preset-shakehand', label: 'Shakehand grip', primary: !PRESETS.handle_grip,
         x: padX, y, w: btnW, h: btnH,
       });
       y += btnH + gap;
@@ -238,7 +248,7 @@ export class CalibrationWizard {
       wrapText(ctx, 'Let\'s fit the paddle to your grip.', CANVAS_W / 2, 110, CANVAS_W - 80, 30);
       ctx.fillStyle = COLORS.hint;
       ctx.font = '18px sans-serif';
-      wrapText(ctx, 'Pick the grip that feels closest to how you hold a real paddle. You can fine-tune it in the next step.', CANVAS_W / 2, 180, CANVAS_W - 80, 26);
+      wrapText(ctx, 'Pick the grip that feels closest to how you hold a real paddle. You can fine-tune it in the next step. "Handle in grip" is measured from the bat model itself: the controller body becomes the handle, blade extending forward from your fist.', CANVAS_W / 2, 180, CANVAS_W - 80, 26);
     } else if (this.step === STEP_SAMPLE_A) {
       ctx.fillStyle = COLORS.okText;
       ctx.font = 'bold 22px sans-serif';
@@ -330,7 +340,12 @@ export class CalibrationWizard {
     if (button.id === 'exit') { this.emit('back'); return; }
 
     if (this.step === STEP_PICK_PRESET) {
-      const map = { 'preset-shakehand': 'shakehand', 'preset-penhold': 'penhold', 'preset-default': 'default' };
+      const map = {
+        'preset-handle-grip': 'handle_grip',
+        'preset-shakehand': 'shakehand',
+        'preset-penhold': 'penhold',
+        'preset-default': 'default',
+      };
       const preset = map[button.id];
       if (preset) {
         this.chosenPreset = preset;

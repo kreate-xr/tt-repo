@@ -1,0 +1,111 @@
+<!-- TEMPORARY dev-only preview for the blob shadow / mirror ghost stack.
+     Not part of the game — safe to delete. Open at /shadow-preview.html
+
+     Imports sceneSetup.js directly (same renderer, tone mapping, light rig
+     the headset uses) and the REAL ballShadow.js / ballGhost.js modules.
+     The table is stubbed as an opaque felt-blue plane at the game's typical
+     surface height so the shadow composites over the same albedo it does
+     in-game.
+
+     Automation hooks (devtools console):
+       __shadow.setHeight(h)  — freeze ball at h metres over the table
+       __shadow.animate()     — resume the bouncing arc
+-->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Blob shadow preview</title>
+<style>
+  body { background:#0e1116; margin:0; font-family:system-ui,sans-serif; color:#dde; overflow:hidden; }
+  canvas { display:block; }
+  #hud { position:fixed; top:10px; left:12px; font-size:13px; font-family:ui-monospace,monospace;
+         text-shadow:0 1px 3px #000; pointer-events:none; line-height:1.6; }
+</style>
+</head>
+<body>
+<div id="hud"></div>
+<script type="module">
+  import * as THREE from 'three';
+  import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+  import { scene, renderer, camera } from '/js/scene/sceneSetup.js';
+  import { createBallShadow, updateBallShadow } from '/js/scene/ballShadow.js';
+  import { createBallGhost, updateBallGhost } from '/js/scene/ballGhost.js';
+  import { createBallSeamTexture } from '/js/scene/ballTexture.js';
+
+  scene.background = new THREE.Color(0x10131c);
+
+  // The REAL table, positioned the way models.js positions it, with the same
+  // matte clamp applied so the felt's roughness matches in-game.
+  const gltf = await new GLTFLoader().loadAsync('/models/Table.glb');
+  const tableModel = gltf.scene;
+  scene.add(tableModel);
+  const rawBox = new THREE.Box3().setFromObject(tableModel);
+  tableModel.position.set(0, 0, -0.3 - rawBox.max.z);
+  tableModel.updateMatrixWorld(true);
+  tableModel.traverse((n) => {
+    if (!n.isMesh) return;
+    const m = n.material;
+    if (m && 'roughness' in m) m.roughness = THREE.MathUtils.clamp(m.roughness ?? 0.5, 0.35, 0.45);
+    if (m && 'specularIntensity' in m) m.specularIntensity = 0.3;
+  });
+  const tableCtr = tableModel.getObjectByName('TableCenter');
+  const TABLE_Y = tableCtr
+    ? tableCtr.getWorldPosition(new THREE.Vector3()).y
+    : new THREE.Box3().setFromObject(tableModel).max.y;
+
+  // Ball — same recipe as models.js.
+  const ballMesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.02, 32, 24),
+    new THREE.MeshStandardMaterial({
+      map: createBallSeamTexture(),
+      color: 0xffffff, roughness: 0.6, metalness: 0,
+    }),
+  );
+  scene.add(ballMesh);
+
+  const tableBox = new THREE.Box3(
+    new THREE.Vector3(-0.7625, TABLE_Y - 0.02, -3.0),
+    new THREE.Vector3( 0.7625, TABLE_Y,        -0.3),
+  );
+
+  createBallShadow(scene, TABLE_Y, tableBox);
+  createBallGhost(scene, ballMesh, TABLE_Y, tableBox);
+
+  camera.position.set(0, 1.5, 0.7);
+  camera.lookAt(0, TABLE_Y + 0.05, -1.1);
+
+  // Bouncing arc: period 1.2 s, apex 0.45 m, drifting in x across the table.
+  let t = 0, frozenH = null;
+  window.__shadow = {
+    setHeight(h) { frozenH = h; return h; },
+    animate() { frozenH = null; },
+    ballMesh, TABLE_Y, camera,
+    // Freeze the ball at an arbitrary world position (overrides setHeight).
+    setPos(x, y, z) { frozenH = 'pos'; ballMesh.position.set(x, y, z); },
+  };
+
+  const hud = document.getElementById('hud');
+  renderer.setAnimationLoop(() => {
+    t += 1 / 60;
+    let h;
+    if (frozenH === 'pos') {
+      h = ballMesh.position.y - TABLE_Y - 0.02;
+    } else if (frozenH !== null) {
+      h = frozenH;
+      ballMesh.position.set(0, TABLE_Y + 0.02 + h, -1.1);
+    } else {
+      const phase = (t % 1.2) / 1.2;              // 0..1 per bounce
+      h = 0.45 * 4 * phase * (1 - phase);          // parabola, 0 at contact
+      const x = -0.45 + 0.9 * ((t % 3.6) / 3.6);   // slow drift across table
+      ballMesh.position.set(x, TABLE_Y + 0.02 + h, -1.1);
+    }
+    updateBallShadow(ballMesh.position);
+    updateBallGhost(ballMesh.position);
+    hud.textContent = `ball height over felt: ${h.toFixed(3)} m` +
+      (frozenH !== null ? '  [frozen]' : '  [bouncing]');
+    renderer.render(scene, camera);
+  });
+</script>
+</body>
+</html>

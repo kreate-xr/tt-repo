@@ -20,6 +20,7 @@ const {
 } = require('../js/modes/training/feedEngine.js');
 const {
   defaultConfig, validateConfig, INFINITE, ARC_NET_CLEARANCE, SPIN_MAX_RAD_S,
+  zoneForDepth,
 } = require('../js/modes/training/drillConfig.js');
 const { mulberry32 } = require('../js/util/rng.js');
 const { rolloutToFirstBounce } = require('../js/physics/rollout.js');
@@ -44,25 +45,41 @@ const env = {
   ),
 };
 
-const cfg = (over) => validateConfig({ ...defaultConfig(), ...over });
+// The zone is authoritative for the landing row, so a test that asks for a
+// depth band without naming a zone gets the centre-column zone of that band —
+// preserving the intent of the many `depth: 'deep'`-style cases below.
+const cfg = (over = {}) => {
+  const merged = { ...defaultConfig(), ...over };
+  if (over.depth && !over.placement) {
+    merged.placement = { kind: 'zone', zone: zoneForDepth(over.depth) };
+  }
+  return validateConfig(merged);
+};
 
 describe('geometry', () => {
-  test('the default zone-5 / deep target sits on the player half', () => {
+  test('the default zone-5 target sits on the player half', () => {
     const t = zoneTarget(cfg({}), env);
     expect(t.z).toBeGreaterThan(0);
     expect(t.z).toBeLessThan(HALF_LEN);
     expect(Math.abs(t.x)).toBeLessThan(HALF_WID);
   });
 
-  test('depth overrides the zone row, not the column (M1 override rule)', () => {
-    // Same zone, three depths → same x, increasing z.
-    const short = zoneTarget(cfg({ depth: 'short' }), env);
-    const half = zoneTarget(cfg({ depth: 'half-long' }), env);
-    const deep = zoneTarget(cfg({ depth: 'deep' }), env);
+  test('the zone row controls z, near-net rows landing shorter', () => {
+    // Same column, three rows → same x, increasing z.
+    const short = zoneTarget(cfg({ placement: { kind: 'zone', zone: 2 } }), env);
+    const half = zoneTarget(cfg({ placement: { kind: 'zone', zone: 5 } }), env);
+    const deep = zoneTarget(cfg({ placement: { kind: 'zone', zone: 8 } }), env);
     expect(short.x).toBeCloseTo(half.x, 6);
     expect(half.x).toBeCloseTo(deep.x, 6);
     expect(short.z).toBeLessThan(half.z);
     expect(half.z).toBeLessThan(deep.z);
+  });
+
+  test('depth alone does not move the target — the zone is authoritative', () => {
+    const a = zoneTarget(validateConfig({ ...defaultConfig(), depth: 'short' }), env);
+    const b = zoneTarget(validateConfig({ ...defaultConfig(), depth: 'deep' }), env);
+    expect(a.x).toBeCloseTo(b.x, 6);
+    expect(a.z).toBeCloseTo(b.z, 6);
   });
 
   test('zone column controls x independently of depth', () => {
@@ -263,11 +280,16 @@ describe('feed solving — accuracy', () => {
   test('the verified landing agrees with an independent bounce rollout', () => {
     // Cross-check against rolloutToFirstBounce (the table-bounded predicate)
     // so the reported landing is not an artefact of the plane rollout.
+    // rolloutToFirstBounce does NOT interpolate the surface crossing, so the
+    // two paths can disagree by up to one VERIFY step of horizontal travel
+    // (~4 m/s × 3 ms ≈ 1.2 cm); 1.5 cm covers that bound. The old 1 cm limit
+    // sat inside it and only passed on integration phase luck — the realism
+    // retune (Earth gravity, physical drag) shifted the phase and exposed it.
     const feed = solveFeed(cfg({ scatterSigma: 0 }), env, { rng: mulberry32(11) });
     const bounce = rolloutToFirstBounce(feed.spawn, feed.velocity, feed.spin, env);
     expect(bounce).not.toBeNull();
     expect(Math.hypot(bounce.x - feed.verifiedLanding.x, bounce.z - feed.verifiedLanding.z))
-      .toBeLessThan(0.01);
+      .toBeLessThan(0.015);
   });
 
   test('feasible feeds clear the net', () => {
@@ -432,12 +454,12 @@ describe('TEST M1: 500 feeds land within 2 cm of the commanded distribution', ()
   // The six Quick Feed presets, per M1.
   const PRESETS = {
     Warmup:        { speed: 6,  spinType: 'none', spinMagnitude: 0,   interval: 2.5, depth: 'half-long' },
-    'FH topspin':   { speed: 9,  spinType: 'top',  spinMagnitude: 120, placement: { kind: 'zone', zone: 6 } },
-    'BH topspin':   { speed: 9,  spinType: 'top',  spinMagnitude: 120, placement: { kind: 'zone', zone: 4 } },
+    'FH topspin':   { speed: 9,  spinType: 'top',  spinMagnitude: 120, placement: { kind: 'zone', zone: 9 } },
+    'BH topspin':   { speed: 9,  spinType: 'top',  spinMagnitude: 120, placement: { kind: 'zone', zone: 7 } },
     // Short placements need the far origin's longer, more arcing path — see
     // the short-feed test above.
     'Backspin push': { speed: 7, spinType: 'back', spinMagnitude: 110, depth: 'short', arc: 'flat', feedOrigin: 'center-far' },
-    'Random light': { speed: 7,  spinType: 'none', spinMagnitude: 0,   scatterSigma: 0.2 },
+    'Random light': { speed: 7,  spinType: 'none', spinMagnitude: 0,   scatterSigma: 0.2, placement: { kind: 'zone', zone: 8 } },
     // A smash setup is a ball the PLAYER attacks: high and unhurried, not fast.
     'Smash setup':  { speed: 8,  spinType: 'top',  spinMagnitude: 90,  arc: 'lob', depth: 'half-long' },
   };
@@ -523,6 +545,40 @@ describe('TEST M1: 500 feeds land within 2 cm of the commanded distribution', ()
     expect(tight).toBeLessThan(0.07);
     expect(wide).toBeGreaterThan(tight * 2);
   }, 60000);
+
+  // Rapid Fire is a pattern, not a preset, but it is held to the same bar:
+  // every ball of its sweep must be makeable across the whole scatter
+  // distribution, at a warm-up pace AND run hot. If this fails the PATTERN's
+  // step/origin pairing is wrong, not the solver.
+  describe('Rapid fire sweep is 100% feasible from every origin', () => {
+    const { PATTERNS, buildStepConfig } = require('../js/modes/training/patterns.js');
+
+    for (const speed of [8, 12]) {
+      test(`500 feeds cycling the sweep at speed ${speed}`, () => {
+        const rng = mulberry32(1234);
+        const base = cfg({ speed, scatterSigma: 0.05, burstCount: INFINITE });
+        const steps = PATTERNS.rapidFire.steps.map((s) => buildStepConfig(base, s));
+        let worst = 0;
+        let offTable = 0;
+        let netFails = 0;
+        let infeasible = 0;
+
+        for (let i = 0; i < 500; i++) {
+          const feed = solveFeed(steps[i % steps.length], env, { rng });
+          expect(feed.verifiedLanding).not.toBeNull();
+          worst = Math.max(worst, feed.errorM);
+          if (!feed.onTable) offTable++;
+          if (!feed.clearedNet) netFails++;
+          if (!feed.feasible) infeasible++;
+        }
+
+        expect(worst).toBeLessThan(0.02);
+        expect(offTable).toBe(0);
+        expect(netFails).toBe(0);
+        expect(infeasible).toBe(0);
+      }, 60000);
+    }
+  });
 });
 
 describe('FeedEngine scheduling', () => {

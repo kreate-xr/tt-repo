@@ -3,131 +3,621 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MR Table Tennis</title>
+  <title>SportyXR — Table Tennis</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    :root {
+      --ink: #0f1222;
+      --ink-soft: #4b5268;
+      --brand-1: #4f46e5;
+      --brand-2: #7c3aed;
+      --brand-grad: linear-gradient(100deg, #4f46e5, #8b5cf6);
+      --surface: #ffffff;
+      --page: #f4f6fd;
+      --line: #e6e9f4;
+      --radius-lg: 22px;
+      --radius-md: 14px;
+      --shadow-card: 0 10px 30px rgba(38, 43, 82, 0.08);
+      --shadow-cta: 0 12px 28px rgba(87, 70, 230, 0.35);
+    }
+
+    html { scroll-behavior: smooth; }
+
     body {
-      font-family: 'Segoe UI', system-ui, sans-serif;
-      background: #0a0a0a;
-      color: #fff;
+      font-family: 'Inter', 'Segoe UI', system-ui, sans-serif;
+      background: #0a0a0a; /* behind the 3D canvas once the overlay hides */
+      color: var(--ink);
       overflow: hidden;
       height: 100vh;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
     }
+
+    /* ---------- Landing page (start screen) ---------- */
 
     #overlay {
       position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
+      inset: 0;
+      z-index: 10;
       display: flex;
       flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      z-index: 10;
-      background: radial-gradient(ellipse at center, #1a1a2e 0%, #0a0a0a 100%);
+      overflow-y: auto;
+      overflow-x: hidden;
+      background:
+        radial-gradient(1000px 520px at 78% 8%, rgba(124, 58, 237, 0.10), transparent 60%),
+        radial-gradient(900px 500px at 12% 30%, rgba(79, 70, 229, 0.08), transparent 60%),
+        var(--page);
+      color: var(--ink);
     }
 
-    #overlay h1 {
-      font-size: 2.5rem;
-      margin-bottom: 0.5rem;
-      background: linear-gradient(135deg, #00ff88, #00aaff);
+    /* --- Nav --- */
+
+    .nav {
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      padding: 14px clamp(20px, 5vw, 56px);
+      background: #ffffff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .brand { display: flex; align-items: center; flex: none; }
+    /* The logo file has generous white padding around the wordmark, so it is
+       rendered oversized inside a clipping box to keep the mark legible. */
+    .brand-logo {
+      display: block;
+      width: 154px;
+      height: 56px;
+      overflow: hidden;
+      position: relative;
+    }
+    .brand-logo img {
+      position: absolute;
+      left: -18px;
+      top: -37px;
+      width: 197px;
+      height: auto;
+    }
+
+    .nav-links {
+      display: flex;
+      gap: 6px;
+      margin: 0 auto;
+    }
+    .nav-links a {
+      text-decoration: none;
+      color: var(--ink-soft);
+      font-weight: 600;
+      font-size: 0.95rem;
+      padding: 8px 14px;
+      border-radius: 10px;
+      transition: color 0.15s, background 0.15s;
+    }
+    .nav-links a:hover { color: var(--ink); background: rgba(79, 70, 229, 0.07); }
+    .nav-links a.active { color: var(--brand-1); }
+
+    .nav-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      padding: 11px 22px;
+      border-radius: 14px;
+      border: none;
+      background: var(--brand-grad);
+      color: #fff;
+      font-weight: 700;
+      font-size: 0.95rem;
+      text-decoration: none;
+      cursor: pointer;
+      box-shadow: var(--shadow-cta);
+      transition: transform 0.15s, box-shadow 0.15s;
+      white-space: nowrap;
+    }
+    .nav-cta:hover { transform: translateY(-1px); box-shadow: 0 16px 32px rgba(87, 70, 230, 0.42); }
+
+    /* --- Hero --- */
+
+    .hero-bg {
+      background:
+        linear-gradient(90deg, rgba(244, 246, 253, 0.92) 0%, rgba(244, 246, 253, 0.55) 30%, rgba(244, 246, 253, 0) 55%),
+        linear-gradient(180deg, rgba(244, 246, 253, 0) 80%, var(--page) 100%),
+        url('/bg.png') no-repeat right center / cover;
+    }
+
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(340px, 1.05fr) minmax(320px, 1fr);
+      align-items: center;
+      gap: clamp(24px, 4vw, 64px);
+      padding: clamp(32px, 6vh, 72px) clamp(20px, 5vw, 56px) 24px;
+      max-width: 1320px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 16px 9px 10px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      box-shadow: var(--shadow-card);
+      font-size: 0.9rem;
+      color: var(--ink-soft);
+      font-weight: 600;
+      margin-bottom: 26px;
+    }
+    .badge .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(79, 70, 229, 0.1);
+      color: var(--brand-1);
+      font-weight: 800;
+      padding: 5px 11px;
+      border-radius: 999px;
+      font-size: 0.82rem;
+    }
+    .badge .chip svg { width: 15px; height: 15px; }
+
+    .hero h1 {
+      font-size: clamp(2.4rem, 5.2vw, 4.1rem);
+      line-height: 1.06;
+      letter-spacing: -0.03em;
+      font-weight: 800;
+      margin-bottom: 18px;
+    }
+    .hero h1 .grad {
+      background: var(--brand-grad);
       -webkit-background-clip: text;
+      background-clip: text;
       -webkit-text-fill-color: transparent;
     }
 
-    #overlay p {
-      color: #888;
-      margin-bottom: 2rem;
-      font-size: 1.1rem;
+    .hero .sub {
+      color: var(--ink-soft);
+      font-size: 1.08rem;
+      line-height: 1.6;
+      max-width: 46ch;
+      margin-bottom: 24px;
+    }
+
+    /* Slot the JS-injected Room / Arena / TT Arena toggle sits in */
+    #xr-mode-slot { margin-bottom: 18px; }
+
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 14px;
     }
 
     #enter-mr {
-      padding: 16px 48px;
-      font-size: 1.2rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 15px 28px;
+      font-size: 1.05rem;
       border: none;
-      border-radius: 12px;
-      background: linear-gradient(135deg, #00ff88, #00aaff);
-      color: #000;
+      border-radius: 16px;
+      background: var(--brand-grad);
+      color: #fff;
       font-weight: 700;
       cursor: pointer;
-      transition: transform 0.2s, box-shadow 0.2s;
+      box-shadow: var(--shadow-cta);
+      transition: transform 0.15s, box-shadow 0.15s;
     }
-    #enter-mr:hover {
-      transform: scale(1.05);
-      box-shadow: 0 0 30px rgba(0, 255, 136, 0.4);
+    #enter-mr::before {
+      content: '';
+      width: 20px; height: 14px; flex: none;
+      background: currentColor;
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 16'%3E%3Cpath d='M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z'/%3E%3C/svg%3E") no-repeat center / contain;
+              mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 16'%3E%3Cpath d='M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z'/%3E%3C/svg%3E") no-repeat center / contain;
     }
+    #enter-mr:hover { transform: translateY(-2px); box-shadow: 0 18px 36px rgba(87, 70, 230, 0.42); }
     #enter-mr:disabled {
-      opacity: 0.4;
+      opacity: 0.45;
       cursor: not-allowed;
       transform: none;
       box-shadow: none;
     }
 
     #enter-desktop {
-      margin-top: 12px;
-      padding: 12px 36px;
-      font-size: 1rem;
-      border: 2px solid rgba(255,255,255,0.2);
-      border-radius: 12px;
-      background: transparent;
-      color: #aaa;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 22px;
+      font-size: 0.98rem;
+      font-weight: 600;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--surface);
+      color: var(--ink);
       cursor: pointer;
-      transition: all 0.2s;
+      box-shadow: var(--shadow-card);
+      transition: transform 0.15s, border-color 0.15s;
     }
-    #enter-desktop:hover {
-      border-color: #00ff88;
-      color: #fff;
-      background: rgba(0, 255, 136, 0.1);
+    #enter-desktop::before {
+      content: '';
+      width: 22px; height: 22px; flex: none;
+      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='none' stroke='%234f46e5' stroke-width='2'/%3E%3Cpath d='M10 8.2v7.6l6-3.8z' fill='%234f46e5'/%3E%3C/svg%3E") no-repeat center / contain;
     }
+    #enter-desktop:hover { transform: translateY(-2px); border-color: #c9cff0; }
 
     #status {
-      margin-top: 1rem;
-      color: #ff4444;
-      font-size: 0.9rem;
-      text-align: center;
-      max-width: 400px;
+      margin-top: 16px;
+      color: #dc2626;
+      font-size: 0.92rem;
+      max-width: 420px;
+      min-height: 1.2em;
     }
+
+    /* --- Hero visual (floating pills over the background art) --- */
+
+    .hero-art { position: relative; min-height: clamp(340px, 48vh, 520px); }
+
+    .float-pill {
+      position: absolute;
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(8px);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow-card);
+      padding: 10px 18px;
+      font-weight: 800;
+      font-size: 0.85rem;
+      letter-spacing: 0.12em;
+      color: var(--ink-soft);
+      animation: bob 5s ease-in-out infinite;
+    }
+    .float-pill.one { top: 2%; right: 4%; color: var(--brand-1); }
+    @keyframes bob {
+      0%, 100% { transform: translateY(0); }
+      50% { transform: translateY(-9px); }
+    }
+
+    /* --- Feature cards --- */
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 22px;
+      padding: 28px clamp(20px, 5vw, 56px) 40px;
+      max-width: 1320px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .card {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-card);
+      padding: 26px 26px;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 0.18s, box-shadow 0.18s;
+    }
+    .card:hover { transform: translateY(-4px); box-shadow: 0 18px 40px rgba(38, 43, 82, 0.12); }
+
+    .card .icon {
+      width: 52px; height: 52px;
+      flex: none;
+      border-radius: 16px;
+      display: grid;
+      place-items: center;
+      background: rgba(79, 70, 229, 0.1);
+      color: var(--brand-1);
+    }
+    .card .icon svg { width: 26px; height: 26px; }
+
+    .card h3 { font-size: 1.08rem; font-weight: 800; letter-spacing: -0.01em; }
+    .card .underline {
+      display: block;
+      width: 34px; height: 4px;
+      border-radius: 4px;
+      background: var(--brand-grad);
+      margin-top: 7px;
+      opacity: 0.8;
+    }
+    .card p { color: var(--ink-soft); font-size: 0.9rem; margin-top: 8px; line-height: 1.45; }
+
+    /* --- Multiplayer section --- */
+
+    .mp-section {
+      padding: 8px clamp(20px, 5vw, 56px) 72px;
+      max-width: 1320px;
+      width: 100%;
+      margin: 0 auto;
+    }
+
+    .mp-panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-card);
+      padding: clamp(28px, 4vw, 44px);
+    }
+
+    .mp-panel .mp-head { text-align: center; margin-bottom: 30px; }
+    .mp-panel .mp-head h2 {
+      font-size: clamp(1.5rem, 2.6vw, 2rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .mp-panel .mp-head h2 .grad {
+      background: var(--brand-grad);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .mp-panel .mp-head p { color: var(--ink-soft); margin-top: 8px; font-size: 0.98rem; }
+
+    .mp-grid {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: stretch;
+      gap: 26px;
+    }
+
+    .mp-col {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 14px;
+      padding: 22px;
+      border: 1px dashed #d9def2;
+      border-radius: var(--radius-md);
+      background: #fafbff;
+    }
+    .mp-col h4 { font-size: 1rem; font-weight: 700; }
+    .mp-col .hint { color: var(--ink-soft); font-size: 0.86rem; line-height: 1.5; max-width: 30ch; }
+
+    .mp-divider {
+      display: grid;
+      place-items: center;
+      color: #a6adc8;
+      font-weight: 800;
+      font-size: 0.8rem;
+      letter-spacing: 0.1em;
+    }
+
+    #create-room {
+      padding: 13px 28px;
+      font-size: 0.98rem;
+      font-weight: 700;
+      border: none;
+      border-radius: 14px;
+      background: var(--brand-grad);
+      color: #fff;
+      cursor: pointer;
+      box-shadow: var(--shadow-cta);
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+    #create-room:hover { transform: translateY(-2px); box-shadow: 0 16px 32px rgba(87, 70, 230, 0.42); }
+
+    .join-row { display: flex; gap: 10px; }
+
+    #room-code-input {
+      padding: 12px 14px;
+      width: 150px;
+      font-size: 1.05rem;
+      letter-spacing: 0.18em;
+      text-align: center;
+      font-weight: 700;
+      border: 2px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--ink);
+      text-transform: uppercase;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    #room-code-input:focus { border-color: var(--brand-1); box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12); }
+    #room-code-input::placeholder { letter-spacing: 0.08em; font-weight: 600; color: #a6adc8; }
+
+    #join-room {
+      padding: 12px 26px;
+      font-size: 0.98rem;
+      font-weight: 700;
+      border: 2px solid var(--brand-1);
+      border-radius: 12px;
+      background: transparent;
+      color: var(--brand-1);
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    #join-room:hover { background: var(--brand-1); color: #fff; }
+
+    #multiplayer-status {
+      margin-top: 22px;
+      min-height: 1.3em;
+      color: var(--brand-1);
+      font-size: 0.95rem;
+      font-weight: 600;
+      text-align: center;
+    }
+
+    .footer {
+      text-align: center;
+      color: #a6adc8;
+      font-size: 0.85rem;
+      padding: 0 20px 34px;
+    }
+
+    /* --- Responsive --- */
+
+    @media (max-width: 980px) {
+      .nav-links { display: none; }
+      .nav-cta { margin-left: auto; }
+      .hero-bg { background-position: 74% center; }
+      .hero { grid-template-columns: 1fr; padding-top: 36px; }
+      .hero-art { min-height: 300px; }
+      .cards { grid-template-columns: 1fr; }
+      .mp-grid { grid-template-columns: 1fr; }
+      .mp-divider { padding: 4px 0; }
+    }
+
+    /* ---------- Loading screen ---------- */
 
     #loading {
       display: none;
       position: fixed;
-      top: 0; left: 0; right: 0; bottom: 0;
+      inset: 0;
       z-index: 20;
-      background: rgba(0,0,0,0.9);
+      background: rgba(10, 10, 14, 0.92);
       flex-direction: column;
       align-items: center;
       justify-content: center;
+      gap: 18px;
     }
-    #loading p {
-      font-size: 1.2rem;
-      color: #aaa;
+    #loading .spinner {
+      width: 46px; height: 46px;
+      border-radius: 50%;
+      border: 4px solid rgba(255, 255, 255, 0.15);
+      border-top-color: #8b5cf6;
+      animation: spin 0.9s linear infinite;
     }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading p { font-size: 1.15rem; color: #cbd5e1; }
   </style>
 </head>
 <body>
 
-  <!-- Start Screen -->
+  <!-- Start Screen / Landing Page -->
   <div id="overlay">
-    <h1>MR Table Tennis</h1>
-    <p>Play table tennis in your real room</p>
-    <button id="enter-mr">Enter Mixed Reality</button>
 
-    <div id="multiplayer-controls" style="margin-top: 18px; display: flex; flex-direction: column; align-items: center; gap: 10px;">
-      <button id="create-room" style="padding: 10px 28px; font-size: 0.95rem; border: 2px solid rgba(0,170,255,0.5); border-radius: 10px; background: transparent; color: #cfe; cursor: pointer;">Create Multiplayer Room</button>
-      <div style="display: flex; gap: 6px; align-items: center;">
-        <input id="room-code-input" maxlength="6" placeholder="ROOM CODE" autocapitalize="characters" style="padding: 9px 12px; width: 130px; font-size: 1rem; letter-spacing: 0.15em; text-align: center; border: 2px solid rgba(255,255,255,0.18); border-radius: 10px; background: rgba(255,255,255,0.05); color: #fff; text-transform: uppercase;" />
-        <button id="join-room" style="padding: 10px 22px; font-size: 0.95rem; border: 2px solid rgba(0,170,255,0.5); border-radius: 10px; background: transparent; color: #cfe; cursor: pointer;">Join</button>
+    <nav class="nav">
+      <a class="brand" href="#home">
+        <span class="brand-logo"><img src="/White_SXR.jpg" alt="SportyXR"></span>
+      </a>
+
+      <div class="nav-links">
+        <a href="#home" class="active">Home</a>
+        <a href="#home">Play</a>
+        <a href="#multiplayer">Multiplayer</a>
+        <a href="#features">Features</a>
       </div>
-      <div id="multiplayer-status" style="min-height: 1.2em; color: #8ad; font-size: 0.9rem; text-align: center;"></div>
-    </div>
 
-    <div id="status"></div>
+      <a class="nav-cta" href="#home">
+        Play Now
+        <svg width="20" height="14" viewBox="0 0 24 16" fill="currentColor"><path d="M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>
+      </a>
+    </nav>
+
+    <main>
+      <div class="hero-bg">
+      <section class="hero" id="home">
+        <div class="hero-copy">
+          <div class="badge">
+            <span class="chip">
+              <svg viewBox="0 0 24 16" fill="currentColor"><path d="M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>
+              WebXR
+            </span>
+            Play Instantly in Your Browser
+          </div>
+
+          <h1>Table Tennis,<br><span class="grad">Anytime, Anywhere.</span></h1>
+
+          <p class="sub">Step up to the table in mixed reality — play in your own room, battle a friend online, or rally in a virtual arena. No installs, just your headset and your browser.</p>
+
+          <div id="xr-mode-slot"></div>
+
+          <div class="hero-actions">
+            <button id="enter-mr">Enter Mixed Reality</button>
+            <button id="enter-desktop">Desktop Preview</button>
+          </div>
+
+          <div id="status"></div>
+        </div>
+
+        <div class="hero-art" aria-hidden="true">
+          <span class="float-pill one">READY. PLAY. WIN.</span>
+        </div>
+      </section>
+      </div>
+
+      <section class="cards" id="features">
+        <a class="card" href="#multiplayer">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M9 11a4 4 0 1 0-4-4 4 4 0 0 0 4 4zm6.5 1a3.5 3.5 0 1 0-3.5-3.5A3.5 3.5 0 0 0 15.5 12zM9 13c-3 0-7 1.5-7 4.5V20h11.4a6.4 6.4 0 0 1-.4-2.2c0-1.7.9-3.1 2.2-4.1A12.6 12.6 0 0 0 9 13zm6.5 1.5c-2.3 0-5.5 1.2-5.5 3.5V20h11v-2c0-2.3-3.2-3.5-5.5-3.5z"/></svg>
+          </span>
+          <div>
+            <h3>Multiplayer</h3>
+            <span class="underline"></span>
+            <p>Create a room, share the code, and rally head-to-head in real time.</p>
+          </div>
+        </a>
+
+        <a class="card" href="#home">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M14.6 2.5a6.5 6.5 0 0 0-8.8 9.4l-3.5 5a1.5 1.5 0 0 0 .2 2l.6.6a1.5 1.5 0 0 0 2 .2l5-3.5a6.5 6.5 0 0 0 9.4-8.8 6.4 6.4 0 0 0-4.9-4.9z"/><circle cx="19.2" cy="19" r="2.2"/></svg>
+          </span>
+          <div>
+            <h3>Realistic Physics</h3>
+            <span class="underline"></span>
+            <p>True spin, bounce, and paddle feel — tuned for authentic table tennis.</p>
+          </div>
+        </a>
+
+        <a class="card" href="#home">
+          <span class="icon">
+            <svg viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h16a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-2.7a2.5 2.5 0 0 1-2-1l-1.3-1.7a1.6 1.6 0 0 0-2.5 0L10.2 13a2.5 2.5 0 0 1-2 1H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2zm3.8 4a2.2 2.2 0 1 0 2.2 2.2A2.2 2.2 0 0 0 7.8 7zm8.4 0a2.2 2.2 0 1 0 2.2 2.2A2.2 2.2 0 0 0 16.2 7zM7 18h10v2H7z"/></svg>
+          </span>
+          <div>
+            <h3>MR &amp; VR Arenas</h3>
+            <span class="underline"></span>
+            <p>Play passthrough in your room, or step into a full stadium arena.</p>
+          </div>
+        </a>
+      </section>
+
+      <section class="mp-section" id="multiplayer">
+        <div class="mp-panel">
+          <div class="mp-head">
+            <h2>Play with a <span class="grad">Friend</span></h2>
+            <p>Connect two headsets in seconds — one creates a room, the other joins with the code.</p>
+          </div>
+
+          <div class="mp-grid">
+            <div class="mp-col">
+              <h4>Host a match</h4>
+              <p class="hint">Get a room code and share it with your opponent.</p>
+              <button id="create-room">Create Multiplayer Room</button>
+            </div>
+
+            <div class="mp-divider">OR</div>
+
+            <div class="mp-col">
+              <h4>Join a match</h4>
+              <p class="hint">Enter the code your friend shared with you.</p>
+              <div class="join-row">
+                <input id="room-code-input" maxlength="6" placeholder="ROOM CODE" autocapitalize="characters" />
+                <button id="join-room">Join</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="multiplayer-status"></div>
+        </div>
+      </section>
+    </main>
+
+    <div class="footer">SportyXR — play table tennis instantly in your browser with WebXR.</div>
   </div>
 
   <!-- Loading Screen -->
   <div id="loading">
+    <div class="spinner"></div>
     <p>Loading models...</p>
   </div>
 

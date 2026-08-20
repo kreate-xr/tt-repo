@@ -7,7 +7,7 @@
 
 const {
   PATTERNS, PATTERN_ORDER, WINGS, getPattern,
-  resolveWing, wingColumn, buildStepConfig, PatternRunner,
+  resolveWing, wingColumn, resolveOrigin, buildStepConfig, PatternRunner,
 } = require('../js/modes/training/patterns.js');
 const {
   Ladder, CurriculumTuner, TIERS, TIER_SETTINGS,
@@ -97,6 +97,111 @@ describe('buildStepConfig', () => {
     const c = buildStepConfig(base, { wing: WINGS.FH, spinMagnitude: 9000 });
     expect(c.spinMagnitude).toBeLessThanOrEqual(160);
   });
+
+  test('a step can move the machine itself', () => {
+    const c = buildStepConfig(base, { wing: WINGS.BH, feedOrigin: 'L-far' });
+    expect(c.feedOrigin).toBe('L-far');
+    // Absent → the base config's origin is untouched.
+    expect(buildStepConfig(base, { wing: WINGS.BH }).feedOrigin).toBe(base.feedOrigin);
+  });
+
+  test('a garbage step origin is validated back to the default', () => {
+    const c = buildStepConfig(base, { wing: WINGS.BH, feedOrigin: 'moon-base' });
+    expect(c.feedOrigin).toBe(base.feedOrigin);
+  });
+
+  test('a step can carry its own interval, still scaled by paceMul and clamped', () => {
+    expect(buildStepConfig(base, { wing: WINGS.FH, interval: 1.1 }).interval)
+      .toBeCloseTo(1.1, 6);
+    expect(buildStepConfig(base, { wing: WINGS.FH, interval: 1.4 }, { paceMul: 1.4 }).interval)
+      .toBeCloseTo(1.0, 3);
+    // Below the floor — whether from the step itself or paceMul — clamps.
+    expect(buildStepConfig(base, { wing: WINGS.FH, interval: 0.1 }).interval).toBe(0.8);
+    expect(buildStepConfig(base, { wing: WINGS.FH, interval: 1.1 }, { paceMul: 1.4 }).interval).toBe(0.8);
+  });
+});
+
+describe('resolveOrigin', () => {
+  test('mirrors L and R for a left-hander, center stays put', () => {
+    expect(resolveOrigin('L-far', 'L')).toBe('R-far');
+    expect(resolveOrigin('R-near', 'L')).toBe('L-near');
+    expect(resolveOrigin('center-far', 'L')).toBe('center-far');
+  });
+
+  test('right-handers get the origin as written', () => {
+    expect(resolveOrigin('L-far', 'R')).toBe('L-far');
+    expect(resolveOrigin('R-far')).toBe('R-far');
+  });
+
+  test('a left-hander step origin mirrors through buildStepConfig', () => {
+    const base = defaultConfig();
+    const c = buildStepConfig(base, { wing: WINGS.BH, feedOrigin: 'L-far' }, { hand: 'L' });
+    expect(c.feedOrigin).toBe('R-far');
+  });
+});
+
+describe('rapid fire pattern', () => {
+  test('is shipped, but launches from the Drills menu, not the pattern list', () => {
+    expect(PATTERNS.rapidFire).toBeDefined();
+    // Not in PATTERN_ORDER: the Patterns screen lists only the classics;
+    // Rapid Fire has its own row in DRILL_ITEMS one level up.
+    expect(PATTERN_ORDER).not.toContain('rapidFire');
+  });
+
+  test('produces valid configs like any listed pattern', () => {
+    // It skips the PATTERN_ORDER validity loop above, so cover it here.
+    const r = new PatternRunner('rapidFire', defaultConfig());
+    for (let i = 0; i < 8; i++) {
+      const c = r.configFor(i);
+      expect(c).toEqual(validateConfig(c));
+    }
+  });
+
+  test('sweeps the machine across all three far positions', () => {
+    const origins = PATTERNS.rapidFire.steps.map((s) => s.feedOrigin);
+    expect(origins).toContain('L-far');
+    expect(origins).toContain('center-far');
+    expect(origins).toContain('R-far');
+    for (const step of PATTERNS.rapidFire.steps) {
+      // All-far origins keep the glide on one straight rail.
+      expect(step.feedOrigin.endsWith('-far')).toBe(true);
+    }
+  });
+
+  test('feeds non-stop rather than waiting for the previous ball', () => {
+    expect(PATTERNS.rapidFire.nonstop).toBe(true);
+    // The classics keep the one-ball-at-a-time gate.
+    expect(PATTERNS.falkenberg.nonstop).toBeUndefined();
+  });
+
+  test('pace follows the configured interval, doubled', () => {
+    // No step-level interval override: the Custom Feed slider must stay in
+    // control of the rhythm ("non-stop, based on the configuration").
+    for (const step of PATTERNS.rapidFire.steps) {
+      expect(step.interval).toBeUndefined();
+    }
+    const base = validateConfig({ ...defaultConfig(), interval: 2.0 });
+    const r = new PatternRunner('rapidFire', base);
+    expect(r.configFor(0).interval).toBeCloseTo(1.0, 6);
+    // The slider floor still holds at its fastest setting.
+    const fast = new PatternRunner('rapidFire', validateConfig({ ...base, interval: 0.8 }));
+    expect(fast.configFor(0).interval).toBe(0.8);
+  });
+
+  test('an explicit paceMul overrides the pattern default', () => {
+    const base = validateConfig({ ...defaultConfig(), interval: 2.0 });
+    const r = new PatternRunner('rapidFire', base, { paceMul: 1 });
+    expect(r.configFor(0).interval).toBeCloseTo(2.0, 6);
+  });
+
+  test('each origin fires near-straight at its paired wing (right-hander)', () => {
+    // L origin (−x) pairs with the BH column (−x for hand R), and so on —
+    // the sweep should never command a cross-court feed.
+    const colForOrigin = { 'L-far': 0, 'center-far': 1, 'R-far': 2 };
+    for (const step of PATTERNS.rapidFire.steps) {
+      expect(wingColumn(step.wing, 'R')).toBe(colForOrigin[step.feedOrigin]);
+    }
+  });
 });
 
 describe('PatternRunner', () => {
@@ -142,6 +247,29 @@ describe('PatternRunner', () => {
         expect(c).toEqual(validateConfig(c));
       }
     }
+  });
+
+  test('random steps are memoized: repeated lookups do not drain the rng', () => {
+    // The drill previews ball i's origin (machine glide), the HUD renders
+    // describeNext(i) every frame, and the engine finally feeds ball i. All
+    // three must see the SAME step, and none may consume an extra rng draw —
+    // solveFeed's scatter shares the stream, so reproducibility depends on it.
+    const zonesOf = (r, n) => Array.from({ length: n }, (_, i) => r.configFor(i).placement.zone);
+
+    const clean = new PatternRunner('figureEight', base, { random: true, rng: mulberry32(11) });
+    const expected = zonesOf(clean, 20);
+
+    const hammered = new PatternRunner('figureEight', base, { random: true, rng: mulberry32(11) });
+    for (let k = 0; k < 10; k++) hammered.describeNext(0);   // HUD spam
+    hammered.configFor(0);                                   // glide preview
+    expect(zonesOf(hammered, 20)).toEqual(expected);
+  });
+
+  test('configFor is idempotent per index in random mode', () => {
+    const r = new PatternRunner('figureEight', base, { random: true, rng: mulberry32(7) });
+    const first = r.configFor(3).placement.zone;
+    expect(r.configFor(3).placement.zone).toBe(first);
+    expect(r.configFor(3).placement.zone).toBe(first);
   });
 
   test('attach installs itself as the engine config provider', () => {

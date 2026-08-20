@@ -1,0 +1,139 @@
+<!-- TEMPORARY dev-only preview for the paddle material correction pass.
+     Not part of the game — safe to delete. Open at /paddle-preview.html
+
+     Left paddle: raw Paddle.glb as authored (uniform semi-gloss, 2× specular).
+     Right paddle: after enhancePaddleMaterial (rubber matte 0.85, blade satin
+     0.55, specular clamped). Same light rig, tone mapping, and color space as
+     the game (sceneSetup.js) so what you see here is what the headset gets.
+     Drag to orbit both paddles together; they auto-rotate so the key-light
+     highlight sweeps across the rubber/wood junction. -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Paddle material preview</title>
+<style>
+  body { background: #14181f; margin: 0; font-family: sans-serif; color: #ddd; overflow: hidden; }
+  #labels { position: fixed; top: 12px; left: 0; right: 0; display: flex; pointer-events: none; }
+  #labels div { flex: 1; text-align: center; font-size: 15px; letter-spacing: 0.04em; }
+  #labels .sub { font-size: 12px; color: #8aa; margin-top: 4px; }
+  #hint { position: fixed; bottom: 10px; width: 100%; text-align: center; font-size: 12px; color: #667; }
+  #specline { position: fixed; bottom: 30px; width: 100%; text-align: center; font-size: 12px; color: #8aa; font-family: monospace; }
+</style>
+</head>
+<body>
+  <div id="labels">
+    <div>RAW GLB<div class="sub">one material — roughness 0.55, specular ×2</div></div>
+    <div>GLB + MATERIAL PASS<div class="sub">rubber matte 0.85 / blade satin 0.55, specular clamped</div></div>
+    <div>PROCEDURAL <span style="color:#6f6">(shipping)</span><div class="sub">5 real layers, lofted flared handle, concave throat</div></div>
+  </div>
+  <div id="specline"></div>
+  <div id="hint">drag to orbit &middot; scroll to zoom &middot; space pauses auto-rotate</div>
+<script type="module">
+  import * as THREE from 'three';
+  import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+  import { enhancePaddleMaterial } from '/js/scene/paddleMaterial.js';
+  import { buildProceduralPaddle } from '/js/scene/paddleGeometry.js';
+  import { paddleMassProperties, derivePaddle } from '/js/physics/paddleSpec.js';
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(devicePixelRatio);
+  // Match the game exactly (sceneSetup.js) — material judgments made under a
+  // different tone map do not transfer.
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.NeutralToneMapping;
+  renderer.toneMappingExposure = 1.0;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x14181f);
+
+  // The game's gameplay light rig, verbatim (sceneSetup.js P16).
+  const keyLight = new THREE.DirectionalLight(0xfff4ea, 2.6);
+  keyLight.position.set(0.6, 5, 0.4);
+  scene.add(keyLight);
+  const hemiLight = new THREE.HemisphereLight(0xe8edf5, 0x3a3830, 1.4);
+  scene.add(hemiLight);
+  const rimLight = new THREE.DirectionalLight(0xeaf2ff, 0.7);
+  rimLight.position.set(-1.5, 3, -5);
+  scene.add(rimLight);
+
+  const camera = new THREE.PerspectiveCamera(40, innerWidth / innerHeight, 0.01, 10);
+
+  const loader = new GLTFLoader();
+  const [rawGltf, enhancedGltf] = await Promise.all([
+    loader.loadAsync('models/Paddle.glb'),
+    loader.loadAsync('models/Paddle.glb'),
+  ]);
+
+  enhancePaddleMaterial(enhancedGltf.scene);
+
+  // Third paddle: the procedural bat the game now ships (?paddle=glb switches
+  // back to the first two). This is NOT the old "patch the GLB with a rubber
+  // lip" pass that used to sit here — it is the whole bat, built from
+  // physics/paddleSpec.js, and it is what the headset renders by default. The
+  // thing to look at is the rim and the throat: five real layers at the edge,
+  // and wood that flares into the handle instead of butting against it.
+  const procedural = buildProceduralPaddle();
+
+  // All three spin inside one rig so drag-orbit and auto-rotate stay in
+  // lockstep — otherwise you end up comparing two different lighting angles.
+  const rig = new THREE.Group();
+  const SEP = 0.17;
+  const raw = rawGltf.scene;
+  const enhanced = enhancedGltf.scene;
+  raw.position.x = -SEP;
+  enhanced.position.x = 0;
+  procedural.position.x = SEP;
+  // Blade up, red face toward camera; matches how you'd inspect a real bat.
+  for (const p of [raw, enhanced, procedural]) {
+    p.position.y = -0.04; // authored origin is at the handle top — recenter
+    rig.add(p);
+  }
+  scene.add(rig);
+
+  // Report what the spec actually produces, so the numbers can be checked
+  // against a real bat while looking at it rather than from memory.
+  {
+    const p = paddleMassProperties();
+    const d = derivePaddle();
+    document.getElementById('specline').textContent = [
+      `${p.massGrams.toFixed(0)} g assembled`,
+      `${p.bladeGrams.toFixed(0)} g blade + ${(p.rubberGrams / 2).toFixed(0)} g/side rubber`,
+      `balance ${(p.balanceY * 1000).toFixed(0)} mm ahead of the grip`,
+      `swing weight ${(p.inertiaGripX * 1e4).toFixed(1)}e-4 kg·m²`,
+      `disc r=${(d.hitRadius * 1000).toFixed(1)} mm`,
+    ].join('  ·  ');
+  }
+
+  camera.position.set(0, 0.05, 0.78);
+  camera.lookAt(0, 0.04, 0);
+
+  // Minimal orbit (no OrbitControls dep): drag rotates the rig, wheel zooms.
+  let dragging = false, px = 0, py = 0, autoRotate = true;
+  addEventListener('pointerdown', (e) => { dragging = true; px = e.clientX; py = e.clientY; });
+  addEventListener('pointerup', () => { dragging = false; });
+  addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    rig.rotation.y += (e.clientX - px) * 0.01;
+    rig.rotation.x += (e.clientY - py) * 0.01;
+    px = e.clientX; py = e.clientY;
+  });
+  addEventListener('wheel', (e) => {
+    camera.position.z = THREE.MathUtils.clamp(camera.position.z + e.deltaY * 0.0005, 0.2, 1.5);
+  });
+  addEventListener('keydown', (e) => { if (e.code === 'Space') autoRotate = !autoRotate; });
+  addEventListener('resize', () => {
+    camera.aspect = innerWidth / innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(innerWidth, innerHeight);
+  });
+
+  renderer.setAnimationLoop(() => {
+    if (autoRotate && !dragging) rig.rotation.y += 0.004;
+    renderer.render(scene, camera);
+  });
+</script>
+</body>
+</html>

@@ -10,6 +10,11 @@
 // solver).
 
 import * as THREE from 'three';
+// constants.js is dependency-free (no three, no DOM, no scene imports), so
+// pulling these two here keeps impulse.js runnable headless under Jest while
+// giving the live tick, the AI solver, and the AI serve one shared source of
+// truth — the same zero-drift contract the rest of this file exists for.
+import { PADDLE_SPIN_CAP, PADDLE_SPIN_CAP_KNEE, CORKSCREW_RETAIN } from './constants.js';
 
 // Reusable temps live at module scope so per-call allocations are minimal
 // in the hot path (host's tick calls this once per paddle hit per frame).
@@ -223,40 +228,58 @@ export function computeImpulse(
     ballW_out.z += dampDelta * faceNormal.z;
   }
 
-  // Strip the "corkscrew" (spin about horizontal direction of travel) from
-  // outgoing ω. Table tennis has two natural spin axes: vertical (sidespin,
-  // world Y) and horizontal-perpendicular-to-motion (topspin/backspin).
-  // Spin about the horizontal direction of motion is a bullet-like spin that
-  // (a) does not visually rotate the ball's surface in a viewer-obvious way,
-  // and (b) produces a Magnus_x = −ω_hv · v_y term that FLIPS sign at the
-  // trajectory apex when v_y crosses zero — sidespin appears to reverse
-  // mid-flight, then flip again at the table bounce. Idealised rigid-rotor
-  // physics preserves it; real ping-pong balls dissipate it fast through
-  // turbulent boundary-layer shear. A tilted-paddle slice naturally produces
-  // some of this component because `Δω = slipTangent × faceNormal` couples
-  // paddle tilt into the ω_z-along-motion axis.
+  // Damp — do not strip — the "corkscrew" (spin about horizontal direction
+  // of travel) in outgoing ω. Corkscrew is real physics: it is the tilted-
+  // axis component that makes hook/fade serves kick laterally off the bounce
+  // via ordinary table friction. But it also produces a Magnus_x = −ω_hv ·
+  // v_y term that FLIPS sign at the trajectory apex when v_y crosses zero,
+  // and real balls shed this component fast through turbulent boundary-layer
+  // shear — so full rigid-rotor retention is wrong in the other direction.
+  // CORKSCREW_RETAIN (constants.js) keeps enough for authentic tilted-axis
+  // bounce behavior while holding the apex-flip artifact below visual
+  // noticeability at the realistic MAGNUS_COEFFICIENT. (This block used to
+  // zero the component entirely, which deleted the hook-serve vocabulary and
+  // forced an exaggerated TABLE_SIDESPIN_KICK to fake the perception back.)
   //
   // Project ω against the HORIZONTAL velocity direction (v with y zeroed),
   // not full 3D v. Full-v projection is diagonal (v_out points up+forward at
-  // launch) and only partially removes the corkscrew — the flip returns
-  // later in flight. Horizontal-v projection zeroes it cleanly and leaves
-  // sidespin (⊥ horizontal-v by construction, since sidespin is vertical)
-  // and topspin/backspin (⊥ horizontal-v in the horizontal plane) both
-  // untouched.
+  // launch) and only partially isolates the corkscrew. Horizontal-v
+  // projection catches it cleanly and leaves sidespin (⊥ horizontal-v by
+  // construction, since sidespin is vertical) and topspin/backspin (⊥
+  // horizontal-v in the horizontal plane) both untouched.
   const hvLenSq = ballV_out.x * ballV_out.x + ballV_out.z * ballV_out.z;
   if (hvLenSq > 1e-4) {
+    const remove = 1 - CORKSCREW_RETAIN;
     const invLen = 1 / Math.sqrt(hvLenSq);
     const hvHatX = ballV_out.x * invLen;
     const hvHatZ = ballV_out.z * invLen;
     // ω · hvHat  (hvHat has no y component)
     const parallel = ballW_out.x * hvHatX + ballW_out.z * hvHatZ;
-    ballW_out.x -= parallel * hvHatX;
-    ballW_out.z -= parallel * hvHatZ;
+    ballW_out.x -= remove * parallel * hvHatX;
+    ballW_out.z -= remove * parallel * hvHatZ;
     // Mirror the same removal on deltaOmega so the diagnostic returned to
     // the host (used for HUD label / haptics) matches what got applied.
     const dParallel = deltaOmega.x * hvHatX + deltaOmega.z * hvHatZ;
-    deltaOmega.x -= dParallel * hvHatX;
-    deltaOmega.z -= dParallel * hvHatZ;
+    deltaOmega.x -= remove * dParallel * hvHatX;
+    deltaOmega.z -= remove * dParallel * hvHatZ;
+  }
+
+  // Spin-magnitude soft-cap (see PADDLE_SPIN_CAP). SPIN_CAPTURE_GAIN bounds
+  // the transfer per unit slip, but VR tangential slip itself is unbounded —
+  // this is the grip-saturation backstop. Knee-and-asymptote, NOT a pure
+  // tanh: everything at or below the knee passes exactly 1:1 (a bare tanh
+  // shaved 4-6% off legitimate mid-range brush spin), and only the excess
+  // above the knee compresses toward the cap. Preserves the spin AXIS
+  // exactly; only the magnitude saturates. Runs last so it caps the final
+  // composed ω, not an intermediate.
+  if (PADDLE_SPIN_CAP > 0) {
+    const wMag = ballW_out.length();
+    if (wMag > PADDLE_SPIN_CAP_KNEE) {
+      const span = PADDLE_SPIN_CAP - PADDLE_SPIN_CAP_KNEE;
+      const capped = PADDLE_SPIN_CAP_KNEE +
+        span * Math.tanh((wMag - PADDLE_SPIN_CAP_KNEE) / span);
+      ballW_out.multiplyScalar(capped / wMag);
+    }
   }
 
   return { ballV_out, ballW_out, vContact, velDot, impactSpeed, slipTangent, deltaOmega };

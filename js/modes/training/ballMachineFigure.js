@@ -63,9 +63,24 @@ const MUZZLE_LOCAL_Z = 0.19;
 // the stand just reaches down toward the floor for visual grounding.
 const STAND_DROP = 0.72;
 
+// Glide — how the machine travels between feed origins (Rapid Fire's sweep).
+// The widest hop (L-far → R-far, ~0.92 m) must fit the shortest glide window
+// the scheduler allows: interval 0.8 s minus the 0.25 s spin-up freeze
+// (RECOVER also glides). At these values it takes ~0.52 s — cruise covers
+// 0.74 m, then the arrive rate damps the last stretch so the machine settles
+// rather than stopping dead. Lowering ARRIVE_RATE stretches that tail
+// exponentially (ln(residual ratio)/rate), so re-check the window if tuning.
+const GLIDE_MAX_SPEED = 1.8;    // m/s
+const GLIDE_ARRIVE_RATE = 10;   // 1/s
+
 // Module scratch — aim() runs once per feed, but allocating a Vector3 per call
-// on a path that also runs during the render loop is avoidable noise.
+// on a path that also runs during the render loop is avoidable noise. The
+// glide gets its own scratch: it runs every frame from update(), a different
+// call path than aim() in the same frame.
 const _muzzleOffset = new THREE.Vector3();
+const _glideGroupTarget = new THREE.Vector3();
+const _glideOffset = new THREE.Vector3();
+const _glideDelta = new THREE.Vector3();
 
 export class BallMachineFigure {
   constructor() {
@@ -75,6 +90,7 @@ export class BallMachineFigure {
     this.onContact = null;
     this.wheelSpin = 0;
     this.wheelRate = 0;
+    this.glideTarget = null;
 
     this.group = this.build();
     this.emitter = this.group;
@@ -289,6 +305,46 @@ export class BallMachineFigure {
   // a no-op rather than an error. Keeps the drill's call sites identical.
   showHeldBall() { /* machines don't hold a ball on a paddle face */ }
 
+  /**
+   * Glide the machine so its muzzle travels to `muzzlePos`. Purely cosmetic:
+   * the glide is NOT a state and never blocks isIdle, so it cannot delay a
+   * feed — aim() at beginSwing stays the authoritative snap and absorbs any
+   * residual centimetres of unfinished travel.
+   *
+   * `immediate` snaps instead of gliding, for drill start: without it the
+   * machine would visibly sail in from wherever the group happened to be.
+   */
+  glideTo(muzzlePos, { immediate = false } = {}) {
+    if (!this.group) return;
+    if (immediate) {
+      this.glideTarget = null;
+      this.aim(muzzlePos, _glideDelta.set(0, 0, 1));
+      return;
+    }
+    if (!this.glideTarget) this.glideTarget = new THREE.Vector3();
+    this.glideTarget.copy(muzzlePos);
+  }
+
+  updateGlide(dt) {
+    // Frozen during SPINUP: the ball spawns at the pose that was aimed, so
+    // moving the group then would detach the launch from the muzzle.
+    if (!this.glideTarget || this.state === 'SPINUP') return;
+    // Group-space target: where the group must sit for the muzzle to land on
+    // the target, using the CURRENT head orientation. The next shot's exact
+    // elevation is unknown at preview time; aim() corrects the residual.
+    _glideOffset.set(0, 0, MUZZLE_LOCAL_Z).applyQuaternion(this.head.quaternion);
+    _glideGroupTarget.copy(this.glideTarget).sub(_glideOffset);
+    _glideDelta.copy(_glideGroupTarget).sub(this.group.position);
+    const dist = _glideDelta.length();
+    if (dist < 1e-3) {
+      this.glideTarget = null;
+      return;
+    }
+    const speed = Math.min(GLIDE_MAX_SPEED, GLIDE_ARRIVE_RATE * dist);
+    const step = Math.min(dist, speed * dt);
+    this.group.position.addScaledVector(_glideDelta.divideScalar(dist), step);
+  }
+
   setLight(armed, t = 1) {
     if (!this.lightMat) return;
     const color = armed ? LIGHT_ARMED : LIGHT_IDLE;
@@ -334,6 +390,8 @@ export class BallMachineFigure {
     for (const w of this.wheels) {
       w.mesh.rotation.y = this.wheelSpin * w.dir;
     }
+
+    this.updateGlide(dt);
   }
 
   fireContact() {
@@ -359,6 +417,7 @@ export class BallMachineFigure {
       this.wheels = [];
     }
     this.onContact = null;
+    this.glideTarget = null;
   }
 }
 

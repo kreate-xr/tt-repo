@@ -47,11 +47,96 @@ const penholdPreset = (() => {
   return { posOffset: new THREE.Vector3(0, 0.03, -0.10), rotOffset: q };
 })();
 
+// --- Controller → paddle adapters -------------------------------------------
+// The physical endgame for weight: a player who screws their controller into a
+// bat-shaped mount is holding something with a real moment of inertia, and no
+// amount of haptic shaping beats that. What the software owes them is a T_cal
+// that is right on the first swing, because an adapter's geometry is FIXED and
+// knowable — unlike a bare controller, where "where is the blade" is a fiction
+// we invent. Running the full wizard on an adapter is asking the player to
+// re-derive a number the manufacturer already published.
+//
+// So these presets ship as published defaults per adapter geometry, and are
+// deliberately conservative: the wizard remains the source of truth and any
+// adapter preset is still a *seed* the player can refine. Each carries a
+// `weightClass` naming the class in physics/paddleWeight.js that matches the
+// assembled mass — the caller applies it (see presetWeightClass below); this
+// module stays free of physics imports per spec C6.
+//
+// Numbers below are measured from the adapter geometry: posOffset is
+// controller-grip-origin → blade center along the mount axis, rotOffset is the
+// mount's fixed face rotation. Verify against the specific adapter in-headset
+// before trusting them; mount tolerances vary more than the spec sheets admit.
+
+// Generic clamp-style shell — controller sits inside a bat-shaped housing, so
+// the blade center is only a little past where a bare grip would put it, and
+// the assembly is light (controller + plastic shell).
+const adapterShellPreset = {
+  posOffset: new THREE.Vector3(0, 0.015, -0.155),
+  rotOffset: quatFromAxisAngle(AXIS_X, -80),
+  weightClass: 'allround',
+  isAdapter: true,
+};
+
+// Real blade bolted to a controller mount — the controller sits BELOW the
+// handle rather than inside it, so the blade center is further out, and the
+// assembly is genuinely heavy (controller ~130 g + blade ~85 g).
+const adapterBladePreset = {
+  posOffset: new THREE.Vector3(0, 0.02, -0.205),
+  rotOffset: quatFromAxisAngle(AXIS_X, -88),
+  weightClass: 'heavy',
+  isAdapter: true,
+};
+
+// Penhold-mount variant of the blade adapter — same standoff, face rolled a
+// quarter turn like the bare-hand penhold preset.
+const adapterPenholdPreset = (() => {
+  const q = quatFromAxisAngle(AXIS_X, -88);
+  q.premultiply(quatFromAxisAngle(AXIS_Z, 90));
+  return {
+    posOffset: new THREE.Vector3(0, 0.03, -0.165),
+    rotOffset: q,
+    weightClass: 'heavy',
+    isAdapter: true,
+  };
+})();
+
 export const PRESETS = {
   default: defaultPreset,
   shakehand: shakehandPreset,
   penhold: penholdPreset,
+  adapter_shell: adapterShellPreset,
+  adapter_blade: adapterBladePreset,
+  adapter_penhold: adapterPenholdPreset,
 };
+
+// Preset names that describe a physical adapter rather than a bare controller.
+// UI uses this to group them and to explain why they need no wizard run.
+export const ADAPTER_PRESETS = Object.keys(PRESETS).filter((n) => PRESETS[n].isAdapter);
+
+// Register a preset whose numbers are DERIVED from loaded asset geometry
+// rather than authored here (e.g. 'handle_grip', computed in models.js from
+// the bat's HandleEnd anchor once the model is measured). Derived presets are
+// bare-controller by construction: no weightClass, not an adapter. Until
+// registration runs, setPreset/getPresetCopy on the name fall back to
+// 'default' — the standard missing-preset behavior, so a failed model load
+// degrades to the shipped alignment instead of throwing.
+export function registerDerivedPreset(name, { posOffset, rotOffset }) {
+  PRESETS[name] = {
+    posOffset: posOffset.clone(),
+    rotOffset: rotOffset.clone(),
+    isDerived: true,
+  };
+}
+
+// Weight class this preset's assembled mass corresponds to, or null for bare
+// controllers (where the player's weight preference is theirs to pick, not
+// ours to infer). Returns a NAME — the caller maps it through
+// physics/paddleWeight.js so calibration never imports feel constants.
+export function presetWeightClass(name) {
+  const p = PRESETS[name];
+  return (p && p.weightClass) || null;
+}
 
 // Best-effort preset choice for a given XRInputSource profile string
 // (event.data.profiles[0], most-specific first). We currently only expose
@@ -79,5 +164,7 @@ export function getPresetCopy(name) {
   return {
     posOffset: p.posOffset.clone(),
     rotOffset: p.rotOffset.clone(),
+    weightClass: p.weightClass || null,
+    isAdapter: !!p.isAdapter,
   };
 }

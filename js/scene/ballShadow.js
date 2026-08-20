@@ -33,10 +33,12 @@ const MAX_SCALE = 3.0;
 
 let _blob = null;
 let _tableY = 0;
+let _tableBox = null;
 
-export function createBallShadow(scene, tableSurfaceY) {
+export function createBallShadow(scene, tableSurfaceY, tableBox = null) {
   if (_blob) return _blob;
   _tableY = tableSurfaceY;
+  _tableBox = tableBox;
 
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = 128;
@@ -89,6 +91,16 @@ export function updateBallShadow(ballPos) {
     return;
   }
 
+  // Off the table's XZ footprint: hide. The blob lives at table-surface
+  // height, so past the edge there is no surface under the ball and the
+  // quad would hang in mid-air (same rect gate ballGhost.js uses).
+  if (_tableBox &&
+      (ballPos.x < _tableBox.min.x || ballPos.x > _tableBox.max.x ||
+       ballPos.z < _tableBox.min.z || ballPos.z > _tableBox.max.z)) {
+    _blob.visible = false;
+    return;
+  }
+
   const h = Math.max(0, ballPos.y - _tableY);
   const opacity = THREE.MathUtils.clamp(
     MAX_OPACITY - h * OPACITY_FALLOFF,
@@ -104,8 +116,8 @@ export function updateBallShadow(ballPos) {
 }
 
 /**
- * Hide the blob. Called from spawnBallAt alongside resetBallTrail so a fresh
- * spawn doesn't briefly show a shadow at the previous ball's rest position.
+ * Hide the blob. Called from spawnBallAt so a fresh spawn doesn't briefly
+ * show a shadow at the previous ball's rest position.
  */
 export function resetBallShadow() {
   if (_blob) _blob.visible = false;

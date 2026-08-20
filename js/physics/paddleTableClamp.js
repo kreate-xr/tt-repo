@@ -55,10 +55,13 @@ for (let i = 0; i < _RIM_N; i++) {
  * @param {THREE.Box3|null} tableBox world-space play-surface bounds (max.y is
  *   the felt top). Delta is zero if null.
  * @param {THREE.Vector3} out receiver — zeroed then filled with the delta.
+ * @param {number} [maxPush=Infinity] optional ceiling on the delta's magnitude.
+ *   For a PLAYER-held paddle this must be bounded — see the note below.
  * @returns {THREE.Vector3} out
  */
 export function resolvePaddleTablePenetration(
   faceCenter, faceNormal, hitRadius, halfThickness, tableBox, out,
+  maxPush = Infinity,
 ) {
   out.set(0, 0, 0);
   if (!tableBox) return out;
@@ -127,5 +130,33 @@ export function resolvePaddleTablePenetration(
   out.x = pushXP - pushXN;
   out.y = pushYP;
   out.z = pushZP - pushZN;
+
+  // Bound the push for a player-held paddle.
+  //
+  // The delta is applied to paddleAnchor.position, so it translates the bat
+  // away from the hand holding it — the exact artifact that got the old
+  // translational recoil removed (see xr/paddleRecoil.js), and it was live here
+  // unbounded: the push equals penetration depth, so swinging a hand down
+  // through the felt could shove the rendered paddle a full penetration-depth
+  // off the grip. A held object cannot translate relative to the hand, and the
+  // eye reads that as the bat coming loose long before it reads it as
+  // collision response.
+  //
+  // Clamping trades one artifact for a strictly milder one: past the bound the
+  // blade visibly intersects the table instead of detaching. That is the right
+  // trade — if the player has driven their hand into the table, the honest
+  // render is a paddle inside the table, not a paddle flying off their wrist.
+  // Grazing contacts (the common case) are well under the bound and still
+  // resolve fully.
+  //
+  // AI and remote paddles pass no bound: nobody's hand is holding them, so
+  // there is nothing to detach from and clean non-clipping is the better look.
+  if (maxPush !== Infinity) {
+    const len = Math.hypot(out.x, out.y, out.z);
+    if (len > maxPush && len > 0) {
+      const k = maxPush / len;
+      out.x *= k; out.y *= k; out.z *= k;
+    }
+  }
   return out;
 }

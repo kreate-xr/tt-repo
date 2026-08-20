@@ -38,6 +38,11 @@ jest.mock('../js/physics/ball.js', () => {
     unregisterAIPaddle: jest.fn(),
   };
 });
+// serve.js plays the contact sound itself now (the strike is scripted, so it
+// never goes through tryPaddleCollision). No WebAudio in jsdom/node.
+jest.mock('../js/scene/audio.js', () => ({
+  playPaddleHitSound: jest.fn(),
+}));
 
 // eslint-disable-next-line import/first
 import {
@@ -46,6 +51,9 @@ import {
   selectServeTarget,
   isServeTargetLegal,
   ensureNetClearance,
+  predictTossContact,
+  solveTwoBounceServe,
+  simulateTwoBounceServe,
 } from '../js/modes/aiMatch/serve.js';
 // eslint-disable-next-line import/first
 import {
@@ -423,13 +431,309 @@ describe('ensureNetClearance', () => {
   });
 });
 
+// --- Two-bounce serve solver -------------------------------------------------
+//
+// ITTF: the serve must bounce on the server's half first, then land on the
+// receiver's half. These roll the solved launch through the same integrator
+// the live ball uses and assert the full legality checklist.
+
+describe('solveTwoBounceServe — ITTF two-bounce serves', () => {
+  // Pin the SHIPPING physics (constants.js defaults: drag 0.17, gravity
+  // -9.81). Earlier describes' afterEach hooks leave the legacy tuning
+  // (0.10 / -12) behind, and the solver's legality envelope is measured
+  // against what the live game actually runs.
+  beforeEach(() => { setDragCoefficient(0.17); setGravity(-9.81); });
+  afterEach(() => { setDragCoefficient(0.17); setGravity(-9.81); });
+
+  const NET_TOP = 0.1525;
+  const BALL_R = 0.02;
+  function fullEnv() {
+    return {
+      tableBox: new THREE.Box3(
+        new THREE.Vector3(-0.7625, -0.01, -1.37),
+        new THREE.Vector3( 0.7625,  0.01,  1.37),
+      ),
+      netBox: new THREE.Box3(
+        new THREE.Vector3(-0.9025, 0.0,    -0.005),
+        new THREE.Vector3( 0.9025, NET_TOP, 0.005),
+      ),
+      tableSurfaceY: 0,
+      ballRadius: BALL_R,
+    };
+  }
+  // Production strike geometry: ~35cm above the table (TOSS_CONTACT_HEIGHT_M),
+  // just behind the AI end line (serve-ready z = min.z - 0.05, toss a further
+  // 2cm back). The height matters — it sets which arcs can legally carry deep
+  // (see the arc/depth table in serve.js), so a stale value here would test an
+  // envelope the game doesn't play in.
+  const launchPos = (x = 0) => new THREE.Vector3(x, 0.35, -1.44);
+
+  function spinFor(rps, from, targetWorld) {
+    const dir = targetWorld.clone().sub(from);
+    dir.y = 0;
+    if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
+    dir.normalize();
+    return new THREE.Vector3()
+      .crossVectors(new THREE.Vector3(0, 1, 0), dir)
+      .normalize()
+      .multiplyScalar(rps * 2 * Math.PI);
+  }
+
+  // maxErr: deep targets legitimately land short of the extreme — clearing
+  // the net with margin caps how deep a legal two-bounce serve can carry.
+  function expectLegal(res, maxErr = 0.30) {
+    expect(res).toBeTruthy();
+    expect(res.legal).toBe(true);
+    expect(res.sim.firstBounce).toBeTruthy();
+    expect(res.sim.firstBounce.z).toBeLessThan(0);          // AI half
+    expect(res.sim.crossedNetBeforeBounce).toBe(false);
+    expect(res.sim.netClearance).toBeGreaterThanOrEqual(BALL_R); // center above top + radius
+    expect(res.sim.landing.onTable).toBe(true);
+    expect(res.sim.landing.z).toBeGreaterThan(0);           // player half
+    expect(res.landingError).toBeLessThan(maxErr);
+  }
+
+  test('a fast deep serve solves legally', () => {
+    const target = new THREE.Vector3(0.4, 0, 1.15);
+    const res = solveTwoBounceServe(launchPos(0.3), target, 8.0, new THREE.Vector3(), fullEnv());
+    // This used to allow 0.65m of error, on the theory that clearing the cord
+    // capped how deep a legal serve could carry. It doesn't — that was the
+    // arc preference steering into an unreachable band. Deep targets hit.
+    expectLegal(res, 0.10);
+  });
+
+  test('a short backspin serve solves legally', () => {
+    const target = new THREE.Vector3(-0.1, 0, 0.30);
+    const spin = spinFor(-24, launchPos(0.4), target);
+    const res = solveTwoBounceServe(launchPos(0.4), target, 3.5, spin, fullEnv());
+    expectLegal(res);
+  });
+
+  test('a crossline sidespin-era placement solves legally', () => {
+    const target = new THREE.Vector3(-0.5, 0, 1.1);
+    const spin = spinFor(6, launchPos(0.5), target);
+    const res = solveTwoBounceServe(launchPos(0.5), target, 6.0, spin, fullEnv());
+    expectLegal(res, 0.10);
+  });
+
+  test('every archetype target across all tiers solves legally', () => {
+    const env = fullEnv();
+    for (const difficulty of ['beginner', 'intermediate', 'pro']) {
+      const rng = mulberry32(500 + difficulty.length);
+      let legal = 0;
+      const N = 30;
+      for (let i = 0; i < N; i++) {
+        const t = selectServeTarget(difficulty, rng);
+        const from = launchPos(t.servePos.x);
+        const target = new THREE.Vector3(t.target_x, 0, t.target_z); // tableCenterZ = 0
+        const spin = spinFor(t.target_spin, from, target);
+        const res = solveTwoBounceServe(from, target, t.target_speed, spin, env);
+        if (res && res.legal) legal++;
+      }
+      expect(legal / N).toBeGreaterThanOrEqual(0.9);
+    }
+  });
+
+  test('still solves legally under 2x drag and standard gravity', () => {
+    setDragCoefficient(0.20);
+    setGravity(-9.8);
+    const target = new THREE.Vector3(0.2, 0, 0.9);
+    const res = solveTwoBounceServe(launchPos(0), target, 5.0, new THREE.Vector3(), fullEnv());
+    expect(res).toBeTruthy();
+    expect(res.legal).toBe(true);
+  });
+
+  // --- The serve has to actually GET THERE ----------------------------------
+  //
+  // Landing accuracy alone was never the whole requirement, and treating it as
+  // one is how a real defect shipped: CLUB serves solved "legally", landed on
+  // the player's half, and then arrived at the end line 1.3s later at 1.7 m/s,
+  // dying ~38cm past the line. Legal, placed, and unreturnable — the player
+  // simply could not reach it. So assert the property that was actually
+  // missing: a serve aimed deep must ARRIVE, and arrive at a playable pace.
+  //
+  // Short serves are deliberately exempt. A short serve that doesn't carry
+  // past the end line is doing its job — the receiver steps in and takes it
+  // over the table.
+  describe('deep serves arrive at the receiver with usable pace', () => {
+    const END_LINE_Z = 1.37;
+
+    // Roll the solved launch all the way out and report the state when it
+    // crosses the receiver's end line, using the live integrator.
+    function arrivalAtEndLine(from, vel, spin) {
+      const { integrateFlightStep, applyTableBounce } =
+        require('../js/physics/rollout.js');
+      const pos = from.clone(), v = vel.clone(), s = spin.clone();
+      const dt = 0.004;
+      let bounces = 0;
+      for (let i = 0; i < 1500; i++) {
+        const prevZ = pos.z;
+        integrateFlightStep(pos, v, s, dt);
+        if (prevZ < END_LINE_Z && pos.z >= END_LINE_Z) {
+          return { timeMs: (i + 1) * dt * 1000, speed: v.length(), y: pos.y };
+        }
+        if ((pos.y - BALL_R) <= 0 && v.y < 0) {
+          const onTable = Math.abs(pos.x) <= 0.7625 && Math.abs(pos.z) <= 1.37;
+          if (!onTable) break;
+          bounces++;
+          pos.y = BALL_R;
+          applyTableBounce(v, s, BALL_R);
+          if (bounces > 6) break;
+        }
+        if (pos.y < -1.0) break;
+      }
+      return null;   // never got there
+    }
+
+    test('every deep archetype target across all tiers reaches the player', () => {
+      const env = fullEnv();
+      for (const difficulty of ['beginner', 'intermediate', 'pro']) {
+        const rng = mulberry32(900 + difficulty.length);
+        let deep = 0;
+        for (let i = 0; i < 60; i++) {
+          const t = selectServeTarget(difficulty, rng);
+          if (t.target_z < 0.80) continue;         // short serves exempt
+          deep++;
+          const from = launchPos(t.servePos.x);
+          const target = new THREE.Vector3(t.target_x, 0, t.target_z);
+          const spin = spinFor(t.target_spin, from, target);
+          const res = solveTwoBounceServe(from, target, t.target_speed, spin, env);
+          const arrival = arrivalAtEndLine(from, res.velocity, spin);
+          expect(arrival).not.toBeNull();
+          // 2.5 m/s is the floor for "the player can play a stroke at this"
+          // rather than reach forward and poke a dying ball. Measured band
+          // after the fix is 2.9-5.4 m/s; before it, deep serves arrived at
+          // 1.7-2.2 and many never crossed at all.
+          expect(arrival.speed).toBeGreaterThan(2.5);
+          // And it has to get there before the player has given up on it.
+          expect(arrival.timeMs).toBeLessThan(900);
+        }
+        expect(deep).toBeGreaterThan(5);           // the sample must be real
+      }
+    });
+
+    test('CLUB deep serves are not the slow floaters they used to be', () => {
+      // The reported bug, pinned as a number. The old solver produced a
+      // 3.42 m/s launch on a +1.4 arc landing at z=0.58 for this target.
+      const env = fullEnv();
+      const from = launchPos(0);
+      const target = new THREE.Vector3(0, 0, 1.00);
+      const res = solveTwoBounceServe(from, target, 3.5, new THREE.Vector3(), env);
+      expect(res.legal).toBe(true);
+      expect(res.landingError).toBeLessThan(0.10);
+      // A downward strike is the only shape that carries deep off an own-half
+      // bounce; an upward arc here is the regression.
+      expect(res.velocity.y).toBeLessThan(0);
+      const arrival = arrivalAtEndLine(from, res.velocity, new THREE.Vector3());
+      expect(arrival.timeMs).toBeLessThan(800);    // was ~1320
+      expect(arrival.speed).toBeGreaterThan(2.5);  // was ~1.73
+    });
+  });
+
+  test('simulateTwoBounceServe flags a direct (no own bounce) launch', () => {
+    // A hard flat launch aimed straight over the net — crosses before bouncing.
+    const res = simulateTwoBounceServe(
+      launchPos(0), new THREE.Vector3(0, 1.2, 7.0), new THREE.Vector3(), fullEnv());
+    expect(res.crossedNetBeforeBounce).toBe(true);
+  });
+});
+
 // --- Sub-FSM states --------------------------------------------------------
 
 describe('SERVE_STATES enum', () => {
-  test('contains exactly the 4 states (3 active + IDLE)', () => {
+  test('contains exactly the 5 states (4 active + IDLE)', () => {
     const values = Object.values(SERVE_STATES).sort();
     expect(values).toEqual([
-      'POST_SERVE', 'PRE_SERVE', 'SERVE_IDLE', 'SERVE_SWING',
+      'POST_SERVE', 'PRE_SERVE', 'SERVE_IDLE', 'SERVE_SWING', 'SERVE_TOSS',
     ]);
+  });
+});
+
+// --- Visible toss ----------------------------------------------------------
+//
+// The serve used to spawn the ball already moving at 3-9 m/s a few cm off the
+// paddle face, so from the player's side the ball simply appeared. The toss
+// phase makes it visible: these lock in that the ball genuinely rises, and
+// that the predicted strike is taken on the way back down.
+
+describe('predictTossContact', () => {
+  afterEach(() => { setDragCoefficient(0.10); setGravity(-12); });
+
+  // Mirrors the production geometry: toss from 10cm above the table, struck
+  // on the descent at 35cm (or sooner if the descent-speed cap bites).
+  const ORIGIN_Y = 0.10;
+  const FLOOR_Y = 0.35;
+  const ORIGIN = () => new THREE.Vector3(0.2, ORIGIN_Y, -1.4);
+  const STD = () => new THREE.Vector3(0, 4.5, 0);
+  const HIGH = () => new THREE.Vector3(0, 4.8, 0);
+
+  // 4.0 m/s is where the placement solver was measured to still be clean
+  // across every archetype and tier. Above it, serves start dropping onto
+  // the infeasible-fallback launch and miss their target.
+  const MAX_DESCENT = 4.0;
+
+  test('the toss rises high enough for the player to judge it', () => {
+    const res = predictTossContact(ORIGIN(), STD(), FLOOR_Y);
+    // Far more than the ITTF 16cm minimum — this is a readability
+    // requirement, not just a legality one.
+    expect(res.apexY - ORIGIN_Y).toBeGreaterThan(0.70);
+  });
+
+  test('the whole arc is visible: big rise AND a real descent before contact', () => {
+    const res = predictTossContact(ORIGIN(), STD(), FLOOR_Y);
+    const rise = res.apexY - ORIGIN_Y;
+    const fall = res.apexY - res.position.y;
+    expect(rise).toBeGreaterThan(0.70);
+    expect(fall).toBeGreaterThan(0.50);
+  });
+
+  test('contact is taken on the descent, below the apex and above the origin', () => {
+    const res = predictTossContact(ORIGIN(), STD(), FLOOR_Y);
+    expect(res.velocity.y).toBeLessThan(0);          // descending
+    expect(res.position.y).toBeLessThan(res.apexY);
+    expect(res.position.y).toBeGreaterThan(ORIGIN_Y);
+  });
+
+  test('the toss is airborne long enough for a player to track it', () => {
+    const res = predictTossContact(ORIGIN(), STD(), FLOOR_Y);
+    expect(res.timeMs).toBeGreaterThan(600);
+    expect(res.timeMs).toBeLessThan(1800);           // under TOSS_MAX_DURATION_MS
+  });
+
+  test('the high-toss archetype is taller and slower than the standard toss', () => {
+    const std = predictTossContact(ORIGIN(), STD(), FLOOR_Y);
+    const high = predictTossContact(ORIGIN(), HIGH(), FLOOR_Y);
+    expect(high.apexY).toBeGreaterThan(std.apexY + 0.05);
+    expect(high.timeMs).toBeGreaterThan(std.timeMs);
+  });
+
+  test('contact descent speed stays inside the placement solver envelope', () => {
+    for (const vy of [4.5, 4.8]) {
+      const res = predictTossContact(ORIGIN(), new THREE.Vector3(0, vy, 0), FLOOR_Y);
+      expect(Math.abs(res.velocity.y)).toBeLessThanOrEqual(MAX_DESCENT + 0.2);
+    }
+  });
+
+  test('the descent cap catches an over-tall toss instead of breaking placement', () => {
+    // Twice the intended toss velocity — the height floor would be reached
+    // at ~7 m/s. The cap must strike it higher up instead.
+    const res = predictTossContact(ORIGIN(), new THREE.Vector3(0, 9.0, 0), FLOOR_Y);
+    expect(Math.abs(res.velocity.y)).toBeLessThanOrEqual(MAX_DESCENT + 0.2);
+    expect(res.position.y).toBeGreaterThan(FLOOR_Y);
+  });
+
+  test('stays sane when the physics tuner changes gravity', () => {
+    setGravity(-9.8);
+    const res = predictTossContact(ORIGIN(), STD(), FLOOR_Y);
+    expect(res.apexY - ORIGIN_Y).toBeGreaterThan(0.70);
+    expect(res.velocity.y).toBeLessThan(0);
+    expect(Math.abs(res.velocity.y)).toBeLessThanOrEqual(MAX_DESCENT + 0.2);
+    expect(res.timeMs).toBeGreaterThan(600);
+  });
+
+  test('a degenerate (downward) toss still terminates with a usable contact', () => {
+    const res = predictTossContact(ORIGIN(), new THREE.Vector3(0, -1.0, 0), FLOOR_Y);
+    expect(Number.isFinite(res.timeMs)).toBe(true);
+    expect(res.position).toBeDefined();
   });
 });

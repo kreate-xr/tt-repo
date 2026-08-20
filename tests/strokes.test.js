@@ -142,6 +142,15 @@ describe('stroke feeds', () => {
     }
   });
 
+  test('the feed depth is folded into the zone row (zone is authoritative)', () => {
+    // The engine lands where the ZONE says; a depth that never reached the
+    // zone number would silently feed every stroke at the same length.
+    const push = strokeFeedConfig(defaultConfig(), STROKES.PUSH);
+    const block = strokeFeedConfig(defaultConfig(), STROKES.BLOCK);
+    expect(push.placement).toEqual({ kind: 'zone', zone: 2 });
+    expect(block.placement).toEqual({ kind: 'zone', zone: 8 });
+  });
+
   test('an unknown stroke leaves the base config alone', () => {
     const base = defaultConfig();
     expect(strokeFeedConfig(base, 'nonsense')).toBe(base);

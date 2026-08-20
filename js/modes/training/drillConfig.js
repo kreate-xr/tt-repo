@@ -67,6 +67,17 @@ export const FIELD_SPECS = Object.freeze({
 // the middle — M1's "zone 5 (middle)" default) or a free point on the table.
 export const PLACEMENT_ZONE_DEFAULT = 5;
 
+// The zone is authoritative for the landing row, so anything expressed as a
+// depth band has to be folded into the zone number. Rows near-net first.
+const DEPTH_ROW = { short: 0, 'half-long': 1, deep: 2 };
+
+/** Zone (1–9) for a depth band at a column (0 left, 1 centre, 2 right). */
+export const zoneForDepth = (depth, col = 1) =>
+  (DEPTH_ROW[depth] ?? 2) * 3 + col + 1;
+
+/** Depth band implied by a zone's row — the inverse of zoneForDepth. */
+export const depthForZone = (zone) => DEPTHS[Math.floor((zone - 1) / 3)];
+
 export function defaultConfig() {
   return {
     version: CONFIG_VERSION,

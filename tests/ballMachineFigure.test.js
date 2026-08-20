@@ -152,3 +152,87 @@ describe('feed cycle', () => {
     expect(fig.emitter).toBeNull();
   });
 });
+
+describe('glide (Rapid Fire sweep)', () => {
+  // Fast rhythm interval minus SPINUP is the shortest window the machine has
+  // to travel; the widest hop is L-far → R-far, ~0.92 m.
+  const DT = 1 / 72;   // Quest refresh — the cadence update() really runs at
+
+  const settle = (fig, seconds) => {
+    for (let t = 0; t < seconds; t += DT) fig.update(DT);
+  };
+
+  test('the muzzle converges on the target without teleporting', () => {
+    const fig = new BallMachineFigure();
+    const from = new THREE.Vector3(-0.46, 0.38, -1.77);
+    const to = new THREE.Vector3(0.46, 0.38, -1.77);
+    fig.glideTo(from, { immediate: true });
+    fig.glideTo(to);
+
+    let prev = muzzleWorld(fig);
+    for (let t = 0; t < 1.0; t += DT) {
+      fig.update(DT);
+      const cur = muzzleWorld(fig);
+      // No frame may move faster than the cruise speed allows — a jump larger
+      // than that is the teleport this feature exists to remove.
+      expect(cur.distanceTo(prev)).toBeLessThanOrEqual(1.8 * DT + 1e-6);
+      prev = cur;
+    }
+    expect(muzzleWorld(fig).distanceTo(to)).toBeLessThan(0.01);
+  });
+
+  test('a full-width hop completes inside the shortest glide window', () => {
+    // interval 0.8 s − SPINUP 0.25 s = 0.55 s of travel time, worst case.
+    const fig = new BallMachineFigure();
+    fig.glideTo(new THREE.Vector3(-0.46, 0.38, -1.77), { immediate: true });
+    fig.glideTo(new THREE.Vector3(0.46, 0.38, -1.77));
+    settle(fig, 0.55);
+    expect(muzzleWorld(fig).x).toBeGreaterThan(0.40);
+  });
+
+  test('gliding never blocks the feed cycle', () => {
+    const fig = new BallMachineFigure();
+    fig.glideTo(new THREE.Vector3(-0.46, 0.38, -1.77), { immediate: true });
+    fig.glideTo(new THREE.Vector3(0.46, 0.38, -1.77));
+    expect(fig.isIdle).toBe(true);   // glide is not a state
+  });
+
+  test('the position is frozen during spin-up, then travel resumes', () => {
+    // The ball spawns at the aimed pose; moving the group mid-spin-up would
+    // detach the launch from the muzzle.
+    const fig = new BallMachineFigure();
+    const start = new THREE.Vector3(0, 0.38, -1.77);
+    fig.glideTo(start, { immediate: true });
+
+    const pose = { position: start.clone(), normal: new THREE.Vector3(0, 0, 1) };
+    let fired = false;
+    fig.beginSwing(pose, () => { fired = true; }, new THREE.Vector3(0, 1, 6));
+    fig.glideTo(new THREE.Vector3(0.46, 0.38, -1.77));
+
+    const held = fig.group.position.clone();
+    for (let i = 0; i < 10; i++) fig.update(0.02);   // 0.2 s — still SPINUP
+    expect(fired).toBe(false);
+    expect(fig.group.position.distanceTo(held)).toBeLessThan(1e-9);
+
+    settle(fig, 1.0);                                 // release + recover + glide
+    expect(fired).toBe(true);
+    expect(muzzleWorld(fig).x).toBeGreaterThan(0.40);
+  });
+
+  test('immediate placement snaps the muzzle exactly', () => {
+    const fig = new BallMachineFigure();
+    const target = new THREE.Vector3(0.46, 0.38, -1.77);
+    fig.glideTo(target, { immediate: true });
+    expect(muzzleWorld(fig).distanceTo(target)).toBeLessThan(1e-6);
+    expect(fig.glideTarget).toBeNull();
+  });
+
+  test('dispose mid-glide is safe and later calls are no-ops', () => {
+    const fig = new BallMachineFigure();
+    fig.glideTo(new THREE.Vector3(0.46, 0.38, -1.77));
+    fig.dispose();
+    expect(fig.glideTarget).toBeNull();
+    expect(() => fig.glideTo(new THREE.Vector3(0, 0.38, -1.77))).not.toThrow();
+    expect(() => fig.update(0.02)).not.toThrow();
+  });
+});

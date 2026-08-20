@@ -64,12 +64,14 @@ export const TACTICAL_ZONES = Object.freeze([
 // Recommended per-difficulty probability of picking a tactical zone
 // instead of the engine's default (neutral mirror / heatmap exploit).
 //
-// Beginner drops to 0.03 (from 0.15) — real beginners have essentially
-// ZERO tactical placement awareness. They hit wherever their paddle
-// sends the ball. Giving Beginner wrong-footing + zone selection made
-// them tactically smarter than they should be, blurring the difficulty
-// gap. 3% keeps the occasional "lucky wide angle" without pretending
-// Beginner is planning placements.
+// Beginner sits at 0.10. It was dropped to 0.03 ("real beginners have zero
+// placement awareness") back when the tier was framed as a raw novice — but
+// the tier is SHOWN as CLUB, and a club player absolutely places some balls
+// on purpose: not every ball, not a plan, but a deliberate wide or deep one
+// every couple of rallies. 10% reads as occasional intent without blurring
+// the gap to the international tier's every-ball-is-placed 0.50. (0.15 was
+// tried historically and DID blur the gap — that ceiling is why this isn't
+// higher.)
 //
 // Intermediate is the international tier: at that level essentially every ball
 // is placed with intent — corner, wide, short, body jam or elbow seam — so half
@@ -85,7 +87,7 @@ export const TACTICAL_ZONES = Object.freeze([
 // The tiers now differ in kind: intermediate plays generically good placement,
 // pro plays what it has learned about YOU.
 export const TACTICAL_PROBABILITY_BY_DIFFICULTY = Object.freeze({
-  beginner:     0.03,
+  beginner:     0.10,
   intermediate: 0.50,
   pro:          0.42,
 });
