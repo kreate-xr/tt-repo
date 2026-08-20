@@ -194,3 +194,68 @@ export function paddleMeasuredProperties() {
 export function recoilWeightScale(weight = PADDLE_WEIGHT) {
   return (1 + RECOIL_WEIGHT_RANGE * deviation(weight)) * geometrySwingScale();
 }
+
+// --- Channel 2b: swing inertia haptic ---------------------------------------
+// Mass is felt when velocity CHANGES — a bat swung at constant speed pulls on
+// nothing. So this channel is driven by grip ACCELERATION, not speed, which is
+// what separates it from the swing-whoosh/swing-haptic speed band in
+// constants.js: those say "you are moving fast", this says "you are fighting
+// the blade's inertia right now". Reference stroke accelerations: a committed
+// drive ~50 m/s², a wrist snap ~80, a direction reversal 100+.
+//
+// The band bounds and peak are live bindings — FEEL_ROWS in physicsParams.js
+// steps them from the tuner, so a player can widen the band or mute the
+// channel in-headset. Setters clamp; the norm survives an inverted band
+// (MIN set above MAX mid-tune) by degrading to a finite step function rather
+// than dividing by a negative span — a NaN reaching pulse() kills haptics for
+// the whole session.
+export let SWING_INERTIA_ACCEL_MIN = 10;      // m/s² — deadzone for tracking noise
+export let SWING_INERTIA_ACCEL_MAX = 120;     // m/s² — saturation
+export let SWING_INERTIA_MAX_INTENSITY = 0.30; // peak amplitude at neutral weight
+
+export const SWING_INERTIA_DEFAULTS = Object.freeze({
+  accelMin: 10, accelMax: 120, maxIntensity: 0.30,
+});
+
+const clampNum = (v, lo, hi) => {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return lo;
+  return n > hi ? hi : n < lo ? lo : n;
+};
+
+export function setSwingInertiaAccelMin(v)     { SWING_INERTIA_ACCEL_MIN = clampNum(v, 0, 500); }
+export function setSwingInertiaAccelMax(v)     { SWING_INERTIA_ACCEL_MAX = clampNum(v, 0, 1000); }
+export function setSwingInertiaMaxIntensity(v) { SWING_INERTIA_MAX_INTENSITY = clampNum(v, 0, 1); }
+
+// Normalized swing effort in [0,1] for a given grip acceleration (m/s²).
+// This is the single value BOTH the haptic amplitude and the audio whoosh
+// gain derive from — cross-modal weight only works if the ear and the hand
+// agree, so they must read the same number.
+export function swingInertiaNorm(accel) {
+  const a = Number(accel) || 0;
+  const span = SWING_INERTIA_ACCEL_MAX - SWING_INERTIA_ACCEL_MIN;
+  if (!(span > 1e-6)) return a > SWING_INERTIA_ACCEL_MIN ? 1 : 0;
+  return clamp01((a - SWING_INERTIA_ACCEL_MIN) / span);
+}
+
+// Weight multiplier on the inertia cue. Wider than the impact-haptic spread
+// on purpose: this is THE channel whose whole job is telling light and heavy
+// blades apart mid-swing, so the extremes must be unmistakable (4× light to
+// heavy), while the default class stays an exact no-op (scale 1 at 0.5).
+export const SWING_INERTIA_WEIGHT_RANGE = 1.2;
+
+export function swingInertiaWeightScale(weight = PADDLE_WEIGHT) {
+  return 1 + SWING_INERTIA_WEIGHT_RANGE * deviation(weight);
+}
+
+// Haptic intensity for the current frame's grip acceleration. Zero at or
+// below the deadzone (a still hand must not buzz), rising to
+// SWING_INERTIA_MAX_INTENSITY at the band top for the neutral blade, scaled
+// by both the player's weight setting and the bat's measured geometry.
+export function inertialSwingIntensity(accel, weight = PADDLE_WEIGHT) {
+  const n = swingInertiaNorm(accel);
+  if (n <= 0) return 0;
+  const scaled = SWING_INERTIA_MAX_INTENSITY * n
+    * swingInertiaWeightScale(weight) * geometrySwingScale();
+  return Math.min(1, Math.max(0, scaled));
+}

@@ -173,7 +173,20 @@ export let DRAG_COEFFICIENT = WEIGHTY_BALL_ENABLED ? 0.17 : 0;
 // can still drop this back toward 5 in-headset if a specific rally aesthetic
 // calls for it.
 export let TABLE_SPIN_GAIN = 15;
-export const TABLE_LINEAR_FRICTION = 0.12;
+export let TABLE_LINEAR_FRICTION = 0.12;
+
+// Table friction coefficient — the single equipment-facing knob behind the
+// spin/linear couple above. The internal pair (TABLE_LINEAR_FRICTION 0.12 /
+// TABLE_SPIN_GAIN 15) was tuned as a consistent 42%-of-no-slip couple; μ
+// scales BOTH linearly so the bounce can never disagree with itself about how
+// much friction acted (the failure mode the long comment above describes).
+// TABLE_MU_REFERENCE is the μ at which that shipped couple was calibrated, so
+// the ITTF default reproduces shipped behavior bit-for-bit. Tuned via
+// setTableMu() below; Section B of the tuner panel owns it.
+export const TABLE_MU_REFERENCE = 0.25;
+export const TABLE_LINEAR_FRICTION_AT_MU_REF = 0.12;
+export const TABLE_SPIN_GAIN_AT_MU_REF = 15;
+export let TABLE_MU = TABLE_MU_REFERENCE;
 
 // Table COR reference (median of the speed-dependent curve — see
 // tableRestitution()). Tuner adjusts this scalar; the hi/lo offsets below
@@ -510,10 +523,64 @@ export const ROLLING_VY_THRESHOLD = 0.35;
 
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 
+// --- Equipment parameters (tuner Section B) ---------------------------------
+// Canonical names for the two restitution medians, introduced with the A/B/C
+// panel restructure. PADDLE_E0 / TABLE_EN_0 are the SAME quantities as
+// PADDLE_RESTITUTION / TABLE_RESTITUTION (the medians the speed-dependent
+// curves pivot on) — both spellings are kept as live bindings and every setter
+// updates the pair, so legacy consumers and the new panel can never disagree.
+//
+// Ranges are tighter than the legacy setters on purpose: the equipment layer
+// models a bat and table someone could actually buy. TABLE_EN_0 floors at
+// 0.90 — the old dead-table tuning (median 0.75, e(2.4) ≈ 0.76) sat well
+// under ITTF regulation and read as broken equipment, so stored values from
+// that era clamp up into range on migration rather than being reproduced.
+export let PADDLE_E0 = PADDLE_RESTITUTION;
+export let TABLE_EN_0 = TABLE_RESTITUTION;
+
+export function setPaddleE0(v) {
+  PADDLE_E0 = clamp(v, 0.75, 0.95);
+  PADDLE_RESTITUTION = PADDLE_E0;
+}
+
+export function setTableEn0(v) {
+  TABLE_EN_0 = clamp(v, 0.90, 0.98);
+  TABLE_RESTITUTION = TABLE_EN_0;
+}
+
+export function setTableMu(v) {
+  TABLE_MU = clamp(v, 0.05, 0.60);
+  const s = TABLE_MU / TABLE_MU_REFERENCE;
+  TABLE_LINEAR_FRICTION = TABLE_LINEAR_FRICTION_AT_MU_REF * s;
+  TABLE_SPIN_GAIN = TABLE_SPIN_GAIN_AT_MU_REF * s;
+}
+
+// Equipment presets — applied as a COMPLETE set so switching between them can
+// never accumulate state from a previous preset. 'ittf' is the paper-spec
+// bat and table (paddle median from the certification-test COR, μ at the
+// couple's calibration point); 'lively' and 'dead' bracket it for A/B feel
+// comparisons. Note the shipped LOAD default (weighty-ball paddle median
+// 0.82, lively table 0.92) is a standing feel choice documented at the
+// definitions above — presets are explicit user actions, not the boot state.
+export const PHYSICS_PRESETS = {
+  ittf:   { paddleE0: 0.878, tableEn0: 0.92, tableMu: 0.25 },
+  lively: { paddleE0: 0.90,  tableEn0: 0.95, tableMu: 0.25 },
+  dead:   { paddleE0: 0.80,  tableEn0: 0.90, tableMu: 0.18 },
+};
+
+export function applyPhysicsPreset(name) {
+  const p = PHYSICS_PRESETS[name];
+  if (!p) return false;
+  setPaddleE0(p.paddleE0);
+  setTableEn0(p.tableEn0);
+  setTableMu(p.tableMu);
+  return true;
+}
+
 export function setGravity(v)                { GRAVITY = clamp(v, -15, -5); }
 export function setDragCoefficient(v)        { DRAG_COEFFICIENT = clamp(v, 0, 0.30); }
-export function setTableRestitution(v)       { TABLE_RESTITUTION = clamp(v, 0.3, 0.98); }
-export function setPaddleRestitution(v)      { PADDLE_RESTITUTION = clamp(v, 0.3, 0.98); }
+export function setTableRestitution(v)       { TABLE_RESTITUTION = clamp(v, 0.3, 0.98); TABLE_EN_0 = TABLE_RESTITUTION; }
+export function setPaddleRestitution(v)      { PADDLE_RESTITUTION = clamp(v, 0.3, 0.98); PADDLE_E0 = PADDLE_RESTITUTION; }
 export function setPaddlePosSmoothing(v)     { PADDLE_POS_SMOOTHING = clamp(v, 0.15, 1.0); }
 export function setPaddleRotSmoothing(v)     { PADDLE_ROT_SMOOTHING = clamp(v, 0.15, 1.0); }
 export function setSquashAmount(v)           { SQUASH_AMOUNT = clamp(v, 0, 0.35); }

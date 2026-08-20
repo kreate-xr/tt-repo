@@ -256,6 +256,8 @@ describe('single source of physics', () => {
     path.join('physics', 'constants.js'),   // declares the constant
     path.join('scene', 'physicsTuner.js'),  // tuner UI: reads/writes it as a
                                             // live parameter, does not integrate
+    path.join('physics', 'physicsParams.js'), // tuner row metadata: same
+                                              // read/write-as-parameter role
   ]);
 
   function walk(dir, out = []) {
