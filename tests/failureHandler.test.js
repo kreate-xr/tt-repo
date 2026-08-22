@@ -26,16 +26,13 @@ jest.mock('../js/scene/models.js', () => {
   };
 });
 
-// eslint-disable-next-line import/first
 import {
   createFailureHandler,
   TARGET_REQUEST_TIMEOUT_MS,
   SOLVER_INFEASIBLE_REPEAT_LIMIT,
   BALL_SPEED_SANITY_LIMIT_MPS,
 } from '../js/modes/aiMatch/failureHandler.js';
-// eslint-disable-next-line import/first
 import { spawnBallAt, ballVelocity, ballAngularVelocity } from '../js/physics/ball.js';
-// eslint-disable-next-line import/first
 import { ballModel } from '../js/scene/models.js';
 
 beforeEach(() => {

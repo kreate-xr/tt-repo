@@ -158,7 +158,6 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
   const STREAK_LOSS_THRESHOLD = STREAK_THRESHOLD;
   const STREAK_LOSS_MISS_BOOST = STREAK_MISS_BOOST_ADDITIVE;
   let consecutiveLostPoints = 0;
-  let consecutiveWonPoints = 0;
 
   // Spin read-latency state — see READ_LATENCY_MS. While a misread is
   // pending, the AI's planned trajectory aims at where a spin-blind read said
@@ -581,11 +580,9 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
   // streak counters that feed the miss-rate defense-sag boost above.
   function onPointResult({ winner } = {}) {
     if (winner === 'ai') {
-      consecutiveWonPoints += 1;
       consecutiveLostPoints = 0;
     } else if (winner === 'player') {
       consecutiveLostPoints += 1;
-      consecutiveWonPoints = 0;
     }
   }
 

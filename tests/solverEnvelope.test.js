@@ -41,9 +41,7 @@ jest.mock('../js/physics/ball.js', () => {
   return { ballVelocity: new T.Vector3(), ballAngularVelocity: new T.Vector3() };
 });
 
-// eslint-disable-next-line import/first
 import { rolloutForAIInterception } from '../js/ai/shotAdapter.js';
-// eslint-disable-next-line import/first
 import { solvePaddle, SOLVER_REASONS, MAX_PADDLE_SPEED_MPS } from '../js/ai/paddleSolver.js';
 
 function v(x, y, z) { return new THREE.Vector3(x, y, z); }
@@ -194,13 +192,9 @@ describe('solver envelope', () => {
 // 4.0 m/s centre ball — which is exactly why it needs a test. The symptom is
 // "the AI feels passive", which no assertion would otherwise catch.
 describe('end-to-end: engine requests are executable', () => {
-  // eslint-disable-next-line global-require
   const { createBeginnerEngine } = require('../js/ai/engines/beginner.js');
-  // eslint-disable-next-line global-require
   const { createIntermediateEngine } = require('../js/ai/engines/intermediate.js');
-  // eslint-disable-next-line global-require
   const { createProEngine } = require('../js/ai/engines/pro.js');
-  // eslint-disable-next-line global-require
   const { ShotHistory } = require('../js/ai/shotHistory.js');
 
   const FACTORIES = {

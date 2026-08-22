@@ -5,6 +5,7 @@
 //     live NetworkManager handed through.
 
 import { LobbyManager } from '../lobby/LobbyManager.js';
+import { XR_MODES, XR_MODE_STORAGE_KEY, resolveStoredMode } from './xrModes.js';
 
 export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, startDesktop }) {
   const enterMRBtn = document.getElementById('enter-mr');
@@ -20,24 +21,18 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
   // so an abandoned attempt can never clobber the one that replaced it.
   let lobbySession = 0;
 
-  // BETA LAUNCH: passthrough MR only. The VR venue picker (Arena / TT Arena)
-  // is disabled — uncomment the block below to restore it for the full
-  // release. Comments (and therefore this whole block) are stripped by the
-  // production build, so none of it is visible in the shipped bundle. The
-  // localStorage key is deliberately left alone so a pre-beta venue choice
-  // comes back when the picker returns.
-  const xrMode = 'ar';
-  /*
-  // XR mode toggle: 'ar' (passthrough, current default) vs 'vr' (dark
-  // stadium venue) vs 'vr-tt' (alternate tt-arena venue). WebXR session type
+  // XR mode toggle: 'ar' (passthrough MR, default) vs 'vr-focus' (the
+  // procedural Focus Room venue — js/scene/focusRoom.js). WebXR session type
   // is fixed at request time so this is pre-session. Persisted so a
   // returning player doesn't have to re-pick.
-  const XR_MODE_STORAGE_KEY = 'trailclaude.xrMode';
-  const VALID_MODES = new Set(['ar', 'vr', 'vr-tt']);
+  //
+  // BETA LAUNCH: the GLB venues ('vr' stadium / 'vr-tt') remain disabled —
+  // a stored pre-beta value for either resolves to 'ar' WITHOUT being
+  // rewritten (see resolveStoredMode), so that choice comes back if the
+  // full venue picker returns.
   let xrMode = 'ar';
   try {
-    const saved = localStorage.getItem(XR_MODE_STORAGE_KEY);
-    if (VALID_MODES.has(saved)) xrMode = saved;
+    xrMode = resolveStoredMode(localStorage.getItem(XR_MODE_STORAGE_KEY));
   } catch { // localStorage disabled — stick with default
   }
 
@@ -46,11 +41,11 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
   modeToggleWrap.style.cssText = `
     display: flex; gap: 10px; flex-wrap: wrap;
   `;
-  function makeModeBtn(mode, label, sub) {
+  const modeBtns = XR_MODES.map((m) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.dataset.mode = mode;
-    b.innerHTML = `<div style="font-weight:700">${label}</div><div style="font-size:0.75rem;opacity:0.75">${sub}</div>`;
+    b.dataset.mode = m.id;
+    b.innerHTML = `<div style="font-weight:700">${m.label}</div><div style="font-size:0.75rem;opacity:0.75">${m.sub}</div>`;
     b.style.cssText = `
       padding: 9px 18px; border-radius: 12px; cursor: pointer;
       background: #fff; color: #4b5268; transition: all 0.15s;
@@ -58,32 +53,29 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
       box-shadow: 0 4px 12px rgba(38,43,82,0.06);
     `;
     b.addEventListener('click', () => {
-      xrMode = mode;
-      try { localStorage.setItem(XR_MODE_STORAGE_KEY, mode); } catch {}
+      xrMode = m.id;
+      try { localStorage.setItem(XR_MODE_STORAGE_KEY, m.id); } catch {}
       refreshModeBtns();
     });
     return b;
-  }
-  const arBtn   = makeModeBtn('ar',    'Room',     'passthrough MR');
-  const vrBtn   = makeModeBtn('vr',    'Arena',    'stadium venue');
-  const vrTTBtn = makeModeBtn('vr-tt', 'TT Arena', 'new venue');
-  modeToggleWrap.append(arBtn, vrBtn, vrTTBtn);
+  });
+  modeToggleWrap.append(...modeBtns);
   // The landing page provides a dedicated slot; fall back to inserting
   // before the Enter button for older markup.
   const modeSlot = document.getElementById('xr-mode-slot');
   if (modeSlot) modeSlot.append(modeToggleWrap);
   else enterMRBtn.before(modeToggleWrap);
   function refreshModeBtns() {
-    for (const b of [arBtn, vrBtn, vrTTBtn]) {
+    for (const b of modeBtns) {
       const active = b.dataset.mode === xrMode;
       b.style.borderColor = active ? '#4f46e5' : '#e6e9f4';
       b.style.background  = active ? 'rgba(79,70,229,0.08)' : '#fff';
       b.style.color       = active ? '#4f46e5' : '#4b5268';
     }
-    enterMRBtn.textContent = xrMode === 'ar' ? 'Enter Mixed Reality' : 'Enter Arena';
+    const activeMode = XR_MODES.find((m) => m.id === xrMode);
+    enterMRBtn.textContent = activeMode ? activeMode.cta : 'Enter Mixed Reality';
   }
   refreshModeBtns();
-  */
 
   function setMpStatus(text, isError = false) {
     if (!mpStatusEl) return;

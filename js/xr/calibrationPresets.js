@@ -145,13 +145,13 @@ export function presetWeightClass(name) {
 // Returns a preset NAME (string key of PRESETS), not the object.
 export function matchProfile(profileString) {
   if (!profileString || typeof profileString !== 'string') return 'default';
-  const s = profileString.toLowerCase();
   // Known-good controllers where the spec's shakehand seeds are close enough
   // to try as an initial guess. Empirically tune in-headset per Gotcha (b).
   // Left commented until the shakehand preset numbers are validated against
   // a real Quest — we don't want to auto-shift the paddle for existing users
   // on first launch just because a controller string matched.
   //
+  // const s = profileString.toLowerCase();
   // if (s.includes('touch')) return 'shakehand';
   // if (s.includes('pico'))  return 'shakehand';
   // if (s.includes('index')) return 'shakehand';

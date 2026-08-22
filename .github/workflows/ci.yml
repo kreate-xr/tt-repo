@@ -9,6 +9,11 @@ jobs:
   test-and-build:
     runs-on: ubuntu-latest
     steps:
+      # LFS files (GLB models, MP3s) are NOT fetched: nothing in test/lint
+      # reads their contents, and pulling ~85 MB per run would burn the LFS
+      # bandwidth quota. The build step copies LFS pointer stubs into dist/,
+      # which is fine because CI never deploys — deploys run from a working
+      # tree with the real files.
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -19,8 +24,16 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
       - name: Run tests
         run: npm test
+
+      - name: Firestore rules tests
+        run: |
+          npm install -g firebase-tools
+          npm run test:rules
 
       - name: Build
         run: npm run build

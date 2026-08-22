@@ -20,7 +20,7 @@ globalThis.localStorage = new MemoryStorage();
 
 // Import AFTER shim so calibration.js's module-load-time reads see it.
 const {
-  setPreset, setPosOffset, setRotOffset, loadForProfile,
+  setPreset, setRotOffset, loadForProfile,
   getPosOffset, getRotOffset, getPresetName, getActiveProfile,
 } = require('../js/xr/calibration.js');
 

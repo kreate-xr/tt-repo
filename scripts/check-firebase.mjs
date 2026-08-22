@@ -67,10 +67,13 @@ async function main() {
   const testId = `smoketest-${Date.now().toString(36)}`;
   const testRef = doc(db, 'rooms', testId);
   try {
+    // Must match firestore.rules validHostDoc() exactly: only these three
+    // keys, hostUid == our uid, createdAt == request.time. Anything extra
+    // (an old version added a `_smoke` marker) is rejected by the rules.
     await setDoc(testRef, {
       host: { joinedAt: serverTimestamp() },
+      hostUid: user.uid,
       createdAt: serverTimestamp(),
-      _smoke: true,
     });
   } catch (err) {
     console.error('[FAIL] write to /rooms:', err.code || err.message);

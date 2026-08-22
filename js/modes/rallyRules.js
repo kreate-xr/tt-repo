@@ -192,7 +192,7 @@ export function createRallyRules({
     return null;
   }
 
-  function registerBounce({ x = 0, z = 0 } = {}) {
+  function registerBounce({ z = 0 } = {}) {
     if (!active || !lastHitter) return null;
     const side = sideOfZ(z);
     const opponent = other(lastHitter);

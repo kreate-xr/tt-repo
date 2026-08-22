@@ -30,12 +30,10 @@ jest.mock('../js/physics/ball.js', () => {
   };
 });
 
-// eslint-disable-next-line import/first
 import {
   rolloutForAIInterception, rolloutToBounceOnAISide,
   createShotAdapter, AI_PADDLE_ID,
 } from '../js/ai/shotAdapter.js';
-// eslint-disable-next-line import/first
 import { ballVelocity, ballAngularVelocity } from '../js/physics/ball.js';
 
 function mulberry32(seed) {

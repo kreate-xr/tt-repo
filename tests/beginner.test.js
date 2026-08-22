@@ -266,7 +266,7 @@ describe('createBeginnerEngine', () => {
 
   test('sidespin: present, bounded, both directions, never on a smash', () => {
     const engine = createBeginnerEngine({ rng: mulberry32(22) });
-    let withSide = 0, left = 0, right = 0;
+    let withSide = 0, left = 0;
     const N = 10000;
     for (let i = 0; i < N; i++) {
       const t = engine.computeTarget(null, {});
@@ -277,7 +277,7 @@ describe('createBeginnerEngine', () => {
         expect(Math.abs(side)).toBeGreaterThanOrEqual(2.0);
         expect(Math.abs(side)).toBeLessThanOrEqual(6.0);
         withSide += 1;
-        if (side < 0) left += 1; else right += 1;
+        if (side < 0) left += 1;
       }
       if (t[5] === 'smash') expect(side).toBe(0);
     }

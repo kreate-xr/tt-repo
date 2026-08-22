@@ -465,10 +465,6 @@ describe('Intermediate engine — no-instant-punishment counter', () => {
   }
 
   test('first call after a new cluster lands holds fire (counter < delay)', () => {
-    // Force exploit dice to ALWAYS pass with a custom RNG, so the only way
-    // to land outside the cluster is the no-instant-punishment counter.
-    const alwaysExploit = () => 0; // rng() < EXPLOIT_FACTOR always true; safe for non-Gaussian branches because Marsaglia in pickNeutralTarget needs varied u/v — but we never go into pickNeutralTarget if counter check passes. So clamp to a tiny positive number that still drives Gaussian away from divergence.
-    const engine = createIntermediateEngine({ rng: mulberry32(601) });
     const history = buildClusteredHistory();
 
     // Run a single computeTarget — counter resets to 0, exploit is held.
@@ -510,7 +506,6 @@ describe('Intermediate engine — no-instant-punishment counter', () => {
 
 describe('Pro engine — no-instant-punishment counter', () => {
   test('respects the same delay as Intermediate', () => {
-    const engine = createProEngine({ rng: mulberry32(901) });
     const history = new ShotHistory();
     for (let i = 1; i <= 12; i++) {
       history.push([i, i * 100, 0.5, 0.8, 0, 80, 9, 0]);

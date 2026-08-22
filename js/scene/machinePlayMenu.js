@@ -18,6 +18,7 @@ import { COLORS, F, roundRect } from './panelStyle.js';
 import { layoutFeedEditor, drawFeedEditor } from './feedEditor.js';
 import { ENDLESS_FEED_FIELDS } from '../modes/training/feedConfigModel.js';
 import { MachinePlayModel, SCREENS } from '../modes/machinePlay/machinePlayModel.js';
+import { TUNER_ENABLED } from './hud.js';
 
 const CANVAS_W = 1024;
 const CANVAS_H = 640;
@@ -30,7 +31,10 @@ const FOOTER_Y = CANVAS_H - 74;
 const BODY_Y = HEADER_H + 12;
 
 export class MachinePlayMenu {
-  constructor() {
+  constructor({ showTune = TUNER_ENABLED } = {}) {
+    // 'tune' only exists in dev sessions (?tuner / ?selftest); the footer
+    // row re-centres itself from its length.
+    this.footerIds = showTune ? ['calibrate', 'tune', 'exit'] : ['calibrate', 'exit'];
     this.model = new MachinePlayModel();
     this.panel = new Panel({ width: CANVAS_W, height: CANVAS_H });
     this.listeners = new Map();
@@ -243,9 +247,9 @@ export class MachinePlayMenu {
     // Footer.
     const fw = 200;
     const gap = 24;
-    const total = fw * 3 + gap * 2;
+    const total = fw * this.footerIds.length + gap * (this.footerIds.length - 1);
     let fx = (CANVAS_W - total) / 2;
-    for (const id of ['calibrate', 'tune', 'exit']) {
+    for (const id of this.footerIds) {
       p.add({ id: `footer:${id}`, kind: WIDGETS.BUTTON, shape: 'rect', x: fx, y: FOOTER_Y, w: fw, h: 48 });
       fx += fw + gap;
     }
@@ -416,7 +420,7 @@ export class MachinePlayMenu {
     const labels = { calibrate: 'CALIBRATE', tune: 'PHYSICS', exit: 'CLOSE' };
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (const id of ['calibrate', 'tune', 'exit']) {
+    for (const id of this.footerIds) {
       const w = this.panel.get(`footer:${id}`);
       if (!w) continue;
       const isExit = id === 'exit';

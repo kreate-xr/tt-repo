@@ -1,0 +1,17 @@
+# Normalize line endings: everything git considers text is committed LF.
+# (The index was already all-LF when this was added, so this is a no-op for
+# existing files and only guards future commits from a CRLF-configured clone.)
+* text=auto
+
+# Binary assets — never diff or normalize.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.ico  binary
+
+# Large binaries go through Git LFS so clones/CI don't pay for every
+# revision of a 50 MB model. Existing pre-LFS blobs remain in history
+# (no rewrite); from here on, new versions are pointers.
+*.glb filter=lfs diff=lfs merge=lfs -text
+*.mp3 filter=lfs diff=lfs merge=lfs -text

@@ -36,12 +36,10 @@ jest.mock('../js/xr/haptics.js', () => ({
   pulseHand: jest.fn(),
 }));
 
-// eslint-disable-next-line import/first
 import {
   createPlayerServeController,
   estimateReleaseVelocity,
 } from '../js/modes/aiMatch/playerServe.js';
-// eslint-disable-next-line import/first
 import { spawnBallAt } from '../js/physics/ball.js';
 
 beforeEach(() => {

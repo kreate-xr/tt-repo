@@ -44,7 +44,6 @@ jest.mock('../js/scene/audio.js', () => ({
   playPaddleHitSound: jest.fn(),
 }));
 
-// eslint-disable-next-line import/first
 import {
   SERVE_STATES,
   SERVE_ARCHETYPE_IDS,
@@ -55,7 +54,6 @@ import {
   solveTwoBounceServe,
   simulateTwoBounceServe,
 } from '../js/modes/aiMatch/serve.js';
-// eslint-disable-next-line import/first
 import {
   setDragCoefficient, setGravity,
   GRAVITY,

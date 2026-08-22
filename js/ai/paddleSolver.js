@@ -61,11 +61,6 @@ export const MAX_PADDLE_SPEED_MPS = Object.freeze({
   pro: 13.0,
 });
 
-// Face hit radius from existing paddle model (js/scene/models.js calibration
-// produced 0.09m). Used to convert target_spin_rps to tangent paddle
-// velocity at the ball contact point.
-const FACE_RADIUS_M = 0.09;
-
 // Spin-tilt sensitivity (spec §section_1.algorithm.step_3). Tilt angle in
 // radians = atan(target_spin_rps * 0.025). At ±15 rps that's ±atan(0.375)
 // ≈ ±20.5°; at ±30 rps that's ±atan(0.75) ≈ ±36.9°. Reasonable visual
@@ -191,24 +186,6 @@ function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 function specTargetToWorld(tx, tz, tableCenterZ, tableSurfaceY, out) {
   out.set(tx, tableSurfaceY, tableCenterZ + tz);
   return out;
-}
-
-// Ballistic flight time from contact_pos to target landing for a given
-// initial velocity. Accepts gravity but ignores drag for the closed-form
-// estimate; pass 2's verification uses the real physics including drag.
-function timeToReachZAxis(yStart, yEnd, vyInitial, g) {
-  // Solve yEnd = yStart + vyInitial*t + 0.5*g*t²
-  //        0.5*g*t² + vyInitial*t + (yStart - yEnd) = 0
-  const a = 0.5 * g;
-  const b = vyInitial;
-  const c = yStart - yEnd;
-  const disc = b * b - 4 * a * c;
-  if (disc < 0) return -1;
-  const r1 = (-b + Math.sqrt(disc)) / (2 * a);
-  const r2 = (-b - Math.sqrt(disc)) / (2 * a);
-  // Return the positive root (forward in time).
-  const t = Math.max(r1, r2);
-  return t > 0 ? t : -1;
 }
 
 // Closed-form initial-velocity vector for a projectile (no drag) from

@@ -305,7 +305,7 @@ describe('createRallyTracker', () => {
 });
 
 describe('createRallyTracker — what a peer can honestly judge', () => {
-  const OWN_Z = 0.5, OPP_Z = -0.5;
+  const OWN_Z = 0.5;
 
   test('assumeServeBounced stops a late handoff faulting a legal serve', () => {
     // The receiving peer only starts integrating the ball when the handoff

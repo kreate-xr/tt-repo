@@ -32,7 +32,6 @@ jest.mock('../js/scene/hud.js', () => ({
   hudLog: jest.fn(),
 }));
 
-// eslint-disable-next-line import/first
 import { createRallyManager } from '../js/modes/aiMatch/rallyManager.js';
 
 // Synthetic ballEvents emitter so we can drive the manager without a

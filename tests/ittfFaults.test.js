@@ -6,7 +6,6 @@
 
 const THREE = require('three');
 
-// eslint-disable-next-line import/first
 import {
   checkServeContact,
   classifyPreBounceContact,

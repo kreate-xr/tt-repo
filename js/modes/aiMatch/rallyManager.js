@@ -81,7 +81,6 @@ export function createRallyManager({
   server,
   playerServe = null,
   config: cfgIn = {},
-  rng = Math.random,
 } = {}) {
   const config = { ...DEFAULT_CONFIG, ...cfgIn };
 

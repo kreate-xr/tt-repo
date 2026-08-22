@@ -217,7 +217,6 @@ export function planTrajectory({
   let peakSpeed = 0;
   let peakApproachSpeed = 0;
   let peakSwingSpeed = 0;
-  let prevPos = currentPos;
   for (let i = 0; i < NUM_KEYFRAMES; i++) {
     const time_ms = (i / (NUM_KEYFRAMES - 1)) * timeBudgetMs;
     const position = new THREE.Vector3();
@@ -257,7 +256,6 @@ export function planTrajectory({
       }
     }
     keyframes.push({ time_ms, position, faceNormal });
-    prevPos = position;
   }
 
   const approachOk = peakApproachSpeed <= approachCap    * SPEED_VALIDATION_TOLERANCE;

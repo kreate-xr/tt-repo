@@ -97,7 +97,7 @@ describe('navigation by click', () => {
   });
 
   test('no list row overlaps the footer on any list screen', () => {
-    const menu = new MachinePlayMenu();
+    const menu = new MachinePlayMenu({ showTune: true });
     for (const screen of [SCREENS.ROOT, SCREENS.CHALLENGE]) {
       menu.model.stack = [screen];
       menu.rebuild();
@@ -309,7 +309,9 @@ describe('footer', () => {
   });
 
   test('calibrate and physics hand off to the existing panels', () => {
-    const menu = new MachinePlayMenu();
+    // showTune: the physics footer button only exists in ?tuner/?selftest
+    // dev sessions; this test exercises that dev path.
+    const menu = new MachinePlayMenu({ showTune: true });
     menu.show();
     const seen = [];
     menu.on('calibrate', () => seen.push('calibrate'));
@@ -317,5 +319,12 @@ describe('footer', () => {
     clickById(menu, 'footer:calibrate');
     clickById(menu, 'footer:tune');
     expect(seen).toEqual(['calibrate', 'tune']);
+  });
+
+  test('the physics footer button is absent outside dev sessions', () => {
+    const menu = new MachinePlayMenu();   // default: showTune off
+    menu.show();
+    expect(menu.panel.get('footer:tune')).toBeFalsy();
+    expect(menu.panel.get('footer:calibrate')).toBeTruthy();
   });
 });

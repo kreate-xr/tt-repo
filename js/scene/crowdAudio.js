@@ -27,7 +27,6 @@
 // time. The center-listener PA plays are left stereo — no HRTF pass to
 // muddy, and the original stereo mix reads as a big room sound.
 
-import * as THREE from 'three';
 import { getAudioContext, createSpatialHead } from './audio.js';
 
 const POINT_WIN_URL     = 'sounds/pointWin.mp3';

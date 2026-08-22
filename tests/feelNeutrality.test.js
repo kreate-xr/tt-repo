@@ -20,8 +20,6 @@ import {
   composeCalibratedPose,
   composePoseWith,
   setCalibration,
-  getPosOffset,
-  getRotOffset,
   setPreset,
 } from '../js/xr/calibration.js';
 

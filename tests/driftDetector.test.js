@@ -19,9 +19,9 @@ class MemoryStorage {
 }
 globalThis.localStorage = new MemoryStorage();
 
-const { recordHit, snapshot, count, _resetForTests, clear } = require('../js/xr/contactLog.js');
+const { recordHit, count, _resetForTests } = require('../js/xr/contactLog.js');
 const { evaluate, getDriftFlag } = require('../js/xr/driftDetector.js');
-const { setPreset, setPosOffset } = require('../js/xr/calibration.js');
+const { setPosOffset } = require('../js/xr/calibration.js');
 const THREE = require('three');
 
 // Deterministic Gaussian sampler (Box-Muller). Wraps a seedable PRNG so

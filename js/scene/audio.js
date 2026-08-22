@@ -81,8 +81,6 @@ let convolverIn = null;
 let convolver = null;
 let reverbLP = null;
 let reverbReturn = null;
-let ambientSrc = null;
-let ambientGainNode = null;
 
 // Synthesize a stereo impulse response for a mid-sized reverberant hall.
 // Uses decaying noise per channel with a short pre-delay + early-reflection
@@ -143,9 +141,6 @@ function startAmbientBed(a) {
 
   src.connect(hp).connect(bp).connect(g).connect(masterOut);
   src.start();
-
-  ambientSrc = src;
-  ambientGainNode = g;
 }
 
 function ensureAudioGraph() {
