@@ -3,14 +3,15 @@
 // Screens, navigation, and config editing as pure data. The renderer
 // (scene/trainingMenu.js) draws whatever this reports and sends input back;
 // it holds no navigation state of its own. Splitting it this way is what
-// makes "does Back from Custom Feed return to Ball Machine, with edits kept?"
-// a unit test rather than something you discover in a headset.
+// makes "does leaving the Ball Machine editor keep the edits for the next
+// visit?" a unit test rather than something you discover in a headset.
 //
-// P15 §M0's tree, with honest availability: modes whose implementation does
-// not exist yet are listed and DISABLED rather than hidden. A menu that
-// silently omits half the spec makes it impossible to tell "not built" from
-// "I can't find it" — which is precisely the confusion that hid the ball
-// machine behind six renamed entries.
+// P15 §M0's tree, trimmed to what actually runs. During the build-out,
+// unimplemented modes were listed and DISABLED so "not built" stayed
+// distinguishable from "I can't find it"; now that this menu ships to
+// players, a screen that is half grey rows reads as broken rather than as a
+// roadmap. The roadmap lives in ai-docs/tt-training-migration-plan.md — a
+// mode gets a row here when it gets an implementation, not before.
 
 import { validateConfig } from './drillConfig.js';
 import {
@@ -32,37 +33,29 @@ export { CUSTOM_FIELDS, BURST_STOPS, describeConfig, formatField };
 
 export const SCREENS = Object.freeze({
   ROOT: 'root',
-  BALL_MACHINE: 'ballMachine',
-  QUICK_FEED: 'quickFeed',
+  // One screen for the whole machine: the feed editor with a preset cycler.
+  // Quick Feed and Saved Presets used to be separate screens over the same
+  // DrillConfig; a preset is just a saved editor state, so they merged.
   CUSTOM_FEED: 'customFeed',
-  SAVED_PRESETS: 'savedPresets',
-  DRILLS: 'drills',
+  PRACTICE: 'practice',
   PATTERNS: 'patterns',
   LADDERS: 'ladders',
-  CLASSIC: 'classic',
   REVIEW: 'review',
   SETTINGS: 'settings',
 });
 
 // M10 global settings, as menu rows.
 //
-// Only settings that ACTUALLY DO SOMETHING are selectable. store.js states the
-// rule this follows ("a setting that changes nothing is worse than no
-// setting"), and the rest of this menu states the other half of it: unbuilt
-// things are listed and disabled rather than hidden, so "not wired yet" stays
-// distinguishable from "I can't find it". Wiring one of these up is then a
-// two-line change here — drop `note` and set `available: true`.
+// Only settings that ACTUALLY DO SOMETHING get a row. store.js states the
+// rule ("a setting that changes nothing is worse than no setting") — the
+// unwired M10 settings keep their SETTING_SPECS entries for storage
+// compatibility but are not shown. Wiring one up means adding its row here.
 export const SETTING_ROWS = Object.freeze([
   {
     key: 'dominantHand', label: 'Dominant hand', available: true,
     help: 'Which hand holds the paddle. Drill patterns mirror to match',
     valueLabels: { L: 'Left', R: 'Right' },
   },
-  { key: 'ballSpeedMultiplier', label: 'Ball speed',   note: 'not wired yet' },
-  { key: 'tableHeightOffset',   label: 'Table height', note: 'not wired yet' },
-  { key: 'hudDensity',          label: 'HUD density',  note: 'not wired yet' },
-  { key: 'units',               label: 'Units',        note: 'not wired yet' },
-  { key: 'audioCues',           label: 'Audio cues',   note: 'not wired yet' },
 ]);
 
 /** Player-facing text for a setting's current value. */
@@ -74,59 +67,55 @@ export function formatSettingValue(row, value) {
   return String(value);
 }
 
-// M2's submenu. Only what actually runs is enabled; the rest is listed so
-// "not built" stays distinguishable from "can't find it".
-export const DRILL_ITEMS = Object.freeze([
-  // Starts directly — no sub-screen. It runs on the pattern machinery, but
-  // burying it inside Pattern Drills made it too hard to reach; `random`
-  // is pinned so a stale Random Mode visit can't shuffle it.
-  { id: 'rapidFire', label: 'Rapid Fire', action: 'startPattern', random: false, available: true,
-    subtitle: 'Machine sweeps side to side, feeding non-stop' },
-  { id: 'patternDrills', label: 'Pattern Drills', screen: 'patterns', available: true,
-    subtitle: 'Falkenberg and seven more classics' },
-  { id: 'randomMode', label: 'Random Mode', screen: 'patterns', random: true, available: true,
-    subtitle: 'Same shapes, shuffled — transfers better than blocked practice' },
-  { id: 'ladders', label: 'Progression Ladders', screen: 'ladders', available: true,
+// The Practice screen — intents, not mechanisms. The player picks WHAT to
+// work on; which pattern, drill wrapper or ladder serves that intent is this
+// menu's business, not theirs. This replaced a Drills screen that listed the
+// machinery by name (patterns / random mode / ladders / four legacy drills)
+// and asked the player to know table-tennis pedagogy before their first ball.
+export const PRACTICE_ITEMS = Object.freeze([
+  { id: 'spinPractice', label: 'Spin', action: 'startDrill', available: true,
+    subtitle: 'Read top, back and side off the machine' },
+  { id: 'placementPractice', label: 'Placement', action: 'startDrill', available: true,
+    subtitle: 'Land your returns in the lit target zone' },
+  // Rapid Fire's non-stop sweep with a ladder on top: it levels up while the
+  // player keeps up and backs off when they don't. Absorbs both the old
+  // Rapid Fire row and the legacy Reaction Rally.
+  { id: 'reaction', label: 'Reaction', action: 'startReaction', available: true,
+    subtitle: 'Non-stop sweep that levels up as you keep up' },
+  { id: 'movement', label: 'Movement', screen: 'patterns', available: true,
+    subtitle: 'Falkenberg and the other classic footwork shapes' },
+  { id: 'ladders', label: 'Level Up', screen: 'ladders', available: true,
     subtitle: 'Bronze to Diamond, auto-adjusting' },
-  { id: 'classic', label: 'Classic Drills', screen: 'classic', available: true,
-    subtitle: 'Target, Spin Reader, Reaction, Trajectory' },
-  { id: 'footwork', label: 'Footwork', available: false, note: 'not built yet' },
-  { id: 'strokeIso', label: 'Stroke Isolation', available: false, note: 'not built yet' },
-  { id: 'thirdBall', label: 'Third Ball', available: false, note: 'not built yet' },
-  { id: 'consistency', label: 'Consistency Wall', available: false, note: 'not built yet' },
-  { id: 'builder', label: 'Custom Drill Builder', available: false, note: 'not built yet' },
+  // Study more than practice, but this list is where people look for things
+  // to do — and with Ball Machine now a single editor screen there is no
+  // hub left for it to live on.
+  { id: 'trajectoryPractice', label: 'Study a Shot', action: 'startDrill', available: true,
+    subtitle: 'Launch a ball and watch its flight path' },
+  { id: 'weaknesses', label: 'Fix My Weaknesses', screen: 'review', available: true,
+    subtitle: 'Drills picked from what you actually miss' },
 ]);
 
-// The four pre-P15 drills. They used to be reachable only through the wrist
-// menu's ◀ NAME ▶ picker; removing that picker would have orphaned them, so
-// they live here under M0's "2. Drills" branch. They still run on the legacy
-// feeder and take a difficulty rather than a DrillConfig, which is why they
-// carry `drill` instead of a config.
-export const LEGACY_DRILLS = Object.freeze([
-  { id: 'targetPractice',     label: 'Target Practice', subtitle: 'Land returns in the scoring zones' },
-  { id: 'spinReader',         label: 'Spin Reader',     subtitle: 'Call the spin before it crosses' },
-  { id: 'reactionRally',      label: 'Reaction Rally',  subtitle: 'Feeds ramp up as you keep up' },
-  { id: 'trajectoryPractice', label: 'Trajectory',      subtitle: 'Launch and study the flight path' },
-]);
-
-// The nine M0 branches. `available` marks what actually runs today.
+// The M0 branches, every one of them live. Tutorial leads (the on-ramp),
+// Practice is the everyday path, Ball Machine is the manual/expert path.
 export const ROOT_ITEMS = Object.freeze([
-  { id: 'ballMachine', label: '1. Ball Machine', screen: SCREENS.BALL_MACHINE, available: true },
-  { id: 'drills',      label: '2. Drills',       screen: SCREENS.DRILLS, available: true },
-  { id: 'serveSchool', label: '3. Serve School', available: false, note: 'not built yet' },
-  { id: 'readingLab',  label: '4. Reading Lab',  available: false, note: 'not built yet' },
-  { id: 'games',       label: '5. Games',        available: false, note: 'not built yet' },
-  { id: 'skillTest',   label: '6. Skill Test',   available: false, note: 'not built yet' },
-  { id: 'review',      label: '7. Review & Stats', screen: SCREENS.REVIEW, available: true },
-  { id: 'freePlay',    label: '8. Free Play',    action: 'freePlay', available: true },
-  { id: 'tutorial',    label: '9. Tutorial',     available: false, note: 'not built yet' },
+  // Runs as a drill (drills/tutorial.js) — a scripted feed sequence, so it
+  // starts directly like the other id-started drills rather than opening a
+  // sub-screen.
+  { id: 'tutorial',    label: '1. Tutorial',       action: 'startDrill', available: true,
+    subtitle: 'Three minutes: first return to first backspin' },
+  { id: 'practice',    label: '2. Practice',       screen: SCREENS.PRACTICE, available: true,
+    subtitle: 'Pick what to work on' },
+  // Straight into the editor — presets ride along as a cycler on that
+  // screen, so there is no hub of near-identical sub-screens to cross first.
+  { id: 'ballMachine', label: '3. Ball Machine',   screen: SCREENS.CUSTOM_FEED, available: true,
+    subtitle: 'Set the feed yourself — presets included' },
+  { id: 'review',      label: '4. Review & Stats', screen: SCREENS.REVIEW, available: true },
+  { id: 'freePlay',    label: '5. Free Play',      action: 'freePlay', available: true },
 ]);
 
-export const BALL_MACHINE_ITEMS = Object.freeze([
-  { id: 'quickFeed',    label: 'Quick Feed',    screen: SCREENS.QUICK_FEED, available: true },
-  { id: 'customFeed',   label: 'Custom Feed',   screen: SCREENS.CUSTOM_FEED, available: true },
-  { id: 'savedPresets', label: 'Saved Presets', screen: SCREENS.SAVED_PRESETS, available: true },
-]);
+// Sentinel for "no preset — the config is whatever the player has edited".
+// First entry of the preset cycle so ‹ from the first real preset lands on it.
+export const PRESET_CUSTOM = '__custom__';
 
 export class TrainingMenuModel extends FeedConfigModel {
   constructor({
@@ -148,8 +137,9 @@ export class TrainingMenuModel extends FeedConfigModel {
     // Supplies recent contact geometry for Why-Did-I-Miss. Separate from the
     // event log: these are live vectors, deliberately not serialised.
     this.getRecentContacts = getRecentContacts;
-    // Set when the player entered the pattern list via Random Mode; the same
-    // screen serves both, differing only in how steps are ordered.
+    // The pattern screen's feed-order toggle. Reset to in-order on each
+    // entry to the screen (selectItem does this), flipped in place by the
+    // screen's own Feed Order row.
     this.randomMode = false;
     this.message = null;
   }
@@ -171,14 +161,10 @@ export class TrainingMenuModel extends FeedConfigModel {
   get title() {
     switch (this.screen) {
       case SCREENS.ROOT:          return 'TRAINING';
-      case SCREENS.BALL_MACHINE:  return 'BALL MACHINE';
-      case SCREENS.QUICK_FEED:    return 'QUICK FEED';
-      case SCREENS.CUSTOM_FEED:   return 'CUSTOM FEED';
-      case SCREENS.SAVED_PRESETS: return 'SAVED PRESETS';
-      case SCREENS.DRILLS:        return 'DRILLS';
-      case SCREENS.PATTERNS:      return this.randomMode ? 'RANDOM MODE' : 'PATTERNS';
-      case SCREENS.LADDERS:       return 'LADDERS';
-      case SCREENS.CLASSIC:       return 'CLASSIC DRILLS';
+      case SCREENS.CUSTOM_FEED:   return 'BALL MACHINE';
+      case SCREENS.PRACTICE:      return 'PRACTICE';
+      case SCREENS.PATTERNS:      return 'MOVEMENT';
+      case SCREENS.LADDERS:       return 'LEVEL UP';
       case SCREENS.REVIEW:        return 'REVIEW & STATS';
       case SCREENS.SETTINGS:      return 'SETTINGS';
       default:                    return 'TRAINING';
@@ -189,14 +175,10 @@ export class TrainingMenuModel extends FeedConfigModel {
   get breadcrumb() {
     const names = {
       [SCREENS.ROOT]: 'TRAINING',
-      [SCREENS.BALL_MACHINE]: 'BALL MACHINE',
-      [SCREENS.QUICK_FEED]: 'QUICK FEED',
-      [SCREENS.CUSTOM_FEED]: 'CUSTOM FEED',
-      [SCREENS.SAVED_PRESETS]: 'SAVED PRESETS',
-      [SCREENS.DRILLS]: 'DRILLS',
-      [SCREENS.PATTERNS]: 'PATTERNS',
-      [SCREENS.LADDERS]: 'LADDERS',
-      [SCREENS.CLASSIC]: 'CLASSIC DRILLS',
+      [SCREENS.CUSTOM_FEED]: 'BALL MACHINE',
+      [SCREENS.PRACTICE]: 'PRACTICE',
+      [SCREENS.PATTERNS]: 'MOVEMENT',
+      [SCREENS.LADDERS]: 'LEVEL UP',
       [SCREENS.REVIEW]: 'REVIEW & STATS',
       [SCREENS.SETTINGS]: 'SETTINGS',
     };
@@ -226,28 +208,35 @@ export class TrainingMenuModel extends FeedConfigModel {
   items() {
     switch (this.screen) {
       case SCREENS.ROOT:
-        return ROOT_ITEMS.map((i) => ({ ...i }));
-      case SCREENS.BALL_MACHINE:
-        return BALL_MACHINE_ITEMS.map((i) => ({ ...i }));
-      case SCREENS.QUICK_FEED:
-        return QUICK_FEED_ORDER.map((key) => ({
-          id: key,
-          label: QUICK_FEED[key].label,
-          subtitle: describeConfig(QUICK_FEED[key].config),
-          action: 'startPreset',
-          available: true,
-        }));
-      case SCREENS.DRILLS:
-        return DRILL_ITEMS.map((i) => ({ ...i }));
-      case SCREENS.CLASSIC:
-        return LEGACY_DRILLS.map((d) => ({
-          ...d, action: 'startDrill', available: true,
-        }));
+        return ROOT_ITEMS.map((i) => {
+          const row = { ...i };
+          // A finished tutorial stays on the menu (it is rerunnable), but its
+          // row says so — "do the tutorial" as a standing instruction would
+          // nag a player who already has.
+          if (i.id === 'tutorial' && this.settingsApi
+              && this.settingsApi.getSetting('tutorialComplete') === true) {
+            row.subtitle = 'Completed ✓ — run it again any time';
+          }
+          return row;
+        });
+      case SCREENS.PRACTICE:
+        return PRACTICE_ITEMS.map((i) => ({ ...i }));
       case SCREENS.PATTERNS:
-        return PATTERN_ORDER.map((id) => ({
+        // The order toggle replaces the old separate "Random Mode" entry:
+        // shuffled vs in-order is a property of how you run a shape, not a
+        // different mode deserving its own branch.
+        return [{
+          id: '__order__',
+          label: 'Feed order',
+          subtitle: this.randomMode
+            ? 'Shuffled — reads like a real opponent'
+            : 'In order — learn the shape first',
+          action: 'toggleOrder',
+          available: true,
+        }].concat(PATTERN_ORDER.map((id) => ({
           id, label: PATTERNS[id].label, subtitle: PATTERNS[id].note,
           action: 'startPattern', available: true,
-        }));
+        })));
       case SCREENS.LADDERS:
         return TIERS.map((tier) => ({
           id: tier,
@@ -280,20 +269,6 @@ export class TrainingMenuModel extends FeedConfigModel {
             available: true,
           };
         });
-      case SCREENS.SAVED_PRESETS: {
-        const saved = this.presetsApi ? this.presetsApi.getPresets() : [];
-        if (saved.length === 0) {
-          return [{
-            id: '__empty__', label: 'No saved presets yet',
-            subtitle: 'Build one in Custom Feed and press Save',
-            available: false,
-          }];
-        }
-        return saved.map((p) => ({
-          id: p.name, label: p.name, subtitle: describeConfig(p.config),
-          action: 'startSaved', available: true,
-        }));
-      }
       default:
         return [];
     }
@@ -433,9 +408,29 @@ export class TrainingMenuModel extends FeedConfigModel {
       this.cycleSetting(item.settingKey);
       return null;
     }
-    // Legacy drills take a difficulty, not a DrillConfig — passing one would
-    // be silently ignored by their factories.
+    // Drills started by id carry no config: the tutorial and the practice
+    // wrappers supply their own, and trajectory practice takes none.
     if (item.action === 'startDrill') return { action: 'start', drill: id, config: null };
+
+    // Flip the pattern screen's feed order in place — no sub-screen, no
+    // navigation, the host just redraws.
+    if (item.action === 'toggleOrder') {
+      this.randomMode = !this.randomMode;
+      return null;
+    }
+
+    // The Reaction intent: Rapid Fire's non-stop sweep with the ladder
+    // running difficulty. Starts at bronze; the ladder promotes and demotes
+    // from there, so there is no tier to choose before the first ball.
+    if (item.action === 'startReaction') {
+      return {
+        action: 'start',
+        config: this.config,
+        options: {
+          pattern: 'rapidFire', random: false, ladderTier: 'bronze', hand: this.hand,
+        },
+      };
+    }
 
     if (item.action === 'startPattern') {
       // An item may pin its own random flag (Rapid Fire in the Drills list);
@@ -458,23 +453,65 @@ export class TrainingMenuModel extends FeedConfigModel {
     }
 
     if (item.action === 'startPreset') {
-      // A weakness row names its preset explicitly; a Quick Feed row is keyed
-      // by its own id.
+      // M7 weakness rows: each names the Quick Feed preset that drills it.
       const key = item.presetKey || id;
       if (!QUICK_FEED[key]) return null;
       this.config = validateConfig(QUICK_FEED[key].config);
       this.selectedPreset = key;
       return { action: 'start', config: this.config, preset: key };
     }
-    if (item.action === 'startSaved') {
-      const saved = (this.presetsApi ? this.presetsApi.getPresets() : [])
-        .find((p) => p.name === id);
-      if (!saved) return null;
-      this.config = validateConfig(saved.config);
-      this.selectedPreset = id;
-      return { action: 'start', config: this.config, preset: id };
-    }
     return null;
+  }
+
+  // --- Preset cycler (Ball Machine screen) ----------------------------------
+  //
+  // The one editor screen replaces the old Quick Feed and Saved Presets
+  // lists: the cycle is Custom → the six curated feeds → whatever the player
+  // has saved. Loading a preset overwrites the working config; editing any
+  // field afterwards clears the attribution (FeedConfigModel.setField), which
+  // snaps the cycler's label back to Custom without losing the edits.
+
+  /** Cycle entries: PRESET_CUSTOM, quick-feed keys, then saved names. */
+  presetOptions() {
+    const saved = this.presetsApi ? this.presetsApi.getPresets() : [];
+    return [PRESET_CUSTOM, ...QUICK_FEED_ORDER, ...saved.map((p) => p.name)];
+  }
+
+  /** Player-facing name of the cycler's current position. */
+  get presetLabel() {
+    const key = this.selectedPreset;
+    if (!key) return 'Custom';
+    if (QUICK_FEED[key]) return QUICK_FEED[key].label;
+    return key;
+  }
+
+  /**
+   * Step the preset cycler and load the landed-on config. Returns the new
+   * selection key (PRESET_CUSTOM when landing on Custom), or null when the
+   * step went nowhere.
+   */
+  cyclePreset(dir) {
+    const options = this.presetOptions();
+    const current = this.selectedPreset || PRESET_CUSTOM;
+    let i = options.indexOf(current);
+    if (i < 0) i = 0;   // a stale selection (deleted save) restarts at Custom
+    const next = options[(i + dir + options.length) % options.length];
+
+    if (next === PRESET_CUSTOM) {
+      // Custom keeps the working config as-is: it IS the player's edits.
+      this.selectedPreset = null;
+      this.message = null;
+      return PRESET_CUSTOM;
+    }
+    const source = QUICK_FEED[next]
+      ? QUICK_FEED[next].config
+      : (this.presetsApi ? this.presetsApi.getPresets() : [])
+        .find((p) => p.name === next)?.config;
+    if (!source) return null;
+    this.config = validateConfig(source);
+    this.selectedPreset = next;
+    this.message = describeConfig(this.config);
+    return next;
   }
 
   // --- Custom Feed editing --------------------------------------------------

@@ -22,6 +22,10 @@ import { validateConfig } from './drillConfig.js';
 
 export const WINGS = Object.freeze({ BH: 'BH', MID: 'MID', FH: 'FH' });
 
+// Memoized random draws kept per runner. See stepIndexFor for why eviction
+// of old indices is safe.
+const STEP_CACHE_MAX = 256;
+
 // Column index (0 = −x, 1 = middle, 2 = +x) for a wing and handedness.
 export function wingColumn(wing, hand = 'R') {
   if (wing === WINGS.MID) return 1;
@@ -157,15 +161,35 @@ export const PATTERNS = Object.freeze({
   },
 });
 
-// Rapid Fire is deliberately NOT in this order: it launches straight from
-// the Drills menu (menuModel's DRILL_ITEMS) rather than from the Pattern
-// Drills list, so this order stays the eight classics.
+// Rapid Fire is deliberately NOT in this order: it powers the Practice
+// menu's Reaction intent (menuModel's PRACTICE_ITEMS) rather than appearing
+// in the Movement list, so this order stays the eight classics. spinMix
+// (below) powers the Spin intent and is likewise excluded.
 export const PATTERN_ORDER = Object.freeze([
   'falkenberg', 'twoPoint', 'figureEight', 'middleWide',
   'shortLong', 'pivot', 'wideWide', 'pushBlock',
 ]);
 
+// The Spin practice sequence. Every step feeds the SAME spot (middle, deep)
+// so the only thing that varies is the spin — reading it is the whole drill.
+// Not in PATTERN_ORDER: it is a Practice intent, not a footwork classic. In
+// random mode the M10 curriculum tuner steers the draw toward whichever spin
+// the player keeps missing, which is the drill adapting to the player rather
+// than the player picking a preset.
+export const SPIN_MIX = Object.freeze({
+  id: 'spinMix', label: 'Spin mix',
+  note: 'Same ball, different spin — read it before it bounces',
+  steps: [
+    { wing: WINGS.MID, depth: 'deep',      spinType: 'top' },
+    { wing: WINGS.MID, depth: 'deep',      spinType: 'back',   speedMul: 0.85 },
+    { wing: WINGS.MID, depth: 'deep',      spinType: 'side-L' },
+    { wing: WINGS.MID, depth: 'deep',      spinType: 'side-R' },
+    { wing: WINGS.MID, depth: 'half-long', spinType: 'none' },
+  ],
+});
+
 export function getPattern(id) {
+  if (id === 'spinMix') return SPIN_MIX;
   return PATTERNS[id] || PATTERNS.falkenberg;
 }
 
@@ -203,7 +227,15 @@ export function buildStepConfig(base, step, { hand = 'R', paceMul = 1 } = {}) {
  * it for N configs in a row, with no clock involved.
  */
 export class PatternRunner {
-  constructor(pattern, baseConfig, { hand = 'R', paceMul = null, random = false, rng = Math.random } = {}) {
+  constructor(pattern, baseConfig, {
+    hand = 'R', paceMul = null, random = false, rng = Math.random,
+    // M10 hook: a function returning one weight per step, read at each random
+    // draw. The curriculum tuner supplies it so the draw can be steered toward
+    // the steps sitting at the edge of the player's ability; null keeps the
+    // draw uniform. A function rather than an array because the weights move
+    // every resample and the runner must not hold a stale copy.
+    stepWeights = null,
+  } = {}) {
     this.pattern = typeof pattern === 'string' ? getPattern(pattern) : pattern;
     this.base = validateConfig(baseConfig);
     this.hand = hand;
@@ -215,6 +247,7 @@ export class PatternRunner {
     // Same steps, drawn in random order rather than in sequence.
     this.random = random;
     this.rng = rng;
+    this.stepWeights = stepWeights;
     this.index = 0;
     // Random draws are memoized per ball index so stepFor(i) is idempotent:
     // the drill previews ball i's origin (to glide the machine there), the
@@ -226,14 +259,47 @@ export class PatternRunner {
 
   get stepCount() { return this.pattern.steps.length; }
 
-  /** The step that ball `i` should use. */
-  stepFor(i) {
+  /** Index into pattern.steps that ball `i` uses. Idempotent per `i`. */
+  stepIndexFor(i) {
     const steps = this.pattern.steps;
-    if (!this.random) return steps[i % steps.length];
+    if (!this.random) return i % steps.length;
     if (!this._stepCache.has(i)) {
-      this._stepCache.set(i, steps[Math.floor(this.rng() * steps.length)]);
+      this._stepCache.set(i, this._drawStepIndex());
+      // Bound the memo. Only the current ball and the glide/HUD preview of
+      // the next one are ever re-read, so evicting the oldest entry can never
+      // change a step a caller still depends on — an infinite drill would
+      // otherwise grow this map for its whole run.
+      if (this._stepCache.size > STEP_CACHE_MAX) {
+        this._stepCache.delete(this._stepCache.keys().next().value);
+      }
     }
     return this._stepCache.get(i);
+  }
+
+  // One rng draw per ball, weighted or not — the stream must advance by the
+  // same amount either way or toggling the tuner would desynchronise replays.
+  _drawStepIndex() {
+    const steps = this.pattern.steps;
+    const r = this.rng();
+    const w = this.stepWeights ? this.stepWeights() : null;
+    if (Array.isArray(w) && w.length === steps.length) {
+      let total = 0;
+      for (const x of w) total += x > 0 ? x : 0;
+      if (total > 0) {
+        let acc = 0;
+        for (let k = 0; k < w.length; k++) {
+          acc += Math.max(0, w[k] || 0) / total;
+          if (r <= acc) return k;
+        }
+        return steps.length - 1;
+      }
+    }
+    return Math.floor(r * steps.length);
+  }
+
+  /** The step that ball `i` should use. */
+  stepFor(i) {
+    return this.pattern.steps[this.stepIndexFor(i)];
   }
 
   /** Config for ball `i`. Suitable directly as FeedEngine's configProvider. */

@@ -39,6 +39,10 @@ export const SETTING_SPECS = Object.freeze({
   hudDensity:          { type: 'enum', values: ['minimal', 'standard'], default: 'minimal' },
   units:               { type: 'enum', values: ['metric', 'imperial'], default: 'metric' },
   audioCues:           { type: 'boolean', default: true },
+  // Progress rather than preference, but it rides the settings blob: one
+  // boolean does not earn its own persistence path, and coerceSettings
+  // defaulting it to false makes old profiles correct with no migration.
+  tutorialComplete:    { type: 'boolean', default: false },
 });
 
 function defaultSettings() {

@@ -267,3 +267,58 @@ reachability. Free Play's manual trigger-serve is unchanged.
    done.
 5. Guard tests over conventions: where a rule matters (one physics, one panel
    base), assert it in CI rather than documenting it and hoping.
+
+## 7. Menu policy change + parked modes (beta)
+
+The M0 menu no longer lists unbuilt modes as disabled rows. That convention
+was right while the tree was being built out (it kept "not built" separate
+from "I can't find it"); in a player-facing build a half-grey menu reads as
+broken. The roadmap now lives HERE, and a mode gets a menu row when it gets
+an implementation:
+
+- **Parked P15 root branches:** Serve School (M3), Reading Lab (M4), Games
+  (M5), Skill Test (M6).
+- **Parked drill families (M2):** Footwork, Stroke Isolation, Third Ball,
+  Consistency Wall, Custom Drill Builder.
+- **Parked M10 settings** (specs kept in `profile/store.js`, rows removed):
+  ball speed multiplier, table height offset, HUD density, units, audio cues.
+
+**M9 Tutorial shipped small on purpose:** a ~3-minute, four-step scripted
+sequence (first return → 3 in a row → land 2 in a target zone → return one
+backspin feed) built as a config script over the M1 drill + `targets.js`
+(`training/tutorial.js` model, `drills/tutorial.js` wrapper), per rule 1.
+Completion persists as the `tutorialComplete` profile setting.
+
+## 8. Legacy feed path deleted; menu went intent-first (beta)
+
+The §4 dispositions for the legacy drills are now EXECUTED:
+
+- **`feeder.js` deleted.** Its last consumers were the four legacy drills.
+  `SPIN_AXES` moved into `drills/trajectoryPractice.js` (its only remaining
+  consumer).
+- **`serverFigure.js` deleted too.** Its one live piece, the static
+  `computeContactPose`, moved into `ballMachineFigure.js` (pure math; the M1
+  drill uses it to aim the barrel). The windup/swing animation body had no
+  remaining caller.
+- **`targetPractice.js` → `drills/placementPractice.js`** — M1 + `TargetZones`,
+  scored off the return's predicted landing from the M1 verdict payload.
+- **`spinReader.js` → `drills/spinPractice.js`** — M1 running the `spinMix`
+  pattern (random order, so the M10 curriculum tuner steers toward the spin
+  the player misses); the coloured ring cue was ported as-is.
+- **`reactionRally.js` deleted outright** — its ramp was the ladder's job;
+  the Practice menu's Reaction row is Rapid Fire + bronze ladder.
+- **`usesFeeder` removed everywhere** — with no Feeder to skip, the flag
+  guarded nothing.
+- **`stats.js` deleted** (the §4 "delete once M7's event log lands"
+  disposition, executed): the end-of-set summary panel now renders the
+  drill's `getSummary()` — the same event-log roll-up Review analyses, so
+  panel and review can never disagree. Only M1-family drills both finish
+  and carry a log; anything else skips the panel.
+- Still standing from the old world: `difficulty.js` (AI engine keys + the
+  spin-cue tiers).
+
+The M0 "Drills" screen was replaced by **Practice** — six intent rows (Spin,
+Placement, Reaction, Movement, Level Up, Fix My Weaknesses) instead of a list
+of mechanisms; the patterns screen (now "Movement") carries an in-order /
+shuffled toggle in place of the separate Random Mode branch, and Trajectory
+lives on the Ball Machine screen as "Study a Shot".

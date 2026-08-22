@@ -1,29 +1,32 @@
-// In-XR control panel for the Trajectory Practice drill. Picks spin and speed;
-// the dotted preview is driven from these selections, and the paddle trigger
-// launches the ball. Uses the same canvas/UV-raycast pattern as WristMenu.
+// In-XR control panel for the Trajectory Practice drill. Picks spin, speed
+// and spin intensity; the dotted preview is driven from these selections, and
+// the paddle trigger launches the ball.
+//
+// Rebuilt on panelKit + panelStyle: this was the last live panel still
+// hand-rolling its own hit test, hover state and green-bordered look from the
+// pre-P15 era, which made Trajectory Practice read as a different app from
+// the training menu that launched it. Hit geometry and routing now come from
+// Panel; the visual language (dark glass card, accent-green selection, muted
+// labels) is the same one trainingMenu and machinePlayMenu draw.
+//
+// The public surface is unchanged — SPINS / SPEED_LEVELS / INTENSITY_LEVELS,
+// the spinChange / speedChange / intensityChange / back / hide events, and
+// the mesh / hover / select methods inGame.js routes input through — so
+// trajectoryPractice.js and the host plumbing did not move.
 
 import * as THREE from 'three';
-import { scene } from './sceneSetup.js';
+import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
+import * as haptics from '../xr/haptics.js';
+import { Panel, WIDGETS } from './panelKit.js';
+import { COLORS, F, roundRect } from './panelStyle.js';
 
 const CANVAS_W = 512;
 const CANVAS_H = 640;
 const PLANE_W = 0.30;
 const PLANE_H = 0.38;
 
-const COLORS = {
-  bg:           '#0a0e18',
-  border:       '#00ff88',
-  title:        '#00ff88',
-  sectionLabel: '#7aa6c4',
-  buttonBg:     '#1a2030',
-  buttonText:   '#e6edf5',
-  selectedBg:   '#003d2a',
-  selectedText: '#00ff88',
-  hoverBg:      '#00ff88',
-  hoverText:    '#0a0e18',
-  hint:         '#aaaaaa',
-  backBorder:   'rgba(255,255,255,0.25)',
-};
+const HEADER_H = 78;
+const FOOTER_Y = CANVAS_H - 86;
 
 // Side labels are from the PLAYER's perspective (the person holding the paddle
 // on the +Z side of the table). Ball travels in +Z toward the player, so
@@ -31,11 +34,11 @@ const COLORS = {
 // curves to -X → player's LEFT. Keep sideA/sideB physics stable and just
 // label the buttons to match what the player actually sees.
 export const SPINS = [
-  { id: 'topspin',  label: 'TOP',  color: '#ff3344' },
-  { id: 'backspin', label: 'BACK', color: '#3388ff' },
-  { id: 'sideB',    label: 'L',    color: '#ff8822' },
-  { id: 'sideA',    label: 'R',    color: '#ffcc22' },
-  { id: 'none',     label: 'FLAT', color: '#ffffff' },
+  { id: 'topspin',  label: 'TOP',  color: '#ff5a66' },
+  { id: 'backspin', label: 'BACK', color: '#4d9dff' },
+  { id: 'sideB',    label: 'L',    color: '#ffa94d' },
+  { id: 'sideA',    label: 'R',    color: '#ffd54d' },
+  { id: 'none',     label: 'FLAT', color: '#e6edf5' },
 ];
 
 export const SPEED_LEVELS = [
@@ -56,6 +59,14 @@ export const INTENSITY_LEVELS = [
   { label: '5', spinMag: 80 }, // heavy — sharp post-bounce kick
 ];
 
+// The three option rows, driven from one table so layout and draw cannot
+// disagree about what exists.
+const ROWS = [
+  { kind: 'spin',      label: 'SPIN',           options: SPINS,            hint: null },
+  { kind: 'speed',     label: 'SPEED',          options: SPEED_LEVELS,     hint: '1 slow · 5 fast' },
+  { kind: 'intensity', label: 'SPIN INTENSITY', options: INTENSITY_LEVELS, hint: '1 light · 5 heavy' },
+];
+
 export class TrajectoryControl {
   constructor() {
     this.canvas = document.createElement('canvas');
@@ -72,14 +83,13 @@ export class TrajectoryControl {
     this.texture.magFilter = THREE.LinearFilter;
     this.texture.anisotropy = 16;
 
-    const geometry = new THREE.PlaneGeometry(PLANE_W, PLANE_H);
     const material = new THREE.MeshBasicMaterial({
       map: this.texture,
       side: THREE.DoubleSide,
       transparent: true,
       depthTest: false,
     });
-    this.mesh = new THREE.Mesh(geometry, material);
+    this.mesh = new THREE.Mesh(new THREE.PlaneGeometry(PLANE_W, PLANE_H), material);
     this.mesh.renderOrder = 1000;
     this.mesh.frustumCulled = false;
     this.mesh.visible = false;
@@ -87,13 +97,11 @@ export class TrajectoryControl {
     this.spinIndex = 0;
     this.speedIndex = 2;
     this.intensityIndex = 2;
-    this.hovered = null;
 
-    this.buttons = [];
-    this.layoutButtons();
-
+    this.panel = new Panel({ width: CANVAS_W, height: CANVAS_H });
     this.listeners = { spinChange: [], speedChange: [], intensityChange: [], back: [], hide: [] };
 
+    this.layout();
     this.draw();
   }
 
@@ -103,207 +111,186 @@ export class TrajectoryControl {
     for (const fn of arr) fn(payload);
   }
 
-  show() { this.mesh.visible = true; this.draw(); }
-  hide() { this.mesh.visible = false; this.hovered = null; }
+  show() { this.mesh.visible = true; this.panel.show(); this.draw(); }
+  hide() { this.mesh.visible = false; this.panel.hide(); }
   isVisible() { return this.mesh.visible; }
 
   getSpin() { return SPINS[this.spinIndex]; }
   getSpeed() { return SPEED_LEVELS[this.speedIndex]; }
   getIntensity() { return INTENSITY_LEVELS[this.intensityIndex]; }
 
-  layoutButtons() {
+  // inGame.js reads this to decide whether a trigger press belongs to the
+  // panel or launches a ball.
+  get hovered() { return this.panel.hoveredId; }
+
+  layout() {
+    const p = this.panel;
+    p.clear();
+
     const padX = 24;
-    const rowGap = 10;
+    const gap = 10;
+    const cellH = 56;
     const totalW = CANVAS_W - 2 * padX;
-    const w = (totalW - 4 * rowGap) / 5;
-    const rowH = 60;
 
-    // Spin row.
-    {
-      const y = 130;
-      for (let i = 0; i < SPINS.length; i++) {
-        this.buttons.push({
-          id: 'spin-' + i, kind: 'spin', index: i,
-          label: SPINS[i].label,
-          color: SPINS[i].color,
-          x: padX + i * (w + rowGap), y, w, h: rowH,
+    let y = HEADER_H + 40;
+    this._rowRects = [];
+    for (const row of ROWS) {
+      const w = (totalW - (row.options.length - 1) * gap) / row.options.length;
+      this._rowRects.push({ row, labelY: y - 18 });
+      for (let i = 0; i < row.options.length; i++) {
+        p.add({
+          id: `${row.kind}:${i}`, kind: WIDGETS.BUTTON, shape: 'rect',
+          x: padX + i * (w + gap), y, w, h: cellH,
         });
       }
+      y += cellH + 62;
     }
 
-    // Speed row.
-    {
-      const y = 250;
-      for (let i = 0; i < SPEED_LEVELS.length; i++) {
-        this.buttons.push({
-          id: 'speed-' + i, kind: 'speed', index: i,
-          label: SPEED_LEVELS[i].label,
-          x: padX + i * (w + rowGap), y, w, h: rowH,
-        });
-      }
-    }
-
-    // Spin intensity row (controls magnitude — affects post-bounce kick).
-    {
-      const y = 370;
-      for (let i = 0; i < INTENSITY_LEVELS.length; i++) {
-        this.buttons.push({
-          id: 'intensity-' + i, kind: 'intensity', index: i,
-          label: INTENSITY_LEVELS[i].label,
-          x: padX + i * (w + rowGap), y, w, h: rowH,
-        });
-      }
-    }
-
-    // Bottom row: Hide (close panel) + Back to Menu (exit drill).
-    {
-      const gap = 12;
-      const halfW = (totalW - gap) / 2;
-      const y = 540;
-      this.buttons.push({
-        id: 'hide', kind: 'hide', label: 'Hide Panel',
-        x: padX, y, w: halfW, h: rowH,
-      });
-      this.buttons.push({
-        id: 'back', kind: 'back', label: 'Back to Menu',
-        x: padX + halfW + gap, y, w: halfW, h: rowH,
-      });
-    }
+    // Footer: Hide (close panel) + Back (exit drill), same shape as the
+    // training menu's footer buttons.
+    const bw = (totalW - 12) / 2;
+    p.add({ id: 'hide', kind: WIDGETS.BUTTON, shape: 'rect', x: padX, y: FOOTER_Y, w: bw, h: 48 });
+    p.add({ id: 'back', kind: WIDGETS.BUTTON, shape: 'rect', x: padX + bw + 12, y: FOOTER_Y, w: bw, h: 48 });
   }
 
   draw() {
     const ctx = this.ctx;
+    const hov = this.panel.hoveredId;
+
+    ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
     ctx.fillStyle = COLORS.bg;
-    ctx.fillRect(0, 0, CANVAS_W, CANVAS_H);
+    roundRect(ctx, 0, 0, CANVAS_W, CANVAS_H, 22);
+    ctx.fill();
 
-    ctx.strokeStyle = COLORS.border;
-    ctx.lineWidth = 4;
-    ctx.strokeRect(2, 2, CANVAS_W - 4, CANVAS_H - 4);
-
-    ctx.fillStyle = COLORS.title;
-    ctx.font = 'bold 36px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('Trajectory Practice', CANVAS_W / 2, 50);
-
-    ctx.fillStyle = COLORS.hint;
-    ctx.font = '15px sans-serif';
-    ctx.fillText('Pick spin + speed.  Pull trigger to launch.', CANVAS_W / 2, 86);
-
-    // Section labels
-    ctx.fillStyle = COLORS.sectionLabel;
-    ctx.font = 'bold 18px sans-serif';
+    // Header.
+    ctx.fillStyle = COLORS.accent;
+    ctx.font = F(700, 26);
     ctx.textAlign = 'left';
-    ctx.fillText('SPIN', 28, 116);
-    ctx.fillText('SPEED', 28, 236);
-    ctx.fillText('SPIN INTENSITY', 28, 356);
+    ctx.textBaseline = 'middle';
+    ctx.fillText('TRAJECTORY', 24, 34);
+    ctx.fillStyle = COLORS.muted;
+    ctx.font = F(500, 13);
+    ctx.fillText('Pick spin and speed · trigger off-panel launches', 24, 58);
 
-    // Right-side scale hints
-    ctx.textAlign = 'right';
-    ctx.fillStyle = COLORS.hint;
-    ctx.font = '13px sans-serif';
-    ctx.fillText('1 slow  ·  5 fast', CANVAS_W - 28, 236);
-    ctx.fillText('1 light  ·  5 heavy', CANVAS_W - 28, 356);
+    ctx.strokeStyle = COLORS.hairline;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(24, HEADER_H);
+    ctx.lineTo(CANVAS_W - 24, HEADER_H);
+    ctx.stroke();
 
-    for (const b of this.buttons) {
-      this.drawButton(b);
+    // Option rows.
+    for (const { row, labelY } of this._rowRects) {
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = COLORS.muted;
+      ctx.font = F(600, 14);
+      ctx.textAlign = 'left';
+      ctx.fillText(row.label, 24, labelY);
+      if (row.hint) {
+        ctx.textAlign = 'right';
+        ctx.font = F(500, 12);
+        ctx.fillText(row.hint, CANVAS_W - 24, labelY);
+      }
+
+      const selected = this._selectedIndex(row.kind);
+      for (let i = 0; i < row.options.length; i++) {
+        const w = this.panel.get(`${row.kind}:${i}`);
+        if (!w) continue;
+        const on = i === selected;
+        const hovered = hov === w.id;
+
+        // Same idiom as the feed editor's segments: accent fill + dark text
+        // when selected, glass fill otherwise, hover ring on top.
+        ctx.fillStyle = on ? COLORS.accent : (hovered ? COLORS.panelHover : COLORS.panel);
+        roundRect(ctx, w.x, w.y, w.w, w.h, 12);
+        ctx.fill();
+        if (hovered && !on) {
+          ctx.strokeStyle = COLORS.accent;
+          ctx.lineWidth = 2;
+          ctx.stroke();
+        }
+
+        // Spin cells keep a per-spin colour tick so TOP/BACK/L/R stay
+        // visually distinct at a glance; selection still reads as accent.
+        if (row.kind === 'spin' && !on) {
+          ctx.fillStyle = row.options[i].color;
+          roundRect(ctx, w.x + 10, w.y + 8, w.w - 20, 4, 2);
+          ctx.fill();
+        }
+
+        ctx.fillStyle = on ? '#0e1116' : COLORS.text;
+        ctx.font = F(600, 20);
+        ctx.textAlign = 'center';
+        ctx.fillText(row.options[i].label, w.x + w.w / 2, w.y + w.h / 2 + (row.kind === 'spin' && !on ? 4 : 0));
+      }
     }
 
-    // Currently selected indicator (sub-line)
-    ctx.fillStyle = COLORS.hint;
-    ctx.font = '14px sans-serif';
+    // Current-selection summary, same muted one-liner the menus use.
+    ctx.fillStyle = COLORS.muted;
+    ctx.font = F(500, 14);
     ctx.textAlign = 'center';
-    const cur = `${SPINS[this.spinIndex].label}  ·  speed ${SPEED_LEVELS[this.speedIndex].label}  ·  intensity ${INTENSITY_LEVELS[this.intensityIndex].label}`;
-    ctx.fillText(cur, CANVAS_W / 2, 510);
+    ctx.fillText(
+      `${this.getSpin().label} · speed ${this.getSpeed().label} · intensity ${this.getIntensity().label}`,
+      CANVAS_W / 2, FOOTER_Y - 30,
+    );
+
+    // Footer buttons.
+    for (const [id, label] of [['hide', 'HIDE PANEL'], ['back', '‹ BACK']]) {
+      const w = this.panel.get(id);
+      if (!w) continue;
+      ctx.fillStyle = hov === id ? COLORS.panelHover : COLORS.panel;
+      roundRect(ctx, w.x, w.y, w.w, w.h, 20);
+      ctx.fill();
+      ctx.fillStyle = COLORS.text;
+      ctx.font = F(600, 16);
+      ctx.textAlign = 'center';
+      ctx.fillText(label, w.x + w.w / 2, w.y + w.h / 2);
+    }
 
     this.texture.needsUpdate = true;
   }
 
-  drawButton(b) {
-    const ctx = this.ctx;
-    const isHovered = this.hovered === b.id;
-    const isSelected =
-      (b.kind === 'spin' && b.index === this.spinIndex) ||
-      (b.kind === 'speed' && b.index === this.speedIndex) ||
-      (b.kind === 'intensity' && b.index === this.intensityIndex);
-
-    let bg = COLORS.buttonBg;
-    let textColor = COLORS.buttonText;
-
-    if (b.kind === 'back' || b.kind === 'hide') {
-      bg = COLORS.bg;
-      textColor = COLORS.buttonText;
-    } else if (isSelected) {
-      bg = COLORS.selectedBg;
-      textColor = COLORS.selectedText;
-    }
-    if (isHovered) {
-      bg = COLORS.hoverBg;
-      textColor = COLORS.hoverText;
-    }
-
-    ctx.fillStyle = bg;
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-
-    if (b.kind === 'back' || b.kind === 'hide') {
-      ctx.strokeStyle = COLORS.backBorder;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
-    } else if (isSelected && !isHovered) {
-      ctx.strokeStyle = b.color || COLORS.selectedText;
-      ctx.lineWidth = 3;
-      ctx.strokeRect(b.x, b.y, b.w, b.h);
-    } else if (b.kind === 'spin' && b.color && !isHovered) {
-      // Subtle color stripe at the top so spins are visually distinct.
-      ctx.fillStyle = b.color;
-      ctx.fillRect(b.x, b.y, b.w, 4);
-    }
-
-    ctx.fillStyle = textColor;
-    ctx.font = (b.kind === 'back' || b.kind === 'hide' ? 'bold 22px sans-serif' : 'bold 28px sans-serif');
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+  _selectedIndex(kind) {
+    if (kind === 'spin') return this.spinIndex;
+    if (kind === 'speed') return this.speedIndex;
+    return this.intensityIndex;
   }
 
-  hitTestUV(u, v) {
-    if (u < 0 || u > 1 || v < 0 || v > 1) return null;
-    const px = u * CANVAS_W;
-    const py = (1 - v) * CANVAS_H;
-    for (const b of this.buttons) {
-      if (px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) {
-        return b.id;
-      }
-    }
-    return null;
-  }
+  hitTestUV(u, v) { return this.panel.hitTestUV(u, v); }
 
   setHovered(id) {
-    if (this.hovered === id) return;
-    this.hovered = id;
+    if (this.panel.hoveredId === id) return;
+    this.panel.hoveredId = id;
+    if (id != null) {
+      try { playMenuHoverTick(); } catch (e) { /* audio optional */ }
+      haptics.pulseActive(0.15, 15);
+    }
     this.draw();
   }
 
   selectHovered() {
-    if (!this.hovered) return false;
-    const button = this.buttons.find(b => b.id === this.hovered);
-    if (!button) return false;
-    if (button.kind === 'spin') {
-      this.spinIndex = button.index;
+    const id = this.panel.hoveredId;
+    if (!id) return false;
+    try { playMenuSelectClick(); } catch (e) { /* audio optional */ }
+    haptics.pulseActive(0.3, 25);
+
+    if (id === 'back') { this.emit('back'); return true; }
+    if (id === 'hide') { this.emit('hide'); return true; }
+
+    const [kind, idx] = id.split(':');
+    const i = Number(idx);
+    if (kind === 'spin') {
+      this.spinIndex = i;
       this.draw();
-      this.emit('spinChange', { spin: SPINS[this.spinIndex] });
-    } else if (button.kind === 'speed') {
-      this.speedIndex = button.index;
+      this.emit('spinChange', { spin: SPINS[i] });
+    } else if (kind === 'speed') {
+      this.speedIndex = i;
       this.draw();
-      this.emit('speedChange', { speed: SPEED_LEVELS[this.speedIndex] });
-    } else if (button.kind === 'intensity') {
-      this.intensityIndex = button.index;
+      this.emit('speedChange', { speed: SPEED_LEVELS[i] });
+    } else if (kind === 'intensity') {
+      this.intensityIndex = i;
       this.draw();
-      this.emit('intensityChange', { intensity: INTENSITY_LEVELS[this.intensityIndex] });
-    } else if (button.kind === 'back') {
-      this.emit('back');
-    } else if (button.kind === 'hide') {
-      this.emit('hide');
+      this.emit('intensityChange', { intensity: INTENSITY_LEVELS[i] });
     }
     return true;
   }
@@ -313,10 +300,6 @@ export class TrajectoryControl {
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     this.texture.dispose();
-    this.listeners.spinChange.length = 0;
-    this.listeners.speedChange.length = 0;
-    this.listeners.intensityChange.length = 0;
-    this.listeners.back.length = 0;
-    this.listeners.hide.length = 0;
+    for (const key of Object.keys(this.listeners)) this.listeners[key].length = 0;
   }
 }

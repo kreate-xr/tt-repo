@@ -19,6 +19,7 @@ import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
 import * as haptics from '../xr/haptics.js';
 import { BALL_COLORS, getBallColorId } from './models.js';
 import { getDriftFlag as getCalibrationDriftFlag } from '../xr/driftDetector.js';
+import { TUNER_ENABLED } from './hud.js';
 
 // Rotation order for the ball-color toggle. Keep in sync with BALL_COLORS.
 const BALL_COLOR_ORDER = ['orange', 'white'];
@@ -60,7 +61,6 @@ const FONT_FAMILY    = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif
 const FONT_MODE_MAIN = `700 26px ${FONT_FAMILY}`;
 const FONT_MODE_SUB  = `600 12px ${FONT_FAMILY}`;
 const FONT_PILL      = `600 14px ${FONT_FAMILY}`;
-const FONT_PILL_LG   = `600 16px ${FONT_FAMILY}`;
 const FONT_EXIT      = `600 14px ${FONT_FAMILY}`;
 
 // The drill picker that used to live here is gone. Every drill — the ball
@@ -127,50 +127,6 @@ const ICONS = {
       ctx.stroke();
     }
   },
-  targetPractice(ctx, cx, cy, s, color) {
-    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
-    for (const r of [s * 0.42, s * 0.28, s * 0.14]) {
-      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
-    }
-    ctx.beginPath(); ctx.arc(cx, cy, s * 0.05, 0, Math.PI * 2); ctx.fill();
-  },
-  spinReader(ctx, cx, cy, s, color) {
-    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(cx, cy, s * 0.36, Math.PI * 0.15, Math.PI * 1.65);
-    ctx.stroke();
-    const a = Math.PI * 1.65;
-    const ex = cx + Math.cos(a) * s * 0.36;
-    const ey = cy + Math.sin(a) * s * 0.36;
-    ctx.beginPath();
-    ctx.moveTo(ex + s * 0.11, ey);
-    ctx.lineTo(ex - s * 0.05, ey - s * 0.11);
-    ctx.lineTo(ex - s * 0.05, ey + s * 0.11);
-    ctx.closePath();
-    ctx.fill();
-  },
-  reactionRally(ctx, cx, cy, s, color) {
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.moveTo(cx - s * 0.05, cy - s * 0.4);
-    ctx.lineTo(cx + s * 0.2,  cy - s * 0.05);
-    ctx.lineTo(cx + s * 0.02, cy - s * 0.05);
-    ctx.lineTo(cx + s * 0.15, cy + s * 0.4);
-    ctx.lineTo(cx - s * 0.2,  cy + s * 0.05);
-    ctx.lineTo(cx - s * 0.02, cy + s * 0.05);
-    ctx.closePath();
-    ctx.fill();
-  },
-  trajectoryPractice(ctx, cx, cy, s, color) {
-    ctx.fillStyle = color;
-    for (let t = -1; t <= 1.01; t += 0.22) {
-      const x = cx + t * s * 0.42;
-      const y = cy + (t * t - 0.5) * s * 0.7;
-      ctx.beginPath();
-      ctx.arc(x, y, s * 0.05, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  },
   multiplayer(ctx, cx, cy, s, color) {
     ctx.strokeStyle = color; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(cx - s * 0.22, cy - s * 0.1, s * 0.13, 0, Math.PI * 2); ctx.stroke();
@@ -235,7 +191,8 @@ const ICONS = {
 };
 
 export class WristMenu {
-  constructor() {
+  constructor({ showTune = TUNER_ENABLED } = {}) {
+    this.showTune = showTune;
     this.canvas = document.createElement('canvas');
     this.canvas.width = CANVAS_W;
     this.canvas.height = CANVAS_H;
@@ -415,14 +372,19 @@ export class WristMenu {
       });
     }
 
-    // --- Left dock: Tune Physics + Calibrate Paddle side by side ---
-    this.buttons.push({
-      id: 'tune', kind: 'dock', icon: 'gear',
-      shape: 'rect', x: 32, y: CIRCLE_Y - 26, w: 52, h: 52, radius: 14,
-    });
+    // --- Left dock: Calibrate Paddle, plus Tune Physics in dev sessions
+    // (?tuner / ?selftest — see TUNER_ENABLED). Calibrate takes the first
+    // slot when the tuner is absent so the dock never shows a gap.
+    if (this.showTune) {
+      this.buttons.push({
+        id: 'tune', kind: 'dock', icon: 'gear',
+        shape: 'rect', x: 32, y: CIRCLE_Y - 26, w: 52, h: 52, radius: 14,
+      });
+    }
     this.buttons.push({
       id: 'calibrate', kind: 'dock', icon: 'paddle',
-      shape: 'rect', x: 32 + 52 + 8, y: CIRCLE_Y - 26, w: 52, h: 52, radius: 14,
+      shape: 'rect', x: this.showTune ? 32 + 52 + 8 : 32,
+      y: CIRCLE_Y - 26, w: 52, h: 52, radius: 14,
     });
 
     // --- Right dock: ball color toggle. Mirror of the left gear so the
@@ -796,34 +758,40 @@ export class WristMenu {
  */
 export function createLaserLine() {
   const group = new THREE.Group();
-  const ACCENT_RGB = new THREE.Color(ACCENT);
+  // System-pointer white (Quest style), not the UI accent: the beam is an
+  // input affordance, not part of the panel's visual identity.
+  const BEAM_RGB = new THREE.Color(0xffffff);
 
   // Unit-length tube along -Z, tapering toward the tip. Kept deliberately
   // thin — a fat beam reads as a prop rather than a pointer, and the tip disc
   // (not the tube) is what communicates aim.
-  const beamGeom = new THREE.CylinderGeometry(0.0010, 0.0024, 1, 8, 1, true);
+  // 12 height segments, not 1: the fade-in curve below lives in vertex
+  // colours, and with a single segment they could only lerp end-to-end.
+  const beamGeom = new THREE.CylinderGeometry(0.0007, 0.0016, 1, 8, 12, true);
   beamGeom.rotateX(-Math.PI / 2);   // +Y axis → -Z
   beamGeom.translate(0, 0, -0.5);   // span 0 → -1
 
-  // Dim toward the hand, but not to nothing: the near end has to stay legible
-  // or the beam looks detached from the paddle and you lose the sense that you
-  // are the one emitting it. Floor of 0.45 keeps it visibly rooted at the grip
-  // while the tip still wins the eye.
+  // Fade to nothing at the hand: the near end of the beam would otherwise sit
+  // on top of the paddle blade. Additive blending means a black vertex
+  // contributes nothing, so ramping the colour up from 0 over the first
+  // quarter of the beam makes it materialise a little way out from the paddle
+  // and brighten toward the tip — no hard cut, no beam-over-paddle.
   const pos = beamGeom.attributes.position;
   const colors = new Float32Array(pos.count * 3);
   for (let i = 0; i < pos.count; i++) {
     const t = Math.min(1, Math.max(0, -pos.getZ(i)));      // 0 at hand, 1 at tip
-    const k = 0.45 + 0.55 * t * t;
-    colors[i * 3] = ACCENT_RGB.r * k;
-    colors[i * 3 + 1] = ACCENT_RGB.g * k;
-    colors[i * 3 + 2] = ACCENT_RGB.b * k;
+    const fadeIn = Math.min(1, t / 0.25);
+    const k = fadeIn * fadeIn * (0.45 + 0.55 * t * t);
+    colors[i * 3] = BEAM_RGB.r * k;
+    colors[i * 3 + 1] = BEAM_RGB.g * k;
+    colors[i * 3 + 2] = BEAM_RGB.b * k;
   }
   beamGeom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
 
   const beam = new THREE.Mesh(beamGeom, new THREE.MeshBasicMaterial({
     vertexColors: true,
     transparent: true,
-    opacity: 0.9,
+    opacity: 0.7,
     blending: THREE.AdditiveBlending,
     depthTest: false,
     depthWrite: false,
@@ -832,9 +800,9 @@ export function createLaserLine() {
   group.add(beam);
 
   const tip = new THREE.Mesh(
-    new THREE.CircleGeometry(0.008, 20),
+    new THREE.CircleGeometry(0.006, 20),
     new THREE.MeshBasicMaterial({
-      color: ACCENT,
+      color: 0xffffff,
       transparent: true,
       opacity: 0.95,
       blending: THREE.AdditiveBlending,

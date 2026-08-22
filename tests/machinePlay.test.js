@@ -6,8 +6,6 @@
 // dies on the first feed because a ball in flight was counted as missed looks
 // exactly like a run that ended fairly.
 
-const THREE = require('three');
-
 jest.mock('../js/scene/sceneSetup.js', () => ({ scene: { add: () => {}, remove: () => {} } }));
 jest.mock('../js/scene/audio.js', () => ({ playMenuHoverTick: () => {} }));
 jest.mock('../js/physics/ball.js', () => ({ spawnBallAt: () => {} }));
@@ -34,7 +32,7 @@ jest.mock('../js/scene/models.js', () => {
 });
 
 const {
-  createMachinePlayDrill, MACHINE_MODES, MACHINE_PLAY,
+  createMachinePlayDrill, MACHINE_MODES,
 } = require('../js/modes/machinePlay/machinePlay.js');
 const { INFINITE } = require('../js/modes/training/drillConfig.js');
 const { QUICK_FEED } = require('../js/modes/training/presets.js');
@@ -72,12 +70,9 @@ function feedBalls(drill, n, limit = 60) {
 }
 
 describe('mode metadata', () => {
-  test('does not build the legacy Feeder — it drives the M1 machine figure', () => {
-    // Two server rigs in the scene is the failure this flag prevents, and it
-    // is only visible in a headset.
-    expect(MACHINE_PLAY.usesFeeder).toBe(false);
+  test('drives the M1 machine figure directly', () => {
     const drill = createMachinePlayDrill({ ballEvents: makeEvents(), config: fastConfig });
-    expect(drill.usesFeeder).toBe(false);
+    expect(drill.figure).toBeTruthy();
     drill.dispose();
   });
 });
@@ -299,21 +294,16 @@ describe('host interface', () => {
     }
   });
 
-  test('stats receive feeds and returns, so the summary panel has numbers', () => {
+  test('the event-log summary carries the numbers the summary panel shows', () => {
+    // SessionStats is gone; the end-of-set panel reads getSummary() — the
+    // same M7 log Review analyses, so the two can never disagree.
     const events = makeEvents();
-    const stats = { feeds: 0, returns: 0, misses: 0 };
-    const drill = createMachinePlayDrill({
-      ballEvents: events, config: fastConfig,
-      stats: {
-        recordFeed: () => { stats.feeds++; },
-        recordReturn: () => { stats.returns++; },
-        recordMiss: () => { stats.misses++; },
-      },
-    });
+    const drill = createMachinePlayDrill({ ballEvents: events, config: fastConfig });
     expect(feedBalls(drill, 1)).toBe(true);
     events.firePaddleHit();
-    expect(stats.feeds).toBeGreaterThan(0);
-    expect(stats.returns).toBe(1);
+    const summary = drill.getSummary();
+    expect(summary.feeds).toBeGreaterThan(0);
+    expect(summary.returned).toBe(1);
     drill.dispose();
   });
 });

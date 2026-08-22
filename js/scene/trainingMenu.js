@@ -21,6 +21,7 @@ import { COLORS, F, roundRect } from './panelStyle.js';
 import { layoutFeedEditor, drawFeedEditor } from './feedEditor.js';
 import { TrainingMenuModel, SCREENS } from '../modes/training/menuModel.js';
 import { bladeHeatmap } from '../modes/training/analysis.js';
+import { TUNER_ENABLED } from './hud.js';
 
 const CANVAS_W = 1024;
 const CANVAS_H = 640;
@@ -34,12 +35,16 @@ const BODY_Y = HEADER_H + 12;
 
 // Footer shortcuts, left to right. Four 200px buttons plus three 24px gaps is
 // 872px inside a 1024px canvas, so they stay centred with a comfortable
-// margin; adding a fifth would need the width reduced.
+// margin; adding a fifth would need the width reduced. 'tune' only exists
+// in dev sessions (?tuner / ?selftest — see TUNER_ENABLED); the row
+// re-centres itself from its length.
 const FOOTER_IDS = ['settings', 'calibrate', 'tune', 'exit'];
 
 export class TrainingMenu {
   constructor({ presets = null, settings = null, difficulties = null,
-    getSessionLog = null, getRecentContacts = null } = {}) {
+    getSessionLog = null, getRecentContacts = null,
+    showTune = TUNER_ENABLED } = {}) {
+    this.footerIds = showTune ? FOOTER_IDS : FOOTER_IDS.filter((id) => id !== 'tune');
     this.model = new TrainingMenuModel({
       presets, settings, getSessionLog, getRecentContacts,
     });
@@ -201,6 +206,17 @@ export class TrainingMenu {
       return this.rebuild();
     }
 
+    if (id.startsWith('preset:')) {
+      m.cyclePreset(Number(id.slice(7)));
+      // The model leaves the loaded preset's one-line description in the
+      // message slot; a feasibility warning (which the description can never
+      // outrank) replaces it when the probe has one.
+      const desc = m.message;
+      this._refreshFeasibility();
+      if (!m.message) m.message = desc;
+      return this.rebuild();
+    }
+
     if (id === 'start') return this.start(m.config, m.selectedPreset);
     if (id === 'save') {
       // Auto-named: in-headset text entry does not exist, and blocking the
@@ -297,9 +313,9 @@ export class TrainingMenu {
     // Footer.
     const fw = 200;
     const gap = 24;
-    const total = fw * FOOTER_IDS.length + gap * (FOOTER_IDS.length - 1);
+    const total = fw * this.footerIds.length + gap * (this.footerIds.length - 1);
     let fx = (CANVAS_W - total) / 2;
-    for (const id of FOOTER_IDS) {
+    for (const id of this.footerIds) {
       p.add({ id: `footer:${id}`, kind: WIDGETS.BUTTON, shape: 'rect', x: fx, y: FOOTER_Y, w: fw, h: 48 });
       fx += fw + gap;
     }
@@ -342,13 +358,16 @@ export class TrainingMenu {
     // The editor itself is shared with the Machine Play menu's settings
     // screen (scene/feedEditor.js). The difficulty segment rides along here
     // because it is still meaningful on this screen: it selects the AI tier
-    // the ladders and match modes use.
+    // the ladders and match modes use. The preset cycler is this screen's
+    // own: quick feeds and saved presets are starting points for the editor,
+    // not separate screens.
     this._editor = layoutFeedEditor(this.panel, {
       model: this.model,
       difficulties: this.difficulties,
       canvasW: CANVAS_W,
       bodyY: BODY_Y,
       showSave: true,
+      presetRow: true,
     });
   }
 
@@ -464,6 +483,7 @@ export class TrainingMenu {
       difficulties: this.difficulties,
       difficultyIndex: this.difficultyIndex,
       startLabel: 'START',
+      presetLabel: this.model.presetLabel,
     });
   }
 
@@ -539,7 +559,7 @@ export class TrainingMenu {
     };
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    for (const id of FOOTER_IDS) {
+    for (const id of this.footerIds) {
       const w = this.panel.get(`footer:${id}`);
       if (!w) continue;
       const isExit = id === 'exit';

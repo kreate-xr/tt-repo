@@ -109,7 +109,7 @@ describe('navigation by click', () => {
 
   test('no list row overlaps the footer on any screen', () => {
     const store = require('../js/profile/store.js');
-    const menu = new TrainingMenu({ presets: store });
+    const menu = new TrainingMenu({ presets: store, showTune: true });
     for (const screen of Object.values(SCREENS)) {
       if (screen === SCREENS.CUSTOM_FEED) continue;   // not a list screen
       menu.model.stack = [screen];
@@ -123,18 +123,10 @@ describe('navigation by click', () => {
     }
   });
 
-  test('clicking Ball Machine drills in', () => {
+  test('clicking Ball Machine lays out the editor controls', () => {
     const menu = new TrainingMenu();
     menu.show();
     clickById(menu, 'item:ballMachine');
-    expect(menu.model.screen).toBe(SCREENS.BALL_MACHINE);
-  });
-
-  test('clicking through to Custom Feed lays out its controls', () => {
-    const menu = new TrainingMenu();
-    menu.show();
-    clickById(menu, 'item:ballMachine');
-    clickById(menu, 'item:customFeed');
     expect(menu.model.screen).toBe(SCREENS.CUSTOM_FEED);
     expect(menu.panel.get('zone:5')).toBeTruthy();
     expect(menu.panel.get('start')).toBeTruthy();
@@ -157,54 +149,72 @@ describe('navigation by click', () => {
   });
 
   test('disabled rows do not resolve to a hit', () => {
+    // No session log provider attached, so Review shows its disabled
+    // "No session data yet" row — the only disabled row left now that the
+    // menu carries no placeholders.
     const menu = new TrainingMenu();
     menu.show();
-    const [u, v] = uvOf(menu, 'item:serveSchool');
+    clickById(menu, 'item:practice');
+    clickById(menu, 'item:weaknesses');
+    const [u, v] = uvOf(menu, 'item:__nodata__');
     expect(menu.hitTestUV(u, v)).toBeNull();
   });
 });
 
 describe('starting a drill', () => {
-  test('a quick-feed preset emits start with its config', () => {
+  test('the tutorial row emits start with its drill id', () => {
+    const menu = new TrainingMenu();
+    menu.show();
+    const started = [];
+    menu.on('start', (e) => started.push(e));
+
+    clickById(menu, 'item:tutorial');
+
+    expect(started).toHaveLength(1);
+    expect(started[0].drill).toBe('tutorial');
+    expect(started[0].config).toBeNull();
+  });
+
+  test('a cycled preset starts with its config from the editor', () => {
     const menu = new TrainingMenu();
     menu.show();
     const started = [];
     menu.on('start', (e) => started.push(e));
 
     clickById(menu, 'item:ballMachine');
-    clickById(menu, 'item:quickFeed');
-    clickById(menu, 'item:BackspinPush');
+    // Custom › Warmup › FH topspin › BH topspin › Backspin push.
+    for (let i = 0; i < 4; i++) clickById(menu, 'preset:1');
+    clickById(menu, 'start');
 
     expect(started).toHaveLength(1);
     expect(started[0].drill).toBe('ballMachine');
+    expect(started[0].preset).toBe('BackspinPush');
     expect(started[0].config.spinType).toBe('back');
     expect(started[0].difficulty).toBeTruthy();
   });
 
-  test('a legacy drill emits start with its own drill id and no config', () => {
+  test('a practice intent emits start with its own drill id and no config', () => {
     const menu = new TrainingMenu();
     menu.show();
     const started = [];
     menu.on('start', (e) => started.push(e));
 
-    // M2 made "Drills" a hub, so the four originals sit under Classic Drills.
-    clickById(menu, 'item:drills');
-    clickById(menu, 'item:classic');
-    clickById(menu, 'item:spinReader');
+    clickById(menu, 'item:practice');
+    clickById(menu, 'item:spinPractice');
 
     expect(started).toHaveLength(1);
-    expect(started[0].drill).toBe('spinReader');
+    expect(started[0].drill).toBe('spinPractice');
     expect(started[0].config).toBeNull();
   });
 
-  test('a pattern drill starts with its pattern in the options', () => {
+  test('a movement pattern starts with its pattern in the options', () => {
     const menu = new TrainingMenu();
     menu.show();
     const started = [];
     menu.on('start', (e) => started.push(e));
 
-    clickById(menu, 'item:drills');
-    clickById(menu, 'item:patternDrills');
+    clickById(menu, 'item:practice');
+    clickById(menu, 'item:movement');
     clickById(menu, 'item:falkenberg');
 
     expect(started).toHaveLength(1);
@@ -212,14 +222,15 @@ describe('starting a drill', () => {
     expect(started[0].options.random).toBe(false);
   });
 
-  test('Random Mode reaches the same list but flags random ordering', () => {
+  test('the feed-order toggle shuffles subsequent pattern starts', () => {
     const menu = new TrainingMenu();
     menu.show();
     const started = [];
     menu.on('start', (e) => started.push(e));
 
-    clickById(menu, 'item:drills');
-    clickById(menu, 'item:randomMode');
+    clickById(menu, 'item:practice');
+    clickById(menu, 'item:movement');
+    clickById(menu, 'item:__order__');
     clickById(menu, 'item:falkenberg');
 
     expect(started[0].options.random).toBe(true);
@@ -231,7 +242,7 @@ describe('starting a drill', () => {
     const started = [];
     menu.on('start', (e) => started.push(e));
 
-    clickById(menu, 'item:drills');
+    clickById(menu, 'item:practice');
     clickById(menu, 'item:ladders');
     clickById(menu, 'item:silver');
 
@@ -257,7 +268,6 @@ describe('starting a drill', () => {
     menu.on('start', (e) => started.push(e));
 
     clickById(menu, 'item:ballMachine');
-    clickById(menu, 'item:customFeed');
     clickById(menu, 'zone:3');
     clickById(menu, 'start');
 
@@ -271,7 +281,6 @@ describe('custom feed controls', () => {
     const menu = new TrainingMenu();
     menu.show();
     clickById(menu, 'item:ballMachine');
-    clickById(menu, 'item:customFeed');
     return menu;
   };
 
@@ -368,7 +377,6 @@ describe('custom feed controls', () => {
     const menu = new TrainingMenu({ presets: store });
     menu.show();
     clickById(menu, 'item:ballMachine');
-    clickById(menu, 'item:customFeed');
     expect(() => clickById(menu, 'save')).not.toThrow();
     expect(store.getPresets().length).toBe(1);
   });
@@ -399,7 +407,9 @@ describe('footer', () => {
   });
 
   test('calibrate and physics hand off to the existing panels', () => {
-    const menu = new TrainingMenu();
+    // showTune: the physics footer button only exists in ?tuner/?selftest
+    // dev sessions; this test exercises that dev path.
+    const menu = new TrainingMenu({ showTune: true });
     menu.show();
     const seen = [];
     menu.on('calibrate', () => seen.push('calibrate'));
@@ -407,6 +417,13 @@ describe('footer', () => {
     clickById(menu, 'footer:calibrate');
     clickById(menu, 'footer:tune');
     expect(seen).toEqual(['calibrate', 'tune']);
+  });
+
+  test('the physics footer button is absent outside dev sessions', () => {
+    const menu = new TrainingMenu();   // default: showTune off
+    menu.show();
+    expect(menu.panel.get('footer:tune')).toBeFalsy();
+    expect(menu.panel.get('footer:calibrate')).toBeTruthy();
   });
 });
 
@@ -418,8 +435,8 @@ describe('difficulty', () => {
     const started = [];
     menu.on('start', (e) => started.push(e));
     clickById(menu, 'item:ballMachine');
-    clickById(menu, 'item:quickFeed');
-    clickById(menu, 'item:Warmup');
+    clickById(menu, 'preset:1');            // Warmup
+    clickById(menu, 'start');
     expect(started[0].difficulty).toBe('pro');
   });
 

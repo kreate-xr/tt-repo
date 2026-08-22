@@ -3,8 +3,6 @@
 // Bisects "training click is not working": if this passes, the wrist menu is
 // fine and the fault is downstream in inGame; if it fails, it is here.
 
-const THREE = require('three');
-
 jest.mock('../js/scene/sceneSetup.js', () => ({ scene: { add: () => {}, remove: () => {} } }));
 jest.mock('../js/scene/audio.js', () => ({
   playMenuHoverTick: () => {}, playMenuSelectClick: () => {},
@@ -137,6 +135,16 @@ describe('event registration', () => {
     const menu = new WristMenu();
     menu.on('training', () => {});
     expect(() => menu.dispose()).not.toThrow();
+  });
+
+  test('the physics tuner button only exists in dev sessions', () => {
+    // Default (production): no ?tuner/?selftest, so no gear button, and
+    // calibrate slides into the first dock slot so there is no gap.
+    const menu = new WristMenu();
+    expect(menu.buttons.some((b) => b.id === 'tune')).toBe(false);
+    expect(menu.buttons.find((b) => b.id === 'calibrate').x).toBe(32);
+    const dev = new WristMenu({ showTune: true });
+    expect(dev.buttons.some((b) => b.id === 'tune')).toBe(true);
   });
 
   test('every event the menu can emit has a reachable path', () => {

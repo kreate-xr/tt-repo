@@ -22,9 +22,6 @@ export { MACHINE_MODES, DEFAULT_CHALLENGE_TARGET };
 export const MACHINE_PLAY = {
   id: 'machinePlay',
   label: 'Machine Play',
-  // Drives the M1 drill's own BallMachineFigure, so the legacy Feeder must not
-  // be constructed — it would put a second, invisible paddle rig in the scene.
-  usesFeeder: false,
 };
 
 /**
@@ -35,7 +32,7 @@ export const MACHINE_PLAY = {
  * @param {number}  opts.target       returns needed to clear a Score Challenge
  */
 export function createMachinePlayDrill({
-  stats, ballEvents, config, seed,
+  ballEvents, config, seed,
   machineMode = MACHINE_MODES.RALLY,
   target = DEFAULT_CHALLENGE_TARGET,
 } = {}) {
@@ -67,7 +64,7 @@ export function createMachinePlayDrill({
   };
 
   const inner = createM1BallMachineDrill({
-    stats, ballEvents, config: cfg, seed,
+    ballEvents, config: cfg, seed,
     onOutcome: (o) => {
       // Verdicts can still arrive after the run ends — the ball that broke a
       // Survival streak is often still in the air, and its ballLost fires
@@ -88,8 +85,6 @@ export function createMachinePlayDrill({
   });
 
   return {
-    usesFeeder: false,
-
     // Exposed for the same reason the M1 drill exposes it: tests observe the
     // machine's glide between feeds through it.
     figure: inner.figure,

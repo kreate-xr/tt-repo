@@ -52,26 +52,35 @@ export function hideLiveLine() {
   if (liveLineEl) liveLineEl.style.display = 'none';
 }
 
-export function showSummary(snapshot, { onRetry, onChangeDrill, onExit }) {
+/**
+ * End-of-set panel, fed by the M7 event log's summary() (plus the display
+ * labels inGame adds). One source of truth: these are the same numbers
+ * Review & Stats analyses, so the panel and the review can never disagree
+ * about how a session went — which is exactly how the old SessionStats
+ * copy drifted (drills that fed the log but not the stats showed zeros).
+ */
+export function showSummary(summary, { onRetry, onChangeDrill, onExit }) {
   if (!summaryEl) initStatsHud();
 
-  const dur = snapshot.durationSec.toFixed(1);
-  const perSpinRows = Object.entries(snapshot.perSpinResults || {})
-    .map(([spin, r]) => `<tr><td style="padding:2px 10px 2px 0;color:#aaa;">${spin}</td><td style="text-align:right;">${r.cleared}/${r.faced}</td></tr>`)
-    .join('');
+  const dur = ((summary.durationMs || 0) / 1000).toFixed(1);
+  const returnPct = Math.round((summary.returnRate || 0) * 100);
+  const rows = [
+    ['Balls fed', `${summary.feeds ?? 0}`],
+    ['Returned', `${summary.returned ?? 0} (${returnPct}%)`],
+    ['Missed', `${summary.missed ?? 0}`],
+    ['Errors', `${summary.errored ?? 0}`],
+    ['Longest streak', `${summary.longestRally ?? 0}`],
+  ];
 
   summaryEl.innerHTML = `
     <h2 style="margin:0 0 10px 0;color:#00ff88;font-size:1.4rem;">Set Complete</h2>
     <div style="color:#aaa;font-size:0.9rem;margin-bottom:14px;">
-      ${snapshot.drillId} · ${snapshot.difficulty} · ${dur}s
+      ${summary.drillLabel || summary.drillId || 'Drill'} · ${summary.difficultyLabel || ''} · ${dur}s
     </div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px 24px;font-size:1rem;margin-bottom:14px;">
-      <div>Shots fed</div><div style="text-align:right;font-weight:600;">${snapshot.shotsFed}</div>
-      <div>Returned</div><div style="text-align:right;font-weight:600;">${snapshot.shotsReturned} (${snapshot.returnPct}%)</div>
-      <div>On-target</div><div style="text-align:right;font-weight:600;">${snapshot.onTarget} (${snapshot.accuracyPct}%)</div>
-      <div>Longest streak</div><div style="text-align:right;font-weight:600;">${snapshot.longestStreak}</div>
+      ${rows.map(([label, value]) =>
+    `<div>${label}</div><div style="text-align:right;font-weight:600;">${value}</div>`).join('')}
     </div>
-    ${perSpinRows ? `<table style="width:100%;border-top:1px solid rgba(255,255,255,0.12);padding-top:8px;margin-bottom:14px;font-size:0.95rem;">${perSpinRows}</table>` : ''}
     <div style="display:flex;gap:10px;justify-content:center;">
       <button data-action="retry" style="padding:9px 18px;border:none;border-radius:8px;background:linear-gradient(135deg,#00ff88,#00aaff);color:#000;font-weight:700;cursor:pointer;">Retry</button>
       <button data-action="change" style="padding:9px 18px;border:1px solid rgba(255,255,255,0.25);border-radius:8px;background:transparent;color:#fff;cursor:pointer;">Change Drill</button>

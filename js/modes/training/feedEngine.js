@@ -3,9 +3,9 @@
 //
 // This is the half of the old feeder.js that is not animation. The split is
 // migration-plan D4: nothing here imports js/scene/*, geometry arrives via an
-// injected `env`, so the whole aiming path is testable headless. ServerFigure
-// (the windup→swing→recover animation) keeps the scene dependency and stays
-// where it is.
+// injected `env`, so the whole aiming path is testable headless. The
+// animation half lives in ballMachineFigure.js, which keeps the scene
+// dependency where it belongs.
 //
 //   env = { ballRadius, tableSurfaceY, tableBox, netBox }
 //

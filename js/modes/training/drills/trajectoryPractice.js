@@ -4,17 +4,31 @@
 import * as THREE from 'three';
 import { ballModel } from '../../../scene/models.js';
 import { spawnBallAt } from '../../../physics/ball.js';
-import { TrajectoryControl, SPINS, SPEED_LEVELS } from '../../../scene/trajectoryControl.js';
+import { TrajectoryControl } from '../../../scene/trajectoryControl.js';
 import { TrajectoryDots, simulateTrajectory } from '../trajectoryPreview.js';
-import { SPIN_AXES } from '../feeder.js';
 import { getSpawnPos, getLandingPos, ballisticVelocity } from '../launchKinematics.js';
+
+// Spin axes (right-hand rule, ball moving in +Z toward player at z=0):
+//   topspin  → ω in +X (ball drops faster)
+//   backspin → ω in -X (ball floats / slows on bounce)
+//   sideA    → ω in +Y (ball curves toward +X mid-flight)
+//   sideB    → ω in -Y (ball curves toward -X mid-flight)
+// Moved here from feeder.js when the legacy feed path was deleted — this
+// drill is the convention's only remaining consumer.
+const SPIN_AXES = {
+  topspin:  new THREE.Vector3( 1, 0, 0),
+  backspin: new THREE.Vector3(-1, 0, 0),
+  sideA:    new THREE.Vector3( 0, 1, 0),
+  sideB:    new THREE.Vector3( 0, -1, 0),
+  none:     new THREE.Vector3( 0, 0, 0),
+};
 
 export const TRAJECTORY_PRACTICE = {
   id: 'trajectoryPractice',
   label: 'Trajectory Practice',
 };
 
-export function createTrajectoryPracticeDrill({ stats, ballEvents, profile, hooks = {} }) {
+export function createTrajectoryPracticeDrill({ ballEvents, hooks = {} }) {
   const control = new TrajectoryControl();
   const dots = new TrajectoryDots();
 
@@ -24,7 +38,6 @@ export function createTrajectoryPracticeDrill({ stats, ballEvents, profile, hook
   const angVel = new THREE.Vector3();
 
   let ballInFlight = false;
-  let cachedSpinName = null;
 
   function recomputePreview() {
     const spin = control.getSpin();
@@ -40,7 +53,6 @@ export function createTrajectoryPracticeDrill({ stats, ballEvents, profile, hook
 
     const samples = simulateTrajectory(spawnPos, velocity, angVel);
     dots.setFromSamples(samples, spin.id);
-    cachedSpinName = spin.id;
     if (ballInFlight) dots.hide(); // don't show preview while a real ball is flying
   }
 
@@ -66,12 +78,10 @@ export function createTrajectoryPracticeDrill({ stats, ballEvents, profile, hook
     spawnBallAt(spawnPos, velocity, angVel);
     ballInFlight = true;
     dots.hide(); // hide preview while live ball flies; actual ball is the truth now
-    stats.recordFeed({ spin: cachedSpinName });
   }
 
   return {
     isTrajectoryDrill: true,
-    usesFeeder: false,     // manual launch; inGame should skip feeder.update
     panel: control,        // for inGame.js raycast routing
     panelMesh: control.mesh,
     launch,                // called by inGame.js when paddle trigger fires outside the panel

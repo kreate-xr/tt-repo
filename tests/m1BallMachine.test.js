@@ -5,8 +5,6 @@
 // nothing errors, the return rate is simply wrong — and it feeds M7's
 // weakness report, so a bad number there prescribes the wrong drills.
 
-const THREE = require('three');
-
 const spawned = [];
 jest.mock('../js/scene/sceneSetup.js', () => ({ scene: { add: () => {}, remove: () => {} } }));
 jest.mock('../js/scene/audio.js', () => ({ playMenuHoverTick: () => {} }));
@@ -361,23 +359,180 @@ describe('rapid fire: the machine sweeps between feed origins', () => {
 });
 
 describe('metadata', () => {
-  test('the drill declares it does not use the legacy feeder', () => {
-    // inGame reads this off the META so it can skip CONSTRUCTING a Feeder —
-    // building one only to hide it still put a ServerFigure in the scene.
-    const { M1_BALL_MACHINE } = require('../js/modes/training/drills/m1BallMachine.js');
-    expect(M1_BALL_MACHINE.usesFeeder).toBe(false);
-  });
-
-  test('the instance reports it too, for the update gate', () => {
-    const drill = createM1BallMachineDrill({ config: QUICK_FEED.Warmup.config });
-    expect(drill.usesFeeder).toBe(false);
-    drill.dispose();
-  });
-
   test('it exposes the event log for M7', () => {
     const drill = createM1BallMachineDrill({ config: QUICK_FEED.Warmup.config });
     expect(typeof drill.getLog).toBe('function');
     expect(drill.getSummary()).toHaveProperty('returnRate');
+    drill.dispose();
+  });
+});
+
+describe('return quality: a touch is not a return', () => {
+  const T = require('three');
+
+  // A long interval so exactly one ball is in play (see the miss-accounting
+  // block above for why).
+  const oneBallConfig = () => validateConfig({
+    ...QUICK_FEED.Warmup.config, interval: 6, burstCount: INFINITE,
+  });
+
+  // Outgoing state a real paddleHit carries. The judge rolls it through the
+  // shared integrator, so these are physical shots, not magic flags.
+  const goodHit = () => ({
+    contactLocal: { x: 0, y: 0 },
+    contactPos: new T.Vector3(0, 0.3, 1.3),
+    outVel: new T.Vector3(0, 2.5, -3.5),   // over the net, onto the far half
+    outSpin: new T.Vector3(0, 0, 0),
+  });
+  const outHit = () => ({
+    contactLocal: { x: 0, y: 0 },
+    contactPos: new T.Vector3(0, 0.3, 1.0),
+    outVel: new T.Vector3(0, 1.5, 3),      // away from the table entirely
+    outSpin: new T.Vector3(0, 0, 0),
+  });
+  const ownHalfHit = () => ({
+    contactLocal: { x: 0, y: 0 },
+    contactPos: new T.Vector3(0, 0.15, 1.2),
+    outVel: new T.Vector3(0, -0.5, -3),    // dribbles onto the player's own half
+    outSpin: new T.Vector3(0, 0, 0),
+  });
+
+  test('a verified good return is credited', () => {
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({ config: oneBallConfig(), ballEvents: events });
+    run(drill, 2);
+    events.firePaddleHit(goodHit());
+    expect(drill.getSnapshot().returned).toBe(1);
+    events.fireBallLost();
+    const counts = drill.getLog().outcomeCounts();
+    expect(counts.miss).toBe(0);
+    expect(counts.error).toBe(0);
+    drill.dispose();
+  });
+
+  test('a touch hit off the table is an ERROR, not a return and not a MISS', () => {
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({ config: oneBallConfig(), ballEvents: events });
+    run(drill, 2);
+    events.firePaddleHit(outHit());
+    expect(drill.getSnapshot().returned).toBe(0);
+    expect(drill.getSnapshot().streak).toBe(0);
+    events.fireBallLost();
+    const counts = drill.getLog().outcomeCounts();
+    expect(counts.error).toBe(1);
+    expect(counts.miss).toBe(0);
+    drill.dispose();
+  });
+
+  test('a return onto your own half does not count either', () => {
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({ config: oneBallConfig(), ballEvents: events });
+    run(drill, 2);
+    events.firePaddleHit(ownHalfHit());
+    expect(drill.getSnapshot().returned).toBe(0);
+    events.fireBallLost();
+    expect(drill.getLog().outcomeCounts().error).toBe(1);
+    drill.dispose();
+  });
+
+  test('a bad touch followed by a good second stroke still earns the credit', () => {
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({ config: oneBallConfig(), ballEvents: events });
+    run(drill, 2);
+    events.firePaddleHit(ownHalfHit());
+    events.firePaddleHit(goodHit());
+    expect(drill.getSnapshot().returned).toBe(1);
+    events.fireBallLost();
+    expect(drill.getLog().outcomeCounts().error).toBe(0);
+    drill.dispose();
+  });
+
+  test('an untouched ball stays a MISS — the verdicts do not blur', () => {
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({ config: oneBallConfig(), ballEvents: events });
+    run(drill, 2);
+    events.fireBallLost();
+    const counts = drill.getLog().outcomeCounts();
+    expect(counts.miss).toBe(1);
+    expect(counts.error).toBe(0);
+    drill.dispose();
+  });
+
+  test('every launched ball is accounted for exactly once, errors included', () => {
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({
+      config: validateConfig({ ...QUICK_FEED.Warmup.config, interval: 1, burstCount: INFINITE }),
+      ballEvents: events,
+    });
+    let flip = 0;
+    for (let i = 0; i < 8 / 0.02; i++) {
+      drill.update(0.02);
+      // Alternate good and bad touches across the run.
+      if (i % 40 === 0) events.firePaddleHit((flip++ % 2) ? goodHit() : outHit());
+    }
+    events.fireBallLost();
+    const snap = drill.getSnapshot();
+    const counts = drill.getLog().outcomeCounts();
+    expect(counts.returned + counts.miss + counts.error).toBe(snap.fed - snap.skipped);
+    drill.dispose();
+  });
+});
+
+describe('curriculum tuner wiring (M10 closes the loop)', () => {
+  const randomConfig = () => validateConfig({
+    ...QUICK_FEED.Warmup.config, speed: 8, interval: 1, burstCount: INFINITE,
+  });
+
+  test('a random pattern drill records verdicts into the tuner', () => {
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({
+      config: randomConfig(), ballEvents: events,
+      pattern: 'twoPoint', random: true,
+    });
+    for (let i = 0; i < 10 / 0.02; i++) {
+      drill.update(0.02);
+      events.firePaddleHit();   // bare touch → credited via the fallback
+    }
+    expect(drill.tuner).toBeTruthy();
+    const attempts = [...drill.tuner.stats.values()]
+      .reduce((a, s) => a + s.attempts, 0);
+    expect(attempts).toBeGreaterThan(0);
+    expect(attempts).toBe(drill.getSnapshot().returned);
+    expect(drill.getSnapshot().curriculum).not.toBeNull();
+    drill.dispose();
+  });
+
+  test('no tuner without a random pattern, and adaptive:false opts out', () => {
+    const sequenced = createM1BallMachineDrill({
+      config: randomConfig(), ballEvents: makeEvents(), pattern: 'twoPoint',
+    });
+    expect(sequenced.tuner).toBeNull();
+    sequenced.dispose();
+
+    const optedOut = createM1BallMachineDrill({
+      config: randomConfig(), ballEvents: makeEvents(),
+      pattern: 'twoPoint', random: true, adaptive: false,
+    });
+    expect(optedOut.tuner).toBeNull();
+    expect(optedOut.getSnapshot().curriculum).toBeNull();
+    optedOut.dispose();
+  });
+
+  test('the tuner survives a ladder tier change', () => {
+    // The runner is rebuilt on promotion; the tuner must NOT be — it would
+    // forget the success surface it just learned.
+    const events = makeEvents();
+    const drill = createM1BallMachineDrill({
+      config: randomConfig(), ballEvents: events,
+      pattern: 'twoPoint', random: true, ladderTier: 'bronze',
+    });
+    const tunerBefore = drill.tuner;
+    for (let i = 0; i < 30 / 0.02; i++) {
+      drill.update(0.02);
+      events.firePaddleHit();
+    }
+    expect(drill.getSnapshot().tier).not.toBe('bronze');
+    expect(drill.tuner).toBe(tunerBefore);
     drill.dispose();
   });
 });

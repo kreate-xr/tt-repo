@@ -16,7 +16,7 @@ export class TargetZones {
     this.buildZones(layout);
   }
 
-  buildZones(layout) {
+  buildZones(_layout) {
     if (!tableBox) return;
     const minX = tableBox.min.x, maxX = tableBox.max.x;
     const minZ = tableBox.min.z;                    // far edge (opponent side)

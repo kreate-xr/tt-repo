@@ -36,8 +36,11 @@ const CONTROL_INSET = 210;   // label column width before a control starts
  * @param {number} opts.canvasW  panel width in canvas px
  * @param {number} opts.bodyY    first usable y below the panel header
  * @param {boolean} opts.showSave  whether to register the Save button
- * @returns {{zoneGrid: object, fieldRows: Array, buttonsY: number}} geometry
- *          the draw pass needs; the host should keep it until the next layout.
+ * @param {boolean} opts.presetRow  register the ‹ preset › cycler above the
+ *          zone grid (training menu only; Machine Play has no preset store)
+ * @returns {{zoneGrid: object, fieldRows: Array, buttonsY: number,
+ *          presetY: (number|null)}} geometry the draw pass needs; the host
+ *          should keep it until the next layout.
  */
 export function layoutFeedEditor(panel, {
   model,
@@ -46,6 +49,7 @@ export function layoutFeedEditor(panel, {
   canvasW = 1024,
   bodyY = 88,
   showSave = true,
+  presetRow = false,
 } = {}) {
   // Difficulty segment. Meaningful wherever an AI tier is in play (ladders,
   // match modes); panels with no tier concept pass null and get no row.
@@ -59,8 +63,27 @@ export function layoutFeedEditor(panel, {
     }
   }
 
-  // Zone grid, left column.
-  const zoneGrid = { x: 60, y: bodyY + 46, cell: ZONE_CELL, gap: ZONE_GAP };
+  // Preset cycler, top of the left column: ‹ name ›. Registered before the
+  // grid so the flow reads "pick a starting point, then tweak". The steppers
+  // reuse the cycle:* stepper look; the name between them is drawn text.
+  const gridW = 3 * ZONE_CELL + 2 * ZONE_GAP;
+  let presetY = null;
+  if (presetRow) {
+    presetY = bodyY;
+    panel.add({
+      id: 'preset:-1', kind: WIDGETS.STEPPER, shape: 'rect',
+      x: 60, y: presetY, w: 40, h: 32, delta: -1,
+    });
+    panel.add({
+      id: 'preset:1', kind: WIDGETS.STEPPER, shape: 'rect',
+      x: 60 + gridW - 40, y: presetY, w: 40, h: 32, delta: 1,
+    });
+  }
+
+  // Zone grid, left column — pushed down when the preset row is present.
+  const zoneGrid = {
+    x: 60, y: bodyY + 46 + (presetRow ? 44 : 0), cell: ZONE_CELL, gap: ZONE_GAP,
+  };
   for (let z = 1; z <= 9; z++) {
     const col = (z - 1) % 3;
     const row = Math.floor((z - 1) / 3);
@@ -118,7 +141,7 @@ export function layoutFeedEditor(panel, {
     y += FIELD_ROW_H;
   }
 
-  return { zoneGrid, fieldRows, buttonsY };
+  return { zoneGrid, fieldRows, buttonsY, presetY };
 }
 
 /**
@@ -135,9 +158,36 @@ export function drawFeedEditor(ctx, panel, {
   difficultyIndex = 0,
   startLabel = 'START',
   zoneCaption = 'PLACEMENT  (near net → your end)',
+  presetLabel = null,
 } = {}) {
   const hov = panel.hoveredId;
   const cfg = model.config;
+
+  // Preset cycler (only when the layout registered one).
+  if (layout.presetY != null) {
+    for (const dir of [-1, 1]) {
+      const w = panel.get(`preset:${dir}`);
+      if (!w) continue;
+      ctx.fillStyle = hov === w.id ? COLORS.panelHover : COLORS.panel;
+      roundRect(ctx, w.x, w.y, w.w, w.h, 16);
+      ctx.fill();
+      ctx.fillStyle = COLORS.text;
+      ctx.font = F(700, 18);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(dir < 0 ? '‹' : '›', w.x + w.w / 2, w.y + w.h / 2);
+    }
+    const left = panel.get('preset:-1');
+    const right = panel.get('preset:1');
+    if (left && right) {
+      const cx = (left.x + right.x + right.w) / 2;
+      ctx.fillStyle = COLORS.accent;
+      ctx.font = F(600, 16);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(presetLabel || 'Custom', cx, layout.presetY + 16);
+    }
+  }
 
   // Difficulty segment.
   if (difficulties && difficulties.length) {

@@ -1,16 +1,16 @@
 // M1 Ball Machine — the P15 mode.
 //
 // Pairs the two halves the old feeder used to conflate:
-//   FeedEngine   (feedEngine.js)   — scene-free. Solves a commanded landing
-//                                    point and forward-verifies it through
-//                                    the shared integrator.
-//   ServerFigure (serverFigure.js) — scene-only. Plays the windup → swing →
-//                                    recover animation and calls back at the
-//                                    exact contact frame.
+//   FeedEngine        (feedEngine.js)        — scene-free. Solves a commanded
+//                                              landing point and forward-verifies
+//                                              it through the shared integrator.
+//   BallMachineFigure (ballMachineFigure.js) — scene-only. Plays the wheel
+//                                              spin-up → release animation and
+//                                              calls back at the launch frame.
 //
-// The ball spawns on that contact callback, using the velocity and spin the
-// engine solved, so what the player sees leave the paddle is the shot that was
-// verified — not an approximation of it.
+// The ball spawns on that launch callback, using the velocity and spin the
+// engine solved, so what the player sees leave the machine is the shot that
+// was verified — not an approximation of it.
 //
 // HUD: P15 §M7 mandates a minimal in-drill HUD ("success tick + streak only").
 // The analysis belongs in Review & Stats, not over the table, so liveLine()
@@ -22,12 +22,12 @@ import {
 import { spawnBallAt } from '../../../physics/ball.js';
 import { playMenuHoverTick } from '../../../scene/audio.js';
 import { FeedEngine, originPosition } from '../feedEngine.js';
-import { ServerFigure } from '../serverFigure.js';
-import { BallMachineFigure, LAUNCH_LEAD_SEC } from '../ballMachineFigure.js';
+import { BallMachineFigure, LAUNCH_LEAD_SEC, computeContactPose } from '../ballMachineFigure.js';
 import { validateConfig, INFINITE } from '../drillConfig.js';
 import { QUICK_FEED } from '../presets.js';
 import { PatternRunner } from '../patterns.js';
-import { Ladder } from '../ladder.js';
+import { Ladder, CurriculumTuner, RESAMPLE_EVERY } from '../ladder.js';
+import { rolloutToSurfacePlane, DT_PRESETS } from '../../../physics/rollout.js';
 import { mulberry32 } from '../../../util/rng.js';
 import { EventLog, OUTCOMES } from '../../../profile/eventLog.js';
 
@@ -36,8 +36,6 @@ const MAX_RECENT_CONTACTS = 12;
 export const M1_BALL_MACHINE = {
   id: 'm1BallMachine',
   label: 'Ball Machine',
-  // Drives its own BallMachineFigure, so the legacy Feeder must not be built.
-  usesFeeder: false,
 };
 
 // LAUNCH_LEAD_SEC comes from the machine itself: the ball leaves at the end
@@ -55,12 +53,15 @@ export function buildEnv() {
 }
 
 export function createM1BallMachineDrill({
-  stats, ballEvents, config, seed,
+  ballEvents, config, seed,
   // M2: a pattern turns the same feeder into a sequenced drill. `ladderTier`
   // starts the progression at a tier; the ladder then moves it per 20 balls.
   // paceMul: null lets a pattern's own default pace apply (PatternRunner
   // falls back to pattern.paceMul); an explicit value overrides it.
   pattern = null, random = false, hand = 'R', paceMul = null, ladderTier = null,
+  // M10 curriculum steering. Only engages in random-pattern mode, where there
+  // is a draw to steer; sequenced patterns keep their fixed order regardless.
+  adaptive = true,
   // Per-ball verdict, fired once the drill has decided whether a ball was
   // returned or missed. Machine Play builds its fail states and score on this
   // rather than inferring them from getSnapshot(): a ball in flight is
@@ -82,10 +83,20 @@ export function createM1BallMachineDrill({
   const ladder = ladderTier ? new Ladder({ tier: ladderTier }) : null;
   const cfg = ladder ? validateConfig(ladder.applyTo(baseCfg)) : baseCfg;
 
-  // A ball machine, not a server figure. ServerFigure remains in use by the
-  // four legacy drills that still feed through feeder.js.
   const figure = new BallMachineFigure();
   const engine = new FeedEngine(cfg, env, { rng, animationLeadSec: LAUNCH_LEAD_SEC });
+
+  // M10's curriculum tuner — the loop between the verdicts the event log
+  // records and the feeds the player faces next. Each pattern step is a
+  // bucket; per-ball verdicts build a success surface over them, and every
+  // RESAMPLE_EVERY balls the resample steers the random draw toward the
+  // steps in the 60–75% band (edge of ability). Declared before buildRunner
+  // so the weights closure below can see it, and OWNED here rather than by
+  // the runner so a ladder tier change (which rebuilds the runner) does not
+  // wipe what the tuner has learned.
+  let tuner = null;
+  const stepWeights = () =>
+    (tuner ? tuner.buckets.map((b) => tuner.weights.get(b)) : null);
 
   // A pattern supplies the engine's per-feed config; without one the engine
   // just repeats its own config, which is exactly M1's behaviour.
@@ -93,11 +104,18 @@ export function createM1BallMachineDrill({
   const buildRunner = () => {
     if (!pattern) return null;
     const base = ladder ? validateConfig(ladder.applyTo(baseCfg)) : baseCfg;
-    const r = new PatternRunner(pattern, base, { hand, paceMul, random, rng });
+    const r = new PatternRunner(pattern, base, {
+      hand, paceMul, random, rng, stepWeights,
+    });
     r.attach(engine);
     return r;
   };
   runner = buildRunner();
+  if (adaptive && runner && random) {
+    tuner = new CurriculumTuner({
+      buckets: runner.pattern.steps.map((_, i) => String(i)),
+    });
+  }
 
   // Glide the machine toward the NEXT ball's origin (Rapid Fire's sweep).
   // Safe to call speculatively: PatternRunner.configFor is memoized per index,
@@ -116,6 +134,15 @@ export function createM1BallMachineDrill({
   const log = new EventLog({ drillId: M1_BALL_MACHINE.id });
 
   let currentBallReturned = false;
+  // Whether the current ball was TOUCHED without producing a good return.
+  // MISS is "never touched it", ERROR is "touched it and put it wrong" — the
+  // distinction eventLog's OUTCOMES already draws, and M7's weakness report
+  // prescribes different drills for each.
+  let currentBallTouched = false;
+  // Pattern step the current ball was drawn from, captured at feed time (the
+  // runner may be rebuilt on a ladder tier change, which clears its memo).
+  let lastStepIndex = null;
+  let ballsSinceResample = 0;
   let fed = 0;
   let returned = 0;
   let streak = 0;
@@ -127,6 +154,11 @@ export function createM1BallMachineDrill({
   // Whether the most recent feed actually put a ball in play. Guards the
   // miss accounting against skipped feeds.
   let lastLaunched = false;
+  // Whether a launched ball is CURRENTLY live. Verdicts are only handed out
+  // while this is true: a paddle wave before the first feed, or after the
+  // ball has already died, must not credit a return of a ball that does not
+  // exist — that was quietly possible before and inflated the return rate.
+  let ballInPlay = false;
   // Ring of recent contacts for Why-Did-I-Miss. Bounded because it holds live
   // vectors, and the screen only ever shows the most recent handful.
   const recentContacts = [];
@@ -142,12 +174,10 @@ export function createM1BallMachineDrill({
   // Feed one ball's verdict to the ladder. A tier change rebuilds the runner
   // so the new difficulty takes effect on the very next ball rather than at
   // some later boundary the player cannot perceive.
-  let lastTierChange = null;
   const scoreForLadder = (success) => {
     if (!ladder) return;
     const move = ladder.record(success);
     if (move.changed) {
-      lastTierChange = move;
       const next = validateConfig(ladder.applyTo(baseCfg));
       engine.setConfig(next);
       if (pattern) runner = buildRunner();
@@ -157,18 +187,30 @@ export function createM1BallMachineDrill({
     }
   };
 
+  // Feed one ball's verdict to the tuner, attributed to the pattern step it
+  // was drawn from, and resample on M10's cadence.
+  const scoreForTuner = (success) => {
+    if (!tuner || lastStepIndex == null) return;
+    tuner.record(String(lastStepIndex), success);
+    if (++ballsSinceResample >= RESAMPLE_EVERY) {
+      ballsSinceResample = 0;
+      tuner.update();
+    }
+  };
+
   // The zone/spin a verdict is attributed to is the one that was FED, so it
   // has to be read off the feed the player was actually facing.
   const recordMiss = () => {
     streak = 0;
     scoreForLadder(false);
-    log.recordOutcome(OUTCOMES.MISS, {
+    scoreForTuner(false);
+    const verdict = currentBallTouched ? OUTCOMES.ERROR : OUTCOMES.MISS;
+    log.recordOutcome(verdict, {
       zone: lastFeed && lastFeed.config.placement ? lastFeed.config.placement.zone ?? null : null,
       spin: lastFeed ? lastFeed.config.spinType : null,
     });
-    if (stats && stats.recordMiss) stats.recordMiss();
     emitOutcome({
-      result: 'miss',
+      result: currentBallTouched ? 'error' : 'miss',
       zone: lastFeed && lastFeed.config.placement ? lastFeed.config.placement.zone ?? null : null,
       spin: lastFeed ? lastFeed.config.spinType : null,
       streak: 0,
@@ -176,15 +218,20 @@ export function createM1BallMachineDrill({
   };
 
   engine.onFeed((feed) => {
-    // Count the PREVIOUS ball as a miss only if one was actually LAUNCHED.
-    // A skipped (infeasible) feed puts no ball in play, so charging the
-    // player a miss for it would invent failures they never had — and since
-    // an unplayable config skips every feed, it would drive the return rate
-    // to zero on balls that never existed.
-    if (lastLaunched && !currentBallReturned) recordMiss();
+    // Count the PREVIOUS ball as a miss only if one was actually LAUNCHED
+    // and is still UNRESOLVED. A skipped (infeasible) feed puts no ball in
+    // play, so charging the player a miss for it would invent failures they
+    // never had; and a ball that already resolved via ballLost must not be
+    // charged a second time here.
+    if (lastLaunched && ballInPlay && !currentBallReturned) recordMiss();
+    ballInPlay = false;   // previous ball is resolved; a launch below re-arms
 
     fed++;
     lastFeed = feed;
+    // feed.index is the post-increment count, so the ball's ordinal is one
+    // less. stepIndexFor is memoized from the configProvider call that built
+    // this very feed, so this read drains no rng.
+    lastStepIndex = runner ? runner.stepIndexFor(feed.index - 1) : null;
     if (!feed.feasible) infeasibleCount++;
     if (feed.reachClamped) clampedCount++;
     log.recordFeed(feed, fed);
@@ -208,16 +255,9 @@ export function createM1BallMachineDrill({
     }
 
     currentBallReturned = false;
+    currentBallTouched = false;
     lastLaunched = true;
-
-    if (stats && stats.recordFeed) {
-      stats.recordFeed({
-        spin: feed.config.spinType,
-        placementX: feed.commandedLanding.x,
-        landing: feed.commandedLanding.clone(),
-        shotIndex: fed,
-      });
-    }
+    ballInPlay = true;
 
     // Pre-feed tick as a timing aid (M1's audio-cue attribute). Fired at the
     // engine's feed moment rather than at launch, so it lands one spin-up
@@ -227,15 +267,50 @@ export function createM1BallMachineDrill({
       try { playMenuHoverTick(); } catch (e) { /* audio unavailable — not fatal */ }
     }
 
-    // The pose comes from ServerFigure's helper: it resolves a spawn point and
-    // launch velocity into a position + facing, which is what the machine
-    // needs to aim its barrel. The full launch velocity is passed too, so the
-    // barrel's ELEVATION matches the real shot — a lob visibly points upward.
-    const contactPose = ServerFigure.computeContactPose(feed.spawn, feed.velocity);
+    // computeContactPose resolves a spawn point and launch velocity into a
+    // position + facing, which is what the machine needs to aim its barrel.
+    // The full launch velocity is passed too, so the barrel's ELEVATION
+    // matches the real shot — a lob visibly points upward.
+    const contactPose = computeContactPose(feed.spawn, feed.velocity);
     figure.beginSwing(contactPose, () => {
       spawnBallAt(contactPose.position, feed.velocity, feed.spin);
     }, feed.velocity);
   });
+
+  // Judge a return's QUALITY at contact time by rolling the outgoing ball
+  // forward through the shared integrator — the same trust argument the feed
+  // itself rests on: prediction and live flight cannot drift. A good return
+  // clears the net and lands on the MACHINE's half; a touch that puts the
+  // ball into the net, off the end, or back onto the player's own half is
+  // not credited, and the existing loss accounting then charges it (as an
+  // ERROR, since it was touched) when the ball dies or the next feed fires.
+  //
+  // A hit with no outgoing state falls back to crediting the touch — that is
+  // the pre-quality behaviour, and it is what keeps callers that synthesise
+  // bare hit events (tests, older shims) working unchanged. The landing rides
+  // along for consumers that judge WHERE a good return went (the tutorial's
+  // target-zone step); it is null exactly when the quality call fell back.
+  const centerZ = (env.tableBox.min.z + env.tableBox.max.z) / 2;
+  const judgeReturn = (hit) => {
+    if (!hit || !hit.contactPos || !hit.outVel || !hit.outSpin) {
+      return { good: true, landing: null };
+    }
+    try {
+      const r = rolloutToSurfacePlane(hit.contactPos, hit.outVel, hit.outSpin, env, {
+        // INTERCEPT fidelity: this runs inside the live paddle-hit emit, and
+        // the judgement is half-table coarse — it needs "which side, over the
+        // net, on the table", not the solver's 2 cm.
+        dt: DT_PRESETS.INTERCEPT,
+      });
+      return {
+        good: !!(r && r.clearedNet && r.onTable && r.z < centerZ),
+        landing: r ? { x: r.x, z: r.z } : null,
+      };
+    } catch (e) {
+      // Fires inside the physics tick's emit — never take the frame down.
+      return { good: true, landing: null };
+    }
+  };
 
   const onPaddleHit = (hit) => {
     // Record the contact regardless of whether it counts as a "return" — the
@@ -271,29 +346,42 @@ export function createM1BallMachineDrill({
       if (recentContacts.length > MAX_RECENT_CONTACTS) recentContacts.shift();
     }
 
-    if (!currentBallReturned) {
+    if (ballInPlay && !currentBallReturned) {
+      // A bad touch does not consume the ball: if it pops up and a second
+      // stroke sends it over properly, the later contact still earns the
+      // credit — the ball was returned, however untidily.
+      const judged = judgeReturn(hit);
+      if (!judged.good) {
+        currentBallTouched = true;
+        return;
+      }
       currentBallReturned = true;
       returned++;
       streak++;
       if (streak > bestStreak) bestStreak = streak;
       scoreForLadder(true);
+      scoreForTuner(true);
       log.recordOutcome(OUTCOMES.RETURNED, {
         zone: lastFeed && lastFeed.config.placement ? lastFeed.config.placement.zone ?? null : null,
         spin: lastFeed ? lastFeed.config.spinType : null,
         rallyLength: streak,
       });
-      if (stats && stats.recordReturn) stats.recordReturn();
       emitOutcome({
         result: 'returned',
         zone: lastFeed && lastFeed.config.placement ? lastFeed.config.placement.zone ?? null : null,
         spin: lastFeed ? lastFeed.config.spinType : null,
+        // Predicted landing of the RETURN (same integrator the credit above
+        // trusts). Null when the quality judgement fell back.
+        landing: judged.landing,
         streak,
       });
     }
   };
 
   const onBallLost = () => {
+    if (!ballInPlay) return;
     if (!currentBallReturned) recordMiss();
+    ballInPlay = false;
   };
 
   if (ballEvents) {
@@ -302,13 +390,12 @@ export function createM1BallMachineDrill({
   }
 
   return {
-    // This drill drives its own ServerFigure, so the legacy Feeder instance
-    // inGame.js constructs must stay hidden — otherwise two server paddles
-    // render on the far side.
-    usesFeeder: false,
-
     // Exposed so tests can observe the machine's glide between feeds.
     figure,
+
+    // Exposed so tests can observe verdicts landing in the curriculum tuner.
+    // Null unless the drill is running a random pattern with adaptive on.
+    tuner,
 
     update(dt) {
       // The log's clock is driven by the same dt the physics uses, so a
@@ -354,6 +441,7 @@ export function createM1BallMachineDrill({
         skipped, clampedCount,
         tier: ladder ? ladder.tier : null,
         tierRate: ladder ? ladder.rate : null,
+        curriculum: tuner ? tuner.snapshot() : null,
         pattern: pattern || null,
         lastFeed,
         returnRate: fed > 0 ? returned / fed : 0,

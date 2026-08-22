@@ -52,7 +52,7 @@ import { playFoulWhistle } from '../../scene/audio.js';
 import { createServeArrow } from '../../scene/serveArrow.js';
 import { createPointBurst } from '../../scene/pointBurst.js';
 
-export const MULTIPLAYER = { id: 'multiplayer', label: 'Multiplayer', usesFeeder: false };
+export const MULTIPLAYER = { id: 'multiplayer', label: 'Multiplayer' };
 
 // Inter-rally window before the next serve arms: long enough to read the
 // serve indicator + scoreboard update (mirrors rallyManager's pacing).
@@ -942,6 +942,5 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     liveLine,
     dispose,
     isLocalOwner,
-    usesFeeder: false,
   };
 }

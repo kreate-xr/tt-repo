@@ -1,25 +1,43 @@
 // BallMachineFigure — the physical ball machine for M1.
 //
-// M1 is a BALL MACHINE, and it was shipping with ServerFigure: the legacy
-// feeder's human-server animation, a paddle that winds up and swings. That
-// reads as an opponent serving, not as a machine feeding, and it misrepresents
-// what the mode is. ServerFigure stays where it belongs — the four legacy
-// drills that still serve via feeder.js — and M1 gets this instead.
+// M1 is a BALL MACHINE, and it originally shipped with the legacy feeder's
+// ServerFigure: a human-server animation, a paddle that winds up and swings.
+// That read as an opponent serving, not as a machine feeding, and it
+// misrepresented what the mode is. This class replaced it, and when the
+// legacy feed path was deleted the ServerFigure went entirely — its
+// contact-pose helper now lives here as computeContactPose.
 //
-// Deliberately API-COMPATIBLE with ServerFigure (beginSwing / update / isIdle
-// / showHeldBall / emitter / dispose) so the drill swaps one class name and
-// nothing else. The two differ in what the animation IS:
-//
-//   ServerFigure       windup → swing → contact → recover   (~0.64 s)
-//   BallMachineFigure  wheels spin up → release             (~0.25 s)
-//
-// A machine has no backswing, so its lead time is shorter; LAUNCH_LEAD_SEC
-// below is what FeedEngine subtracts from the interval, and it must track the
+// The API names (beginSwing / showHeldBall / emitter) are inherited from
+// that swap — kept because renaming them buys nothing and every call site
+// would churn. The animation itself is a machine's, not a server's:
+// wheels spin up → release (~0.25 s), no backswing. LAUNCH_LEAD_SEC below
+// is what FeedEngine subtracts from the interval, and it must track the
 // animation actually played or the feed rhythm drifts.
 
 import * as THREE from 'three';
 import { scene } from '../../scene/sceneSetup.js';
 import { ballRadius } from '../../scene/models.js';
+
+/**
+ * Pose at the moment of launch: face center at the spawn position, facing
+ * along the HORIZONTAL launch direction with a small upward tilt. The
+ * launch velocity's Y component is deliberately ignored — it is large
+ * (the ball arcs), and aiming the whole head along it reads as a toss
+ * rather than a shot.
+ *
+ * Moved here from the deleted ServerFigure when the legacy feed path went:
+ * this is pure math over the feed, and the machine is its only consumer —
+ * the drill uses it to aim the barrel, beginSwing to point the head.
+ */
+export function computeContactPose(spawnPos, launchVelocity) {
+  const horiz = new THREE.Vector3(launchVelocity.x, 0, launchVelocity.z);
+  if (horiz.lengthSq() < 1e-6) horiz.set(0, 0, 1);
+  horiz.normalize();
+  const normal = horiz.clone();
+  normal.y = 0.18;  // slight upward tilt — matches the arc's launch feel
+  normal.normalize();
+  return { position: spawnPos.clone(), normal };
+}
 
 // Wheels visibly accelerate before the ball leaves, which is the machine's
 // equivalent of a backswing: it tells the player a feed is imminent.
@@ -288,7 +306,8 @@ export class BallMachineFigure {
    * Arm a feed. `contactPose.position` is where the ball will spawn, so the
    * machine aims its muzzle there; `onContact` fires at release.
    *
-   * Named beginSwing for drop-in compatibility with ServerFigure.
+   * Named beginSwing for drop-in compatibility with the ServerFigure it
+   * replaced (see the header note on inherited names).
    */
   beginSwing(contactPose, onContact, aimVelocity = null) {
     if (!this.group || this.state !== 'IDLE') return false;
@@ -301,7 +320,7 @@ export class BallMachineFigure {
     return true;
   }
 
-  // ServerFigure parity: the machine has no held-ball decoration, so this is
+  // Inherited-API parity: the machine has no held-ball decoration, so this is
   // a no-op rather than an error. Keeps the drill's call sites identical.
   showHeldBall() { /* machines don't hold a ball on a paddle face */ }
 

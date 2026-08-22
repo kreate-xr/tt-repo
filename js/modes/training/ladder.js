@@ -114,7 +114,10 @@ export class Ladder {
       speed: baseConfig.speed * s.speedMul,
       spinMagnitude: baseConfig.spinMagnitude * s.spinMul,
       interval: baseConfig.interval / s.paceMul,
-      scatterSigma: s.scatter,
+      // The tier's scatter is a FLOOR, not an override: tighter scatter is
+      // easier, so the ramp holds either way, and a session configured with
+      // more spread than the tier keeps what the player asked for.
+      scatterSigma: Math.max(baseConfig.scatterSigma || 0, s.scatter),
     };
   }
 }

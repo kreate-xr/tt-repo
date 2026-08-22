@@ -1,7 +1,7 @@
 // M0 training menu model — navigation and Custom Feed editing.
 
 const {
-  TrainingMenuModel, SCREENS, ROOT_ITEMS, SETTING_ROWS, CUSTOM_FIELDS, BURST_STOPS,
+  TrainingMenuModel, SCREENS, SETTING_ROWS, CUSTOM_FIELDS, BURST_STOPS,
   describeConfig, formatField,
 } = require('../js/modes/training/menuModel.js');
 const { INFINITE, SPIN_MAX_RAD_S, validateConfig } = require('../js/modes/training/drillConfig.js');
@@ -28,22 +28,24 @@ describe('navigation', () => {
     expect(m.canGoBack).toBe(false);
   });
 
-  test('lists all nine M0 branches', () => {
-    expect(new TrainingMenuModel().items()).toHaveLength(9);
+  test('lists the five live M0 branches', () => {
+    expect(new TrainingMenuModel().items()).toHaveLength(5);
   });
 
-  test('unbuilt modes are listed but disabled, not hidden', () => {
-    // Hiding them makes "not built" indistinguishable from "I can't find it".
-    const items = new TrainingMenuModel().items();
-    const unavailable = items.filter((i) => !i.available);
-    expect(unavailable.length).toBeGreaterThan(0);
-    for (const i of unavailable) expect(i.note).toBeTruthy();
+  test('every root row is live — no placeholder entries', () => {
+    // The build-out convention of listing unbuilt modes as disabled rows is
+    // over: a shipped menu shows only what runs, and the roadmap lives in
+    // ai-docs/tt-training-migration-plan.md §7.
+    for (const i of new TrainingMenuModel().items()) {
+      expect(i.available).toBe(true);
+    }
   });
 
-  test('drills into Ball Machine and back out', () => {
+  test('Ball Machine opens the editor directly and backs out', () => {
+    // No hub of sub-screens: the root row lands straight on the one editor.
     const m = new TrainingMenuModel();
     m.selectItem('ballMachine');
-    expect(m.screen).toBe(SCREENS.BALL_MACHINE);
+    expect(m.screen).toBe(SCREENS.CUSTOM_FEED);
     expect(m.canGoBack).toBe(true);
     m.back();
     expect(m.screen).toBe(SCREENS.ROOT);
@@ -55,7 +57,9 @@ describe('navigation', () => {
     expect(m.screen).toBe(SCREENS.ROOT);
   });
 
-  test('selecting a disabled item does nothing', () => {
+  test('selecting a removed or unknown id does nothing', () => {
+    // serveSchool was a root row once; a stale id (old deep link, old muscle
+    // memory in a test) must be a no-op, not a crash or a navigation.
     const m = new TrainingMenuModel();
     expect(m.selectItem('serveSchool')).toBeNull();
     expect(m.screen).toBe(SCREENS.ROOT);
@@ -63,9 +67,9 @@ describe('navigation', () => {
 
   test('breadcrumb tracks the stack', () => {
     const m = new TrainingMenuModel();
-    m.selectItem('ballMachine');
-    m.selectItem('customFeed');
-    expect(m.breadcrumb).toBe('TRAINING › BALL MACHINE › CUSTOM FEED');
+    m.selectItem('practice');
+    m.selectItem('movement');
+    expect(m.breadcrumb).toBe('TRAINING › PRACTICE › MOVEMENT');
   });
 
   test('Free Play returns an action rather than navigating', () => {
@@ -76,43 +80,98 @@ describe('navigation', () => {
 
   test('reset returns to the root from any depth', () => {
     const m = new TrainingMenuModel();
-    m.selectItem('ballMachine');
-    m.selectItem('customFeed');
+    m.selectItem('practice');
+    m.selectItem('movement');
     m.reset();
     expect(m.screen).toBe(SCREENS.ROOT);
     expect(m.canGoBack).toBe(false);
   });
 });
 
-describe('legacy drills stay reachable', () => {
-  // Removing the wrist menu's ◀ NAME ▶ picker orphans these four unless the
-  // training menu lists them. This is the regression guard for that.
-  test('all four legacy drills are reachable via Drills → Classic', () => {
-    // M2 turned "2. Drills" into a hub, so the four originals moved one level
-    // down. They must still be reachable — losing them is the regression this
-    // guards, wherever they live.
+describe('practice intents', () => {
+  // The Practice screen fronts intents, not machinery: the six rows are the
+  // guard that every training capability stays reachable after the legacy
+  // drills were absorbed into M1 wrappers.
+  test('lists all seven intents, every one live', () => {
     const m = new TrainingMenuModel();
-    m.selectItem('drills');
-    expect(m.screen).toBe(SCREENS.DRILLS);
-    m.selectItem('classic');
-    expect(m.screen).toBe(SCREENS.CLASSIC);
+    m.selectItem('practice');
+    expect(m.screen).toBe(SCREENS.PRACTICE);
     const ids = m.items().map((i) => i.id);
-    for (const id of ['targetPractice', 'spinReader', 'reactionRally', 'trajectoryPractice']) {
+    for (const id of ['spinPractice', 'placementPractice', 'reaction',
+      'movement', 'ladders', 'trajectoryPractice', 'weaknesses']) {
       expect(ids).toContain(id);
     }
+    for (const i of m.items()) expect(i.available).toBe(true);
   });
 
-  test('selecting one starts it by drill id with no config', () => {
-    // They run on the legacy feeder and take a difficulty, not a DrillConfig.
+  test('Spin and Placement start their drills by id with no config', () => {
+    // The wrappers own their configs; the menu hands over only the id.
     const m = new TrainingMenuModel();
-    m.navigate(SCREENS.CLASSIC);
-    const res = m.selectItem('spinReader');
-    expect(res).toEqual({ action: 'start', drill: 'spinReader', config: null });
+    m.navigate(SCREENS.PRACTICE);
+    expect(m.selectItem('spinPractice'))
+      .toEqual({ action: 'start', drill: 'spinPractice', config: null });
+    expect(m.selectItem('placementPractice'))
+      .toEqual({ action: 'start', drill: 'placementPractice', config: null });
   });
 
-  test('the Drills branch is enabled, not a dead entry', () => {
-    const drills = new TrainingMenuModel().items().find((i) => i.id === 'drills');
-    expect(drills.available).toBe(true);
+  test('Reaction starts Rapid Fire with the ladder running difficulty', () => {
+    // Absorbs the old Rapid Fire row AND the legacy Reaction Rally: the
+    // non-stop sweep with the bronze ladder underneath, no tier to pick.
+    const m = new TrainingMenuModel();
+    m.navigate(SCREENS.PRACTICE);
+    const res = m.selectItem('reaction');
+    expect(res.action).toBe('start');
+    expect(res.options.pattern).toBe('rapidFire');
+    expect(res.options.ladderTier).toBe('bronze');
+    expect(res.options.random).toBe(false);
+  });
+
+  test('Movement and Fix My Weaknesses navigate rather than start', () => {
+    const m = new TrainingMenuModel();
+    m.navigate(SCREENS.PRACTICE);
+    expect(m.selectItem('movement')).toBeNull();
+    expect(m.screen).toBe(SCREENS.PATTERNS);
+    m.back();
+    expect(m.selectItem('weaknesses')).toBeNull();
+    expect(m.screen).toBe(SCREENS.REVIEW);
+  });
+
+  test('Study a Shot starts the trajectory drill from the Practice list', () => {
+    const m = new TrainingMenuModel();
+    m.navigate(SCREENS.PRACTICE);
+    const res = m.selectItem('trajectoryPractice');
+    expect(res).toEqual({ action: 'start', drill: 'trajectoryPractice', config: null });
+  });
+});
+
+describe('tutorial', () => {
+  test('leads the root menu', () => {
+    // It is the on-ramp for a first session; a returning player scans past
+    // one row in no time.
+    expect(new TrainingMenuModel().items()[0].id).toBe('tutorial');
+  });
+
+  test('starts directly by drill id with no config', () => {
+    // The tutorial drill supplies its own per-step configs, so like the
+    // legacy drills it starts straight from the row — no sub-screen.
+    const m = new TrainingMenuModel();
+    const res = m.selectItem('tutorial');
+    expect(res).toEqual({ action: 'start', drill: 'tutorial', config: null });
+    expect(m.screen).toBe(SCREENS.ROOT);
+  });
+
+  test('a finished tutorial says so but stays startable', () => {
+    const m = new TrainingMenuModel({ settings: fakeSettings({ tutorialComplete: true }) });
+    const row = m.items().find((i) => i.id === 'tutorial');
+    expect(row.subtitle).toMatch(/Completed/);
+    expect(row.available).toBe(true);
+    expect(m.selectItem('tutorial')).toEqual({ action: 'start', drill: 'tutorial', config: null });
+  });
+
+  test('an unfinished tutorial keeps its pitch line', () => {
+    const m = new TrainingMenuModel({ settings: fakeSettings() });
+    const row = m.items().find((i) => i.id === 'tutorial');
+    expect(row.subtitle).toMatch(/Three minutes/);
   });
 });
 
@@ -298,47 +357,65 @@ describe('M7 review screen', () => {
   });
 });
 
-describe('quick feed', () => {
-  test('lists all six presets with a summary line', () => {
+describe('preset cycler', () => {
+  // The one editor screen replaces the Quick Feed and Saved Presets lists:
+  // Custom → the six curated feeds → whatever the player saved.
+  test('cycles through the six quick feeds, loading each config', () => {
     const m = new TrainingMenuModel();
-    m.selectItem('ballMachine');
-    m.selectItem('quickFeed');
-    const items = m.items();
-    expect(items).toHaveLength(6);
-    for (const i of items) expect(i.subtitle).toMatch(/m\/s/);
+    expect(m.presetLabel).toBe('Custom');
+    m.cyclePreset(1);
+    expect(m.presetLabel).toBe('Warmup');
+    expect(m.config.spinType).toBe('none');
+    m.cyclePreset(1); m.cyclePreset(1); m.cyclePreset(1);
+    expect(m.presetLabel).toBe('Backspin push');
+    expect(m.config.spinType).toBe('back');
   });
 
-  test('selecting a preset returns a start action with its config', () => {
+  test('startCurrent hands over the loaded preset and its config', () => {
     const m = new TrainingMenuModel();
-    m.navigate(SCREENS.QUICK_FEED);
-    const res = m.selectItem('BackspinPush');
+    m.cyclePreset(1);                       // Warmup
+    const res = m.startCurrent();
     expect(res.action).toBe('start');
-    expect(res.config.spinType).toBe('back');
-    expect(res.preset).toBe('BackspinPush');
+    expect(res.preset).toBe('Warmup');
+    expect(res.config.speed).toBe(6);
+  });
+
+  test('saved presets join the cycle after the quick feeds', () => {
+    const store = fakePresets([{ name: 'Mine', config: validateConfig({ speed: 12 }) }]);
+    const m = new TrainingMenuModel({ presets: store });
+    m.cyclePreset(-1);                      // ‹ from Custom wraps to the end
+    expect(m.presetLabel).toBe('Mine');
+    expect(m.config.speed).toBe(12);
+    expect(m.startCurrent().preset).toBe('Mine');
+  });
+
+  test('with no store the cycle is Custom plus the six quick feeds', () => {
+    expect(new TrainingMenuModel().presetOptions()).toHaveLength(7);
+  });
+
+  test('cycling back to Custom keeps the working config', () => {
+    // Custom IS the player's edits — landing on it must not revert them.
+    const m = new TrainingMenuModel();
+    m.cyclePreset(1);                       // Warmup, speed 6
+    m.cyclePreset(-1);                      // back to Custom
+    expect(m.presetLabel).toBe('Custom');
+    expect(m.selectedPreset).toBeNull();
+    expect(m.config.speed).toBe(6);
+  });
+
+  test('editing a field snaps the cycler back to Custom', () => {
+    // Once edited it is no longer that preset, and claiming otherwise would
+    // mislabel what START is about to run.
+    const m = new TrainingMenuModel();
+    m.cyclePreset(1);
+    expect(m.presetLabel).toBe('Warmup');
+    m.setField('speed', 20);
+    expect(m.presetLabel).toBe('Custom');
   });
 });
 
-describe('saved presets', () => {
-  test('an empty list says so instead of showing nothing', () => {
-    const m = new TrainingMenuModel({ presets: fakePresets() });
-    m.navigate(SCREENS.SAVED_PRESETS);
-    const items = m.items();
-    expect(items).toHaveLength(1);
-    expect(items[0].available).toBe(false);
-    expect(items[0].label).toMatch(/No saved presets/);
-  });
-
-  test('saved presets are listed and startable', () => {
-    const store = fakePresets([{ name: 'Mine', config: validateConfig({ speed: 12 }) }]);
-    const m = new TrainingMenuModel({ presets: store });
-    m.navigate(SCREENS.SAVED_PRESETS);
-    expect(m.items()[0].label).toBe('Mine');
-    const res = m.selectItem('Mine');
-    expect(res.action).toBe('start');
-    expect(res.config.speed).toBe(12);
-  });
-
-  test('saving from Custom Feed persists the edited config', () => {
+describe('saving presets', () => {
+  test('saving from the editor persists the edited config', () => {
     const store = fakePresets();
     const m = new TrainingMenuModel({ presets: store });
     m.setField('speed', 15);
@@ -446,24 +523,12 @@ describe('custom feed editing', () => {
     expect(m.spinAmountEnabled).toBe(true);
   });
 
-  test('editing clears the preset attribution', () => {
-    // Once edited it is no longer that preset, and claiming otherwise would
-    // mislabel it on the saved list.
-    const m = new TrainingMenuModel();
-    m.navigate(SCREENS.QUICK_FEED);
-    m.selectItem('Warmup');
-    expect(m.selectedPreset).toBe('Warmup');
-    m.setField('speed', 20);
-    expect(m.selectedPreset).toBeNull();
-  });
-
   test('edits survive navigating away and back', () => {
     const m = new TrainingMenuModel();
     m.selectItem('ballMachine');
-    m.selectItem('customFeed');
     m.setField('speed', 17);
     m.back();
-    m.selectItem('customFeed');
+    m.selectItem('ballMachine');
     expect(m.config.speed).toBe(17);
   });
 
@@ -511,42 +576,48 @@ describe('formatting', () => {
   });
 });
 
-describe('rapid fire menu placement', () => {
-  test('sits directly in the Drills menu, not inside Pattern Drills', () => {
+describe('movement screen feed order', () => {
+  test('leads with the order toggle, then the eight classics', () => {
     const m = new TrainingMenuModel();
-    m.selectItem('drills');
-    expect(m.items().map((i) => i.id)).toContain('rapidFire');
-    m.selectItem('patternDrills');
-    expect(m.items().map((i) => i.id)).not.toContain('rapidFire');
+    m.selectItem('practice');
+    m.selectItem('movement');
+    const items = m.items();
+    expect(items[0].id).toBe('__order__');
+    expect(items).toHaveLength(9);
+    expect(items[0].subtitle).toMatch(/In order/);
   });
 
-  test('selecting it starts the drill immediately with the current config', () => {
+  test('toggling flips subsequent pattern starts to shuffled and back', () => {
     const m = new TrainingMenuModel();
-    m.selectItem('drills');
-    const res = m.selectItem('rapidFire');
-    expect(res.action).toBe('start');
-    expect(res.options.pattern).toBe('rapidFire');
+    m.navigate(SCREENS.PATTERNS);
+    expect(m.selectItem('__order__')).toBeNull();   // stays on screen
+    expect(m.items()[0].subtitle).toMatch(/Shuffled/);
+    expect(m.selectItem('falkenberg').options.random).toBe(true);
+    m.selectItem('__order__');
+    expect(m.selectItem('falkenberg').options.random).toBe(false);
+  });
+
+  test('re-entering Movement resets to in-order', () => {
+    // The toggle is per visit: a shuffled session last week must not
+    // silently shuffle today's deliberate shape practice.
+    const m = new TrainingMenuModel();
+    m.selectItem('practice');
+    m.selectItem('movement');
+    m.selectItem('__order__');
+    m.back();
+    m.selectItem('movement');
+    expect(m.selectItem('falkenberg').options.random).toBe(false);
+  });
+
+  test('a stale toggle cannot shuffle Reaction', () => {
+    // Reaction pins random: false regardless of the Movement screen's state.
+    const m = new TrainingMenuModel();
+    m.selectItem('practice');
+    m.selectItem('movement');
+    m.selectItem('__order__');                      // shuffled
+    m.back();
+    const res = m.selectItem('reaction');
     expect(res.options.random).toBe(false);
-    expect(res.config).toBeTruthy();
-  });
-
-  test('a stale Random Mode visit cannot shuffle it', () => {
-    // randomMode is remembered from the last Patterns-screen entry; the
-    // Rapid Fire row pins random: false so that state cannot leak into it.
-    const m = new TrainingMenuModel();
-    m.selectItem('drills');
-    m.selectItem('randomMode');   // patterns screen, randomMode = true
-    m.back();                     // back on the Drills screen
-    const res = m.selectItem('rapidFire');
-    expect(res.options.random).toBe(false);
-  });
-
-  test('pattern rows still inherit how the Patterns screen was entered', () => {
-    const m = new TrainingMenuModel();
-    m.selectItem('drills');
-    m.selectItem('randomMode');
-    const res = m.selectItem('falkenberg');
-    expect(res.options.random).toBe(true);
   });
 });
 
@@ -568,17 +639,15 @@ const fakeSettings = (initial = {}) => {
 };
 
 describe('settings screen', () => {
-  test('lists every M10 setting, with the unwired ones disabled and noted', () => {
+  test('lists only wired settings, all of them live', () => {
+    // A setting that changes nothing is worse than no setting (store.js);
+    // the unwired M10 settings keep their specs but get no row.
     const m = new TrainingMenuModel({ settings: fakeSettings() });
     m.navigate(SCREENS.SETTINGS);
     const items = m.items();
     expect(items).toHaveLength(SETTING_ROWS.length);
-
-    // A setting that changes nothing is worse than no setting (store.js), so
-    // anything not yet wired must be visibly unavailable and say why.
-    for (const i of items.filter((x) => !x.available)) expect(i.note).toBeTruthy();
-    const hand = items.find((i) => i.id === 'setting:dominantHand');
-    expect(hand.available).toBe(true);
+    for (const i of items) expect(i.available).toBe(true);
+    expect(items.find((i) => i.id === 'setting:dominantHand')).toBeTruthy();
   });
 
   test('the dominant-hand row shows its current value', () => {
@@ -602,11 +671,13 @@ describe('settings screen', () => {
     expect(store._values.dominantHand).toBe('R');
   });
 
-  test('a disabled setting row cannot be cycled', () => {
+  test('an unwired setting has no row and cannot be cycled', () => {
     const store = fakeSettings({ audioCues: true });
     const m = new TrainingMenuModel({ settings: store });
     m.navigate(SCREENS.SETTINGS);
+    expect(m.items().find((i) => i.id === 'setting:audioCues')).toBeUndefined();
     expect(m.selectItem('setting:audioCues')).toBeNull();
+    expect(m.cycleSetting('audioCues')).toBeNull();
     expect(store._values.audioCues).toBe(true);
   });
 
@@ -634,14 +705,14 @@ describe('handedness reaches the drills', () => {
     // patterns.js mirrors backhand/forehand columns off this flag, so a
     // left-hander getting 'R' here drills the wrong wing all session.
     const m = new TrainingMenuModel({ settings: fakeSettings({ dominantHand: 'L' }) });
-    m.selectItem('drills');
-    const res = m.selectItem('rapidFire');
+    m.selectItem('practice');
+    const res = m.selectItem('reaction');
     expect(res.options.hand).toBe('L');
   });
 
   test('ladders carry handedness too', () => {
     const m = new TrainingMenuModel({ settings: fakeSettings({ dominantHand: 'L' }) });
-    m.selectItem('drills');
+    m.selectItem('practice');
     m.selectItem('ladders');
     const res = m.selectItem('bronze');
     expect(res.options.hand).toBe('L');

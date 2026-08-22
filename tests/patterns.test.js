@@ -477,3 +477,64 @@ describe('TEST M10: the curriculum tuner converges on the target band', () => {
     expect(draw()).toEqual(draw());
   });
 });
+
+// --- weighted random draws (the M10 → runner hook) ---------------------------
+
+describe('PatternRunner stepWeights: the tuner can steer the random draw', () => {
+  const base = defaultConfig();
+
+  test('a zero-weighted step is never drawn', () => {
+    const r = new PatternRunner('twoPoint', base, {
+      random: true, rng: mulberry32(5), stepWeights: () => [1, 0],
+    });
+    for (let i = 0; i < 40; i++) expect(r.stepIndexFor(i)).toBe(0);
+  });
+
+  test('equal weights reproduce the uniform draw for the same seed', () => {
+    // Both paths must consume exactly one rng call per ball, or toggling the
+    // tuner on would desynchronise a seeded replay.
+    const uniform = new PatternRunner('figureEight', base, {
+      random: true, rng: mulberry32(9),
+    });
+    const weighted = new PatternRunner('figureEight', base, {
+      random: true, rng: mulberry32(9), stepWeights: () => [1, 1, 1, 1],
+    });
+    for (let i = 0; i < 50; i++) {
+      expect(weighted.stepIndexFor(i)).toBe(uniform.stepIndexFor(i));
+    }
+  });
+
+  test('malformed weights fall back to uniform rather than throwing', () => {
+    const r = new PatternRunner('twoPoint', base, {
+      random: true, rng: mulberry32(3), stepWeights: () => [0, 0],
+    });
+    const seen = new Set();
+    for (let i = 0; i < 40; i++) seen.add(r.stepIndexFor(i));
+    expect(seen.size).toBe(2);
+  });
+
+  test('the memo stays bounded over an infinite drill', () => {
+    const r = new PatternRunner('twoPoint', base, { random: true, rng: mulberry32(1) });
+    for (let i = 0; i < 2000; i++) r.stepIndexFor(i);
+    expect(r._stepCache.size).toBeLessThanOrEqual(256);
+    // Recent indices — the only ones the drill re-reads — stay memoized.
+    const last = r.stepIndexFor(1999);
+    expect(r.stepIndexFor(1999)).toBe(last);
+  });
+});
+
+// --- ladder scatter is a floor, not an override ------------------------------
+
+describe('Ladder.applyTo respects a session that asked for more scatter', () => {
+  test('a base scatter wider than the tier survives', () => {
+    const l = new Ladder({ tier: 'bronze' });   // tier scatter 0.03
+    const c = l.applyTo(validateConfig({ ...defaultConfig(), scatterSigma: 0.3 }));
+    expect(c.scatterSigma).toBeCloseTo(0.3, 6);
+  });
+
+  test('the tier ramp still applies when the base is tighter', () => {
+    const l = new Ladder({ tier: 'gold' });     // tier scatter 0.10
+    const c = l.applyTo(validateConfig({ ...defaultConfig(), scatterSigma: 0 }));
+    expect(c.scatterSigma).toBeCloseTo(TIER_SETTINGS.gold.scatter, 6);
+  });
+});

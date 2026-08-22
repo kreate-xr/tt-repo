@@ -14,8 +14,11 @@ import {
 // entirely. Restore together with the venue picker in js/ui/overlay.js and
 // the arena block in startInGame below.
 // import { createArena, onArenaLoadProgress } from '../scene/arena.js';
+// Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline — live in
+// beta while the GLB venues above stay tree-shaken.
+import { createFocusRoom } from '../scene/focusRoom.js';
 import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor } from '../scene/models.js';
-import { hudLog, SELF_TEST } from '../scene/hud.js';
+import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
 // FPS HUD disabled — import kept commented for easy restore.
 import {
   tickPhysics, clearListeners, spawnBallAt,
@@ -34,8 +37,6 @@ import { CalibrationWizard } from '../scene/calibrationWizard.js';
 import { CalibrationTuner } from '../scene/calibrationTuner.js';
 import { paddleAngularVelocity } from '../physics/ball.js';
 import { update as updateTrackingLossGuard } from '../xr/trackingLossGuard.js';
-import { Feeder } from './training/feeder.js';
-import { SessionStats } from './training/stats.js';
 import { getProfile } from './training/difficulty.js';
 import {
   initStatsHud, setLiveLine, hideLiveLine, showSummary, hideSummary, clearStatsHud,
@@ -46,10 +47,10 @@ import {
 import { solveFeed } from './training/feedEngine.js';
 import { getQuickFeed } from './training/presets.js';
 import { validateConfig, INFINITE, parseDeepLink } from './training/drillConfig.js';
-import { createTargetPracticeDrill, TARGET_PRACTICE } from './training/drills/targetPractice.js';
-import { createSpinReaderDrill, SPIN_READER } from './training/drills/spinReader.js';
-import { createReactionRallyDrill, REACTION_RALLY } from './training/drills/reactionRally.js';
+import { createSpinPracticeDrill, SPIN_PRACTICE } from './training/drills/spinPractice.js';
+import { createPlacementPracticeDrill, PLACEMENT_PRACTICE } from './training/drills/placementPractice.js';
 import { createTrajectoryPracticeDrill, TRAJECTORY_PRACTICE } from './training/drills/trajectoryPractice.js';
+import { createTutorialDrill, TUTORIAL } from './training/drills/tutorial.js';
 import { createMultiplayerDrill, MULTIPLAYER } from './multiplayer/multiplayer.js';
 import { createAIMatchDrill, AI_MATCH } from './aiMatch/aiMatch.js';
 import { createMachinePlayDrill, MACHINE_PLAY } from './machinePlay/machinePlay.js';
@@ -63,9 +64,13 @@ const DRILL_FACTORIES = {
   // its file is deleted rather than left alongside, per rule 3 of
   // tt-training-migration-plan.md (never two live paths for one behaviour).
   ballMachine:        { meta: M1_BALL_MACHINE,     create: createM1BallMachineDrill },
-  targetPractice:     { meta: TARGET_PRACTICE,     create: createTargetPracticeDrill },
-  spinReader:         { meta: SPIN_READER,         create: createSpinReaderDrill },
-  reactionRally:      { meta: REACTION_RALLY,      create: createReactionRallyDrill },
+  // M9 Tutorial — a 4-step config script over the M1 machine + target zones.
+  tutorial:           { meta: TUTORIAL,            create: createTutorialDrill },
+  // Practice intents — wrappers over the M1 machine (see each file). These
+  // replaced the legacy targetPractice / spinReader / reactionRally drills,
+  // and with them the last consumers of the old feeder.js, which is deleted.
+  spinPractice:       { meta: SPIN_PRACTICE,       create: createSpinPracticeDrill },
+  placementPractice:  { meta: PLACEMENT_PRACTICE,  create: createPlacementPracticeDrill },
   trajectoryPractice: { meta: TRAJECTORY_PRACTICE, create: createTrajectoryPracticeDrill },
   multiplayer:        { meta: MULTIPLAYER,         create: createMultiplayerDrill },
   aiMatch:            { meta: AI_MATCH,            create: createAIMatchDrill },
@@ -163,17 +168,16 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     return;
   }
 
-  // 'ar' → passthrough MR (see the real room); 'vr' / 'vr-tt' → dark arena
-  // with spotlights, differing only in which venue GLB is loaded. WebXR
-  // session type is fixed at request time, so this is a pre-session choice,
-  // driven by the toggle on the start screen.
+  // 'ar' → passthrough MR (see the real room); 'vr-focus' → procedural
+  // Focus Room venue (js/scene/focusRoom.js). WebXR session type is fixed
+  // at request time, so this is a pre-session choice, driven by the toggle
+  // on the start screen.
   //
-  // BETA LAUNCH: pinned to false so the minifier dead-code-eliminates the
-  // whole VR branch (mode strings included) from the shipped bundle —
-  // overlay.js only ever passes 'ar' while the venue picker is off anyway.
-  // Restore the original line with the picker.
-  const isVR = false;
-  // const isVR = xrMode === 'vr' || xrMode === 'vr-tt';
+  // BETA LAUNCH: the GLB venues ('vr' stadium / 'vr-tt') stay disabled —
+  // restore the commented line below together with the createArena import
+  // and the full venue picker in overlay.js.
+  const isVR = xrMode === 'vr-focus';
+  // const isVR = xrMode === 'vr' || xrMode === 'vr-tt' || xrMode === 'vr-focus';
   const sessionType = isVR ? 'immersive-vr' : 'immersive-ar';
   const supported = await navigator.xr.isSessionSupported(sessionType);
   if (!supported) {
@@ -380,9 +384,18 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // legibility. The wrist menu still overrides it either way.
   if (!isVR) setBallColor('orange');
 
-  // BETA LAUNCH: venue loading disabled with the createArena import above —
-  // xrMode is pinned to 'ar' in overlay.js so isVR can't be true anyway;
-  // `arena` stays null and every consumer already null-guards it.
+  // Focus Room: procedural venue, needs tableBox so it can only run after
+  // loadModels. Built synchronously — no download, no progress UI. Every
+  // downstream consumer (factoryArgs, abortEntry, session-end cleanup)
+  // already handles the `arena` handle.
+  if (isVR) {
+    arena = createFocusRoom();
+    if (arena) arena.show();
+  }
+
+  // BETA LAUNCH: GLB venue loading stays disabled with the createArena
+  // import above ('vr' / 'vr-tt' never reach this build's isVR check).
+  // Restore into an xrMode dispatch alongside the Focus Room block.
   /*
   if (isVR) {
     // createArena needs tableBox, so it can only run after loadModels.
@@ -439,8 +452,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
 
   // --- State ---
   let state = 'menu'; // 'menu' | 'freePlay' | 'drill' | 'tuner'
-  let stats = null;
-  let feeder = null;
   let drillInstance = null;
   let drillFinished = false;
   let lastDrillParams = null;
@@ -597,7 +608,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   trainingMenu.on('calibrate', () => { trainingMenu.hide(); enterTuner(calibWizard); });
   // Physics tuner mutates live physics constants (gravity, drag, restitution) —
   // in multiplayer the two clients would silently disagree. Dev-only (?selftest).
-  trainingMenu.on('tune', () => { if (SELF_TEST) { trainingMenu.hide(); enterTuner(tuner); } });
+  trainingMenu.on('tune', () => { if (TUNER_ENABLED) { trainingMenu.hide(); enterTuner(tuner); } });
   trainingMenu.on('exit', () => onTunerBack());
 
   // The PLAY tile opens the Machine Play menu instead of entering free play
@@ -619,9 +630,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     enterFreePlay();
   });
   machinePlayMenu.on('calibrate', () => { machinePlayMenu.hide(); enterTuner(calibWizard); });
-  machinePlayMenu.on('tune', () => { if (SELF_TEST) { machinePlayMenu.hide(); enterTuner(tuner); } });
+  machinePlayMenu.on('tune', () => { if (TUNER_ENABLED) { machinePlayMenu.hide(); enterTuner(tuner); } });
 
-  wristMenu.on('tune', () => { if (SELF_TEST) enterTuner(tuner); });
+  wristMenu.on('tune', () => { if (TUNER_ENABLED) enterTuner(tuner); });
   wristMenu.on('calibrate', () => enterTuner(calibWizard));
   wristMenu.on('ballColor', ({ colorId }) => setBallColor(colorId));
   wristMenu.on('exit', () => endSession());
@@ -731,16 +742,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     hideSummary();
     const factory = DRILL_FACTORIES[drill] || DRILL_FACTORIES.ballMachine;
     const profile = getProfile(difficulty);
-    stats = new SessionStats(factory.meta.id, profile.label);
-    // Only build the legacy Feeder for drills that actually feed through it.
-    // It was previously constructed for every mode and then hidden — but
-    // constructing it builds a whole ServerFigure into the scene, so the ball
-    // machine, AI match and multiplayer each carried a second invisible
-    // paddle rig. The flag lives on the drill META so it is known BEFORE the
-    // instance exists; the instance-level `usesFeeder` still gates updates.
-    feeder = factory.meta.usesFeeder === false ? null : new Feeder(profile);
     const factoryArgs = {
-      feeder, stats, ballEvents, profile,
+      ballEvents, profile,
       // M1 drills are driven by a DrillConfig rather than a difficulty
       // profile. Other drills ignore this slot.
       config: config || (preset ? getQuickFeed(preset).config : null),
@@ -782,13 +785,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       enterMenu();
       return;
     }
-    // Drills that don't use the feeder (multiplayer, aiMatch) still get a
-    // Feeder instance constructed above — its visual is added to the scene
-    // by buildServerFigure(). Hide it so we don't render two paddles on
-    // the AI side (feeder's idle paddle + the drill's own AI paddle).
-    if (drillInstance.usesFeeder === false && feeder && feeder.emitter) {
-      feeder.emitter.visible = false;
-    }
     drillFinished = false;
     state = 'drill';
     wristMenu.hide();
@@ -799,7 +795,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   }
 
   function teardownDrill() {
-    // The Free Play feeder owns a ServerFigure in the scene, so it must go on
+    // The Free Play feeder owns a machine figure in the scene, so it must go on
     // every exit path — entering a drill, returning to the menu, or ending the
     // session — not just when Free Play is re-entered.
     stopFreePlayFeeder();
@@ -814,7 +810,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
     if (drillInstance && drillInstance.dispose) drillInstance.dispose();
     drillInstance = null;
-    if (feeder) { feeder.dispose(); feeder = null; }
     clearListeners();
     if (ballModel) ballModel.visible = false;
   }
@@ -826,8 +821,16 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   }
 
   function showDrillSummary() {
-    if (!stats) return;
-    showSummary(stats.snapshot(), {
+    // The panel reads the drill's M7 event-log summary — the same numbers
+    // Review & Stats analyses. Only the M1-family drills finish AND carry a
+    // log; anything else that ever reports finished just skips the panel.
+    if (!drillInstance || typeof drillInstance.getSummary !== 'function') return;
+    const factory = DRILL_FACTORIES[lastDrillParams && lastDrillParams.drill];
+    showSummary({
+      ...drillInstance.getSummary(),
+      drillLabel: factory ? factory.meta.label : null,
+      difficultyLabel: getProfile(lastDrillParams && lastDrillParams.difficulty).label,
+    }, {
       onRetry: () => {
         if (lastDrillParams) {
           enterDrill(lastDrillParams.drill, lastDrillParams.difficulty,
@@ -869,7 +872,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       serveFreePlayBall(grip);
       return;
     }
-    // Other drills ignore the trigger (feeder owns serving).
+    // Other drills ignore the trigger (their machine owns the feed schedule).
   }
 
   function serveFreePlayBall(grip) {
@@ -1125,8 +1128,16 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       laser.visible = true;
     } else {
       panel.setHovered(null);
-      laser.scale.z = 1.5;
-      laser.visible = true;
+      // In a drill the paddle hand is playing: a free-aimed beam sweeping the
+      // table with every stroke reads as a stuck pointer. Show the miss-state
+      // beam only in pure menu contexts, where waving to find the panel is
+      // the whole point.
+      if (state === 'drill') {
+        laser.visible = false;
+      } else {
+        laser.scale.z = 1.5;
+        laser.visible = true;
+      }
     }
   }
 
@@ -1235,9 +1246,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // throws, and a throw inside setAnimationLoop stops three.js from
     // re-queueing the frame — the whole session freezes before render.
 
-    // Drill drives: feeder + drill update only when active and not finished.
+    // Drill drives: update only while active and not finished. Every drill
+    // owns its own feed schedule now — the legacy shared Feeder is gone.
     if (state === 'drill' && drillInstance && !drillFinished) {
-      if (feeder && drillInstance.usesFeeder !== false) feeder.update(dt);
       drillInstance.update(dt);
     }
     // M8: the Free Play feeder runs on the same tick when toggled on.

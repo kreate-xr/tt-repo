@@ -2,9 +2,9 @@
 //
 // Plugs into the existing DRILL_FACTORIES in js/modes/inGame.js exactly the
 // same way Multiplayer does, so the wrist menu, ball-event plumbing, and
-// drill lifecycle stay unchanged. usesFeeder is set to false because the AI
-// owns serves (Phase 1 cheats: ball is auto-spawned with a feed-style toss
-// toward the player; Phase 3+ adds proper AI-driven serve animation).
+// drill lifecycle stay unchanged. The AI owns serves (Phase 1 cheats: ball is
+// auto-spawned with a feed-style toss toward the player; Phase 3+ adds proper
+// AI-driven serve animation).
 //
 // Wiring:
 //   shotAdapter   — converts player paddle hits into shot events posted to
@@ -27,7 +27,7 @@
 
 import * as THREE from 'three';
 import { ballModel, paddleModel, tableBox, tableSurfaceY, netBox } from '../../scene/models.js';
-import { spawnBallAt, paddleFaceCenterWorld } from '../../physics/ball.js';
+import { paddleFaceCenterWorld } from '../../physics/ball.js';
 import { hudLog } from '../../scene/hud.js';
 import { createShotAdapter, AI_PADDLE_ID } from '../../ai/shotAdapter.js';
 import { AIPaddle } from './aiPaddle.js';
@@ -43,10 +43,11 @@ import { createScoreboard } from '../../scene/scoreboard.js';
 // BETA LAUNCH: stadium venue disabled (see js/ui/overlay.js) — these imports
 // are commented out so the stadium/crowd modules are tree-shaken out of the
 // shipped bundle. Restore together with the mount block further down.
+// arenaLighting is live again: the Focus Room exposes ceiling fixtures.
 // import { createStadiumScoreboard } from '../../scene/stadiumScoreboard.js';
 // import { createCrowdAudio } from '../../scene/crowdAudio.js';
 // import { createCrowdWave } from '../../scene/crowdWave.js';
-// import { createArenaLighting } from '../../scene/arenaLighting.js';
+import { createArenaLighting } from '../../scene/arenaLighting.js';
 // import { createSponsorBoards } from '../../scene/sponsorBoards.js';
 import { faultRuleText } from '../../scene/faultText.js';
 import { createServeArrow } from '../../scene/serveArrow.js';
@@ -55,10 +56,7 @@ import { pulseActive, pulseFoul } from '../../xr/haptics.js';
 import { createNetTouchWatcher } from '../../scene/netTouch.js';
 import { playFoulWhistle } from '../../scene/audio.js';
 
-// usesFeeder on the META (not just the instance) so inGame can skip
-// CONSTRUCTING a legacy Feeder at all for this mode — building one only to
-// hide it still put a whole ServerFigure in the scene.
-export const AI_MATCH = { id: 'aiMatch', label: 'AI Match', usesFeeder: false };
+export const AI_MATCH = { id: 'aiMatch', label: 'AI Match' };
 
 // Convert the shotAdapter rollout into the incoming-ball snapshot the
 // worker's shot-type selector consumes. Everything here is derived from
@@ -176,11 +174,12 @@ function resetPlayerVelocity() {
 
 // `scoreboardAnchor` / `env` were `arenaAnchor` / `arena` pre-beta — renamed
 // because destructured keys survive minification and the beta bundle must not
-// hint at the unreleased venues. Local names are minifier-mangled, so `arena`
-// is kept as an alias below and the commented mount block restores unchanged.
-export function createAIMatchDrill({ ballEvents, profile, hooks, xr, scoreboardAnchor = null, env = null } = {}) {
-  const arena = env;
+// hint at the unreleased venues. `env` is live again for the Focus Room's
+// venue handle (wall-anchored scoreboard + fixture lighting); the GLB
+// stadium mount block below stays commented out.
+export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor = null, env = null } = {}) {
   if (!ballEvents) throw new Error('createAIMatchDrill requires { ballEvents }');
+  const arena = env;
 
   // Difficulty comes from the wrist menu's difficulty buttons via
   // getProfile(id). Key off the profile's stable `id`, never its display
@@ -381,9 +380,10 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, scoreboardA
   // state (so the first-serve indicator lights up before any events fire),
   // then patched from each event.
   const initialScore = rallyManager.getScore();
-  // arenaAnchor is populated only in tt-arena VR mode (see js/scene/arena.js
-  // getBackWallAnchor); other modes leave it null and the scoreboard falls
-  // back to its floating position behind the AI baseline.
+  // scoreboardAnchor is populated by venues with a named back wall — the
+  // Focus Room (js/scene/focusRoom.js) and the tt-arena GLB (js/scene/
+  // arena.js getBackWallAnchor). Other modes leave it null and the
+  // scoreboard falls back to its floating position behind the AI baseline.
   const scoreboard = createScoreboard({ config: { bestOf: 5 }, anchor: scoreboardAnchor });
 
   // Stadium-only enhancements. When the player is inside the broadcast-
@@ -396,9 +396,22 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, scoreboardA
   let crowdWave = null;
   let arenaLighting = null;
   let sponsorBoards = null;
+  // Any venue exposing ceiling fixtures (currently the Focus Room) gets
+  // celebration pulses on its light panels — pulsePoint / pulseMatchPoint /
+  // celebrateMatch call sites below are live and null-guarded already.
+  if (arena && arena.getStadiumFixtures) {
+    const fixtures = arena.getStadiumFixtures();
+    if (fixtures && fixtures.length > 0) {
+      arenaLighting = createArenaLighting({ fixtures });
+      if (arenaLighting) {
+        hudLog(`[venue] reactive lighting on ${arenaLighting.fixtureCount} fixture(s)`);
+      }
+    }
+  }
   // BETA LAUNCH: stadium mounts disabled with the imports above. `arena` is
-  // always null while the venue picker is off, so this block could never run
-  // anyway; every reference below (update/dispose/event hooks) null-guards.
+  // non-null only for the Focus Room, which exposes no screens/crowd
+  // anchors, so this block still could never run; every reference below
+  // (update/dispose/event hooks) null-guards.
   /*
   if (arena && arena.getStadiumScreens && arena.getCrowdAnchors) {
     const screens = arena.getStadiumScreens();
@@ -748,6 +761,5 @@ export function createAIMatchDrill({ ballEvents, profile, hooks, xr, scoreboardA
     isFinished,
     dispose,
     launch,
-    usesFeeder: false,
   };
 }
