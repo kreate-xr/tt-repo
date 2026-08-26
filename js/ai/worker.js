@@ -54,7 +54,9 @@ self.onmessage = (event) => {
       style = (msg.config && msg.config.style) || 'allround';
       engine = makeEngine(difficulty);
       history.reset();
-      momentum.reset();
+      // Elite plays honestly: no easing up when ahead (see momentum.js).
+      // Rebuilt rather than reset so the flag matches the session's tier.
+      momentum = createMomentumModel({ easeUpWhenLeading: difficulty !== 'pro' });
       self.postMessage({ type: 'ready' });
       break;
     }

@@ -28,12 +28,18 @@
 import * as THREE from 'three';
 import { ballModel, paddleModel, tableBox, tableSurfaceY, netBox } from '../../scene/models.js';
 import { paddleFaceCenterWorld } from '../../physics/ball.js';
+// Namespace import: competition mode applies/restores the certified
+// equipment preset via the same setters the physics tuner uses.
+import * as PhysicsParams from '../../physics/constants.js';
 import { hudLog } from '../../scene/hud.js';
 import { createShotAdapter, AI_PADDLE_ID } from '../../ai/shotAdapter.js';
 import { AIPaddle } from './aiPaddle.js';
 import { createIntent } from './intent.js';
 import { createAIFSM } from './aiFSM.js';
-import { recordPlayerLanding, recordIncomingBall, resetRecentLandings, setStyleHomeDistance } from './readyPosition.js';
+import {
+  recordPlayerLanding, recordIncomingBall, recordReturnDirection,
+  resetRecentLandings, setStyleHomeDistance,
+} from './readyPosition.js';
 import { pickStyleForMatch, homeDistanceForStyle, contactDelayForStyle } from '../../ai/playerStyles.js';
 import { createServer } from './serve.js';
 import { createPlayerServeController } from './playerServe.js';
@@ -177,9 +183,31 @@ function resetPlayerVelocity() {
 // hint at the unreleased venues. `env` is live again for the Focus Room's
 // venue handle (wall-anchored scoreboard + fixture lighting); the GLB
 // stadium mount block below stays commented out.
-export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor = null, env = null } = {}) {
+export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor = null, env = null, competition = false } = {}) {
   if (!ballEvents) throw new Error('createAIMatchDrill requires { ballEvents }');
   const arena = env;
+
+  // Competition rules (wrist-menu trophy toggle): the match runs on the
+  // certified ITTF table instead of the shipped lively default, and the
+  // strict 16 cm serve-toss rule is enforced (warn once, then fault — see
+  // rallyManager strictToss). Equipment values are captured here and
+  // restored on dispose so a competition match never leaks certified
+  // physics into casual play or the training machine.
+  let restoreEquipment = null;
+  if (competition) {
+    const prev = {
+      paddleE0: PhysicsParams.PADDLE_E0,
+      tableEn0: PhysicsParams.TABLE_EN_0,
+      tableMu: PhysicsParams.TABLE_MU,
+    };
+    PhysicsParams.applyPhysicsPreset('ittf');
+    hudLog('[match] COMPETITION RULES — certified table, strict service law');
+    restoreEquipment = () => {
+      PhysicsParams.setPaddleE0(prev.paddleE0);
+      PhysicsParams.setTableEn0(prev.tableEn0);
+      PhysicsParams.setTableMu(prev.tableMu);
+    };
+  }
 
   // Difficulty comes from the wrist menu's difficulty buttons via
   // getProfile(id). Key off the profile's stable `id`, never its display
@@ -266,6 +294,13 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
       // wants. Non-Pro difficulties ignore the recorded landings.
       if (rolloutResult && rolloutResult.bouncePoint) {
         recordPlayerLanding(rolloutResult.bouncePoint.x, rolloutResult.bouncePoint.z);
+        // Return-direction pattern: the player took the ball at ballModel's
+        // current position (this handler runs on their contact) and it will
+        // land at bouncePoint — one cross/line vote for the anticipation
+        // model's learned corridor.
+        if (ballModel) {
+          recordReturnDirection(ballModel.position.x, rolloutResult.bouncePoint.x);
+        }
       }
       // V2 §section_7: route through failureHandler so a worker timeout
       // delivers a fallback target to the FSM instead of stalling.
@@ -377,7 +412,10 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
   // NEVER opened a match with their own serve.
   const rallyManager = createRallyManager({
     ballEvents, server, playerServe,
-    config: { firstServer: Math.random() < 0.5 ? 'player' : 'ai' },
+    config: {
+      firstServer: Math.random() < 0.5 ? 'player' : 'ai',
+      strictToss: competition,
+    },
   });
   // Probe is the paddle's face centre, which ball.js already maintains every
   // frame for collision — no extra pose work, and it's the point that
@@ -753,6 +791,8 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
     resetRecentLandings();
     resetPlayerVelocity();
     if (ballModel) ballModel.visible = false;
+    // Competition mode borrowed the certified equipment for this match only.
+    if (restoreEquipment) { restoreEquipment(); restoreEquipment = null; }
   }
 
   // Exposed to inGame.js's handleTrigger — when the drill is active and no

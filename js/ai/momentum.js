@@ -73,7 +73,13 @@ const RUBBER_BAND_MAX_EXPLOIT_DROP = 0.25;
 const RUBBER_BAND_MAX_EXPLOIT_LIFT = 0.15;
 const RUBBER_BAND_MAX_SWING_DROP = 0.10;
 
-export function createMomentumModel() {
+// `easeUpWhenLeading` gates the rubber-band's LEADING half. It defaults on
+// (the engagement mechanic for casual tiers), but the top tier passes false:
+// an elite opponent that plays worse the moment it gets ahead caps how
+// strong ELITE can ever feel, and reads as condescension once noticed. The
+// TRAILING half ("press when behind") stays in either case — pressing when
+// down is authentic competitive behaviour, not a handicap.
+export function createMomentumModel({ easeUpWhenLeading = true } = {}) {
   let value = 0;
   let currentMargin = 0; // aiScore - playerScore, updated per point_result
   // Consecutive streak counters — track only the CURRENT run. Reset to
@@ -118,6 +124,8 @@ export function createMomentumModel() {
   function rubberBandStrength() {
     const absMargin = Math.abs(currentMargin);
     if (absMargin <= RUBBER_BAND_DEADZONE) return 0;
+    // Leading side disabled at the honest tier (see easeUpWhenLeading).
+    if (currentMargin > 0 && !easeUpWhenLeading) return 0;
     const excess = absMargin - RUBBER_BAND_DEADZONE;
     const denom = RUBBER_BAND_MAX_MARGIN - RUBBER_BAND_DEADZONE;
     const magnitude = Math.min(1, excess / denom);

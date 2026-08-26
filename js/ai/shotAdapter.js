@@ -249,6 +249,19 @@ export function createShotAdapter({ worker, ballEvents }) {
   function openRecordForAILanding(bounce) {
     const centerZ = tableCenterZ();
     shotIdCounter += 1;
+    // Signed top/back spin of OUR shot as the player now faces it (sampled
+    // post-bounce, so it is the ball they actually play). Convention matches
+    // the feeder: topspin axis = up × horizontal-travel, so ω·axis > 0 is
+    // topspin, < 0 backspin. Recorded at open time — unlike fields [6]/[7]
+    // this survives on MISSES, which is what the spin scout feeds on.
+    let sentSpinRps = 0;
+    const hx = ballVelocity.x, hz = ballVelocity.z;
+    const hLen = Math.hypot(hx, hz);
+    if (hLen > 1e-6) {
+      // axis = (0,1,0) × (hx,0,hz)/|h| = (hz,0,-hx)/|h|
+      sentSpinRps = (ballAngularVelocity.x * (hz / hLen)
+                   + ballAngularVelocity.z * (-hx / hLen)) / (2 * Math.PI);
+    }
     pending = [
       shotIdCounter,
       performance.now(),
@@ -258,6 +271,8 @@ export function createShotAdapter({ worker, ballEvents }) {
       0,   // swing_lateness_ms         — back-filled on player contact
       0,   // ball_speed_at_contact_mps — back-filled on player contact
       0,   // ball_spin_rps             — back-filled on player contact
+      sentSpinRps,           // sent_spin_rps  — known now, miss or not
+      ballVelocity.length(), // sent_speed_mps — post-bounce arrival pace
     ];
     // Post a snapshot, not the live array: `pending` is mutated in place by
     // the resolvers below, and a same-realm transport (tests, any future

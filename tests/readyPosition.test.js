@@ -2,7 +2,7 @@
 
 const THREE = require('three');
 
-import { anticipationLeanX,
+import { anticipationLeanX, recordReturnDirection, getReturnCrossProb,
   computeReadyPose,
   recordPlayerLanding,
   resetRecentLandings,
@@ -160,5 +160,45 @@ describe('anticipationLeanX — pre-contact lean toward the return corridor', ()
   test('unknown aim point leans nowhere', () => {
     expect(anticipationLeanX({ difficulty: 'pro', aiTargetX: NaN })).toBe(0);
     expect(anticipationLeanX({ difficulty: 'pro' })).toBe(0);
+  });
+});
+
+describe('return-direction pattern model', () => {
+  // resetRecentLandings restores the prior; it is already imported by the
+  // suites above via the module under test.
+  const { resetRecentLandings } = require('../js/modes/aiMatch/readyPosition.js');
+  beforeEach(() => resetRecentLandings());
+
+  test('starts at the crosscourt prior and reproduces the old fixed lean', () => {
+    expect(getReturnCrossProb()).toBeCloseTo(0.8, 6);
+    // prior p=0.8 → expected-return factor 1−2p = −0.6, the old constant.
+    const lean = anticipationLeanX({ difficulty: 'pro', aiTargetX: 0.3, baseX: 0 });
+    expect(lean).toBeCloseTo(-0.3 * 0.6, 6);
+  });
+
+  test('a down-the-line specialist drags the lean to the SAME side', () => {
+    // Player repeatedly contacts wide right (+x) and returns down the line (+x).
+    for (let i = 0; i < 30; i++) recordReturnDirection(0.5, 0.4);
+    expect(getReturnCrossProb()).toBeLessThan(0.5);
+    const lean = anticipationLeanX({ difficulty: 'pro', aiTargetX: 0.5, baseX: 0 });
+    expect(lean).toBeGreaterThan(0); // leaning WITH the aim side now
+  });
+
+  test('crosscourt returns push the probability up (to its cap)', () => {
+    for (let i = 0; i < 60; i++) recordReturnDirection(0.5, -0.4);
+    expect(getReturnCrossProb()).toBeCloseTo(0.95, 2); // RETURN_CROSS_MAX
+  });
+
+  test('central contacts and middle returns are not votes', () => {
+    const before = getReturnCrossProb();
+    recordReturnDirection(0.05, -0.5);  // contact too central
+    recordReturnDirection(0.5, 0.02);   // landing too central
+    recordReturnDirection(NaN, 0.5);
+    expect(getReturnCrossProb()).toBe(before);
+  });
+
+  test('explicit crossProb argument overrides the learned state (test purity)', () => {
+    const neutral = anticipationLeanX({ difficulty: 'pro', aiTargetX: 0.4, baseX: 0, crossProb: 0.5 });
+    expect(neutral).toBe(0);
   });
 });

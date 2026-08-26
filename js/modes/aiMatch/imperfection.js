@@ -170,6 +170,16 @@ const RUSHED_MAX_MULT = 1.6;
 // Incoming spin (rps) at which the spin term reaches its full effect.
 const SPIN_REFERENCE_RPS = 25;
 const SPIN_MAX_MULT = 1.5;
+// Crossover ("elbow") jam term. The ball straight AT the body is the
+// hardest ROUTINE ball in table tennis — not far away, but forcing a late
+// forehand/backhand commit. The AI's floating paddle has no handedness,
+// but its ready position defines a body line, and until this term existed
+// a ball on that line was exactly as easy as one at comfortable reach —
+// so the player's own elbow-seam tactic (tacticalZones aims at THEIR
+// elbow) had no counterpart coming back. Peak multiplier at zero lateral
+// offset from the ready line, fading to nothing by the band edge.
+export const BODY_JAM_BAND_M = 0.18;
+export const BODY_JAM_MAX_MULT = 1.35;
 
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -181,6 +191,7 @@ export function scaleMissRateForSituation(baseRate, {
   reachFactor,
   timeToContactMs,
   incomingSpinRps,
+  bodyJamOffsetM,
 } = {}) {
   let mult = 1;
 
@@ -209,6 +220,12 @@ export function scaleMissRateForSituation(baseRate, {
   if (typeof incomingSpinRps === 'number' && Number.isFinite(incomingSpinRps)) {
     const s = clamp(Math.abs(incomingSpinRps) / SPIN_REFERENCE_RPS, 0, 1);
     mult *= 1 + s * (SPIN_MAX_MULT - 1);
+  }
+
+  if (typeof bodyJamOffsetM === 'number' && Number.isFinite(bodyJamOffsetM)) {
+    // Linear fade from the peak at the body line to 1.0 at the band edge.
+    const jam = 1 - clamp(Math.abs(bodyJamOffsetM) / BODY_JAM_BAND_M, 0, 1);
+    mult *= 1 + jam * (BODY_JAM_MAX_MULT - 1);
   }
 
   return clamp(baseRate * clamp(mult, SITUATION_MIN_MULT, SITUATION_MAX_MULT), 0, 1);

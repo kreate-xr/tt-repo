@@ -736,7 +736,32 @@ function weightedSample(weights, rng) {
 // close points (nerves). style is optional (attacker / blocker / chopper
 // / allround) — applied FIRST so it shapes the base "personality" of
 // this match before context bias fires.
-export function selectShotType({ difficulty, incoming, recentTypes, rng, momentumBias, matchState, style, isServeReturn, targetZ }) {
+// --- Scouted-weakness bias ---------------------------------------------------
+//
+// The spin scout (shotHistory.computeSpinScouting) reports which BALL CLASS
+// the player keeps failing against — backspin, topspin, or flat pace. This
+// converts that verdict into shot-type pressure: more of the strokes that
+// DELIVER the class they can't handle. Multipliers are deliberately in the
+// same band as the style biases (≤2×) so scouting sharpens a match identity
+// rather than replacing it, and the anti-repeat pass still breaks up the
+// resulting runs — a scouted AI leans on your weakness, it doesn't spam it.
+export const SCOUTED_CLASS_TYPE_BIAS = Object.freeze({
+  backspin: { push: 1.5, slice: 1.9, chop: 1.6, drop_shot: 1.3 },
+  topspin:  { loop: 1.9, topspin_drive: 1.5, flip: 1.3 },
+  flat:     { smash: 1.6, topspin_drive: 1.4, block: 1.2 },
+});
+
+export function applyScoutedSpinBias(weights, weakness) {
+  const mults = weakness && SCOUTED_CLASS_TYPE_BIAS[weakness];
+  if (!mults) return { ...weights };
+  const out = {};
+  for (const [type, w] of Object.entries(weights)) {
+    out[type] = w * (mults[type] ?? 1);
+  }
+  return out;
+}
+
+export function selectShotType({ difficulty, incoming, recentTypes, rng, momentumBias, matchState, style, isServeReturn, targetZ, scoutedWeakness }) {
   // Return-of-serve overrides everything else on the AI's first receive.
   // Real players play push/block/flip on serve returns — never loop or
   // smash a short spinny ball. Serve-return weights are also flatter
@@ -749,6 +774,11 @@ export function selectShotType({ difficulty, incoming, recentTypes, rng, momentu
   // Style bias FIRST — shapes the personality of this match, then context
   // biases (incoming ball / score / momentum) refine within that identity.
   if (style) w = applyStyleBias(w, style);
+  // Scouting next: what this player has been failing against. Sits between
+  // identity (style) and situation (incoming/score) — a scouted weakness is
+  // a standing plan, not a reaction. Serve returns are exempt: the return
+  // stroke is dictated by the serve, not by scouting.
+  if (!isServeReturn && scoutedWeakness) w = applyScoutedSpinBias(w, scoutedWeakness);
   w = applyIncomingBias(w, incoming);
   // Depth coherence AFTER incoming bias, so the target wins the tie — a short
   // incoming ball invites a drop shot, but not to a baseline target.

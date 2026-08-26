@@ -36,6 +36,7 @@ import {
 import {
   selectShotType, sampleShotParameters, DIFFICULTY_CAPS, depthSpeedFactor,
 } from '../shotTypeSelector.js';
+import { computeSpinScouting } from '../shotHistory.js';
 import {
   pickTacticalTarget,
   TACTICAL_PROBABILITY_BY_DIFFICULTY,
@@ -239,6 +240,11 @@ export function createProEngine({ rng = Math.random } = {}) {
     // feel like a real player varying pace instead of the old
     // "uniform-in-a-fast-range" hammer.
     // Third-ball plan forces the shot type; otherwise normal selection.
+    // Spin scouting: which ball CLASS has this player been failing against?
+    // Pro reads it every shot — this is the "plays what it has learned about
+    // YOU" half of the tier's identity, now covering what they can't handle
+    // as well as where they can't reach.
+    const scouted = computeSpinScouting(history ? history.getAll() : []);
     const shotType = forcedShotType || selectShotType({
       difficulty: 'pro',
       incoming: ctx && ctx.incoming,
@@ -248,6 +254,7 @@ export function createProEngine({ rng = Math.random } = {}) {
       matchState: ctx ? { score_margin: ctx.score_margin, score_total: ctx.score_total } : null,
       style: ctx && ctx.style,
       isServeReturn: ctx && ctx.isServeReturn,
+      scoutedWeakness: scouted.weakness,
       // Placement is already decided; the stroke must fit it.
       targetZ: target[1],
     });

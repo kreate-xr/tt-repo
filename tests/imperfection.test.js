@@ -521,3 +521,33 @@ describe('Pro engine — no-instant-punishment counter', () => {
     expect(Math.abs(mean / N)).toBeLessThan(0.15);
   });
 });
+
+describe('crossover ("elbow") body-jam term', () => {
+  const {
+    scaleMissRateForSituation: scale, BODY_JAM_BAND_M, BODY_JAM_MAX_MULT,
+  } = require('../js/modes/aiMatch/imperfection.js');
+  const BASE = 0.05;
+  // Comfortable reach so the jam term is the only variable.
+  const ctx = (jam) => ({ reachFactor: 0.4, bodyJamOffsetM: jam });
+
+  test('a ball straight at the body line is harder than one at comfortable reach', () => {
+    const atBody = scale(BASE, ctx(0));
+    const offBody = scale(BASE, ctx(BODY_JAM_BAND_M));
+    expect(atBody).toBeGreaterThan(offBody);
+    expect(atBody / offBody).toBeCloseTo(BODY_JAM_MAX_MULT, 5);
+  });
+
+  test('the jam fades linearly and is direction-symmetric', () => {
+    const half = scale(BASE, ctx(BODY_JAM_BAND_M / 2));
+    const halfNeg = scale(BASE, ctx(-BODY_JAM_BAND_M / 2));
+    expect(half).toBeCloseTo(halfNeg, 10);
+    const edge = scale(BASE, ctx(BODY_JAM_BAND_M));
+    const beyond = scale(BASE, ctx(BODY_JAM_BAND_M * 3));
+    expect(edge).toBeCloseTo(beyond, 10); // no effect outside the band
+  });
+
+  test('absent field degrades to the old behaviour', () => {
+    expect(scale(BASE, { reachFactor: 0.4 }))
+      .toBeCloseTo(scale(BASE, ctx(BODY_JAM_BAND_M * 5)), 10);
+  });
+});

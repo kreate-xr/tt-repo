@@ -50,6 +50,7 @@ import { Delaunay } from 'd3-delaunay';
 import {
   selectShotType, sampleShotParameters, DIFFICULTY_CAPS, depthSpeedFactor,
 } from '../shotTypeSelector.js';
+import { computeSpinScouting } from '../shotHistory.js';
 import {
   pickTacticalTarget,
   anticipatePlayerXZ,
@@ -508,6 +509,10 @@ export function createIntermediateEngine({ rng = Math.random } = {}) {
     // the selector what the ball coming at us looks like — short/high/
     // spinny — so it can pick a plausible response instead of rolling a
     // uniform (speed, spin) tuple.
+    // Spin scouting, same mechanism as Pro but consulted with a coin flip —
+    // an international player notices what you keep missing, a Pro builds
+    // the whole match around it.
+    const scouted = rng() < 0.5 ? computeSpinScouting(history ? history.getAll() : []) : null;
     const shotType = forcedShotType || selectShotType({
       difficulty: 'intermediate',
       incoming: ctx && ctx.incoming,
@@ -517,6 +522,7 @@ export function createIntermediateEngine({ rng = Math.random } = {}) {
       matchState: ctx ? { score_margin: ctx.score_margin, score_total: ctx.score_total } : null,
       style: ctx && ctx.style,
       isServeReturn: ctx && ctx.isServeReturn,
+      scoutedWeakness: scouted && scouted.weakness,
       // Placement is already decided; the stroke must fit it.
       targetZ: target[1],
     });

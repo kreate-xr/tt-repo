@@ -172,6 +172,25 @@ const ICONS = {
     ctx.lineWidth = 1.5;
     ctx.stroke();
   },
+  trophy(ctx, cx, cy, s, color) {
+    // Competition-rules toggle glyph. Cup + handles + stem + base.
+    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
+    const cupW = s * 0.44, cupH = s * 0.34;
+    const topY = cy - s * 0.36;
+    // Cup: open-top rounded U.
+    ctx.beginPath();
+    ctx.moveTo(cx - cupW / 2, topY);
+    ctx.lineTo(cx - cupW / 2, topY + cupH * 0.45);
+    ctx.arc(cx, topY + cupH * 0.45, cupW / 2, Math.PI, 0, true);
+    ctx.lineTo(cx + cupW / 2, topY);
+    ctx.stroke();
+    // Handles.
+    ctx.beginPath(); ctx.arc(cx - cupW / 2 - s * 0.09, topY + s * 0.1, s * 0.1, Math.PI * 0.5, Math.PI * 1.5, false); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx + cupW / 2 + s * 0.09, topY + s * 0.1, s * 0.1, Math.PI * 1.5, Math.PI * 0.5, false); ctx.stroke();
+    // Stem + base.
+    ctx.beginPath(); ctx.moveTo(cx, topY + cupH); ctx.lineTo(cx, cy + s * 0.2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx - s * 0.18, cy + s * 0.3); ctx.lineTo(cx + s * 0.18, cy + s * 0.3); ctx.stroke();
+  },
   gear(ctx, cx, cy, s, color) {
     ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1.6;
     const rOuter = s * 0.42;
@@ -231,6 +250,13 @@ export class WristMenu {
     this.parent = null;
     this.selectedDifficultyIndex = 0;
     this.hovered = null;
+    // Competition rules (ITTF-strict): strict 16cm serve toss + certified
+    // table physics for the AI match. Persisted so the choice survives
+    // sessions; storage can be absent/throwing in headless tests.
+    this.competitionMode = false;
+    try {
+      this.competitionMode = localStorage.getItem('tt_competition_rules') === '1';
+    } catch { /* no storage — default off */ }
 
     this.hoverProgress = 0;
     this.showProgress  = 0;
@@ -405,6 +431,13 @@ export class WristMenu {
     this.buttons.push({
       id: 'ballColor', kind: 'dock', icon: 'ballSwatch',
       shape: 'rect', x: CANVAS_W - 32 - 56, y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
+    });
+    // Competition-rules toggle beside it: trophy lit in the accent colour
+    // when ON. Enables the strict ITTF serve-toss rule + certified table
+    // physics for the AI match (see aiMatch competition wiring).
+    this.buttons.push({
+      id: 'rules', kind: 'dock', icon: 'trophy',
+      shape: 'rect', x: CANVAS_W - 32 - 56 - 8 - 56, y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
     });
 
     // --- Bottom exit pill ---
@@ -609,7 +642,13 @@ export class WristMenu {
     ctx.fill();
     ctx.restore();
     const drawIcon = ICONS[b.icon];
-    if (drawIcon) drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, COLORS.chromeText);
+    // The rules trophy is a stateful toggle: lit accent when competition
+    // rules are on, muted when off — same visual grammar as the selected
+    // difficulty segment.
+    const iconColor = b.id === 'rules'
+      ? (this.competitionMode ? ACCENT : COLORS.chromeMuted)
+      : COLORS.chromeText;
+    if (drawIcon) drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, iconColor);
     // Calibration drift badge (spec §C8) — small yellow dot on top-right
     // of the calibrate button when the drift detector suggests recalibration.
     if (b.id === 'calibrate' && this._driftFlagCache) {
@@ -697,13 +736,17 @@ export class WristMenu {
     }
     if (button.kind === 'mode') {
       const difficultyId = DIFFICULTIES[this.selectedDifficultyIndex].id;
+      const competition = this.competitionMode;
       if (button.modeId === 'training') {
         // Opens the unified PLAY menu; what to play is chosen in there.
         this.emit('training', { difficulty: difficultyId });
       } else if (button.modeId === 'aiMatch') {
-        this.emit('start', { drill: 'aiMatch', difficulty: difficultyId });
+        this.emit('start', { drill: 'aiMatch', difficulty: difficultyId, options: { competition } });
       } else if (button.modeId === 'multiplayer') {
-        this.emit('start', { drill: 'multiplayer', difficulty: difficultyId });
+        // Competition physics is NOT applied in multiplayer yet — the two
+        // peers would need to agree on it over the wire. Passed through so
+        // the wiring exists when that handshake lands.
+        this.emit('start', { drill: 'multiplayer', difficulty: difficultyId, options: { competition } });
       }
       return;
     }
@@ -713,6 +756,15 @@ export class WristMenu {
     }
     if (button.kind === 'dock' && button.id === 'calibrate') {
       this.emit('calibrate');
+      return;
+    }
+    if (button.kind === 'dock' && button.id === 'rules') {
+      this.competitionMode = !this.competitionMode;
+      try {
+        localStorage.setItem('tt_competition_rules', this.competitionMode ? '1' : '0');
+      } catch { /* no storage — session-only toggle */ }
+      this.emit('rules', { competition: this.competitionMode });
+      this.draw();
       return;
     }
     if (button.kind === 'dock' && button.id === 'ballColor') {

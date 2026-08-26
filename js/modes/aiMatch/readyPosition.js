@@ -66,16 +66,16 @@ const SHORT_BALL_LIFT_M = 0.02;
 // take the ball (its own aim point), and a skilled player is already
 // drifting toward the likely reply corridor before the opponent's contact
 // — that pre-move is most of what separates "anticipates" from "reacts".
-// The corridor model is the simplest true one: the crosscourt return (x
-// sign flips on a diagonal) is the high-margin, high-frequency reply, so
-// the lean is toward the mirror of the AI's own target x, damped by
-// ANTICIPATION_CROSS_BIAS because down-the-line exists. Which is also the
-// counter-play: a player who reads the lean and goes down the line
-// wrong-foots the AI — anticipation SHOULD be punishable, and the cap
-// keeps the punishment window honest rather than terminal.
+// The corridor comes from the LEARNED return-direction model below: the
+// crosscourt return (x sign flips on a diagonal) is the high-margin,
+// high-frequency reply, so the prior leans toward the mirror of the AI's
+// own target x — and the observed cross/line ratio then drags the lean
+// toward what this player actually does. The counter-play stays real: a
+// player who reads the lean and goes the other way wrong-foots the AI —
+// anticipation SHOULD be punishable, and the cap keeps the punishment
+// window honest rather than terminal.
 // Beginner doesn't anticipate (reacting late IS the club tell);
 // Intermediate leans half; Pro leans fully.
-const ANTICIPATION_CROSS_BIAS = 0.6;
 const ANTICIPATION_FRACTION_BY_DIFFICULTY = Object.freeze({
   beginner: 0,
   intermediate: 0.5,
@@ -83,13 +83,51 @@ const ANTICIPATION_FRACTION_BY_DIFFICULTY = Object.freeze({
 });
 const ANTICIPATION_CAP_M = 0.22;
 
+// --- Return-direction pattern model -----------------------------------------
+// The lean above needs a crosscourt probability. It started life as a fixed
+// prior (crosscourt is the high-margin return, most players favour it) but
+// a fixed prior is exactly the thing a down-the-line player beats all match
+// — so the probability is LEARNED: every observed return updates an EWMA of
+// "did it cross?", and the lean follows the player who keeps going down the
+// line until it points the other way. The prior 0.8 reproduces the original
+// fixed lean (expected-return factor 1 − 2p = −0.6) until evidence arrives.
+const RETURN_CROSS_PRIOR = 0.8;
+const RETURN_CROSS_EWMA_ALPHA = 0.15;
+const RETURN_CROSS_MIN = 0.2;
+const RETURN_CROSS_MAX = 0.95;
+// Contacts near the centre line have no meaningful cross/line identity, and
+// returns to the middle vote for neither side.
+const RETURN_MIN_CONTACT_X_M = 0.15;
+const RETURN_MIN_LANDING_X_M = 0.10;
+let _returnCrossProb = RETURN_CROSS_PRIOR;
+
+// Feed one observed return: where the player took the ball (world x) and
+// where their return landed on the AI's half (world x).
+export function recordReturnDirection(contactX, landingX) {
+  if (!Number.isFinite(contactX) || !Number.isFinite(landingX)) return;
+  if (Math.abs(contactX) < RETURN_MIN_CONTACT_X_M) return;
+  if (Math.abs(landingX) < RETURN_MIN_LANDING_X_M) return;
+  const crossed = Math.sign(landingX) !== Math.sign(contactX) ? 1 : 0;
+  _returnCrossProb = clamp(
+    _returnCrossProb + RETURN_CROSS_EWMA_ALPHA * (crossed - _returnCrossProb),
+    RETURN_CROSS_MIN, RETURN_CROSS_MAX,
+  );
+}
+
+export function getReturnCrossProb() { return _returnCrossProb; }
+
 // Lateral lean toward the expected return corridor, given where the AI just
 // aimed its own shot (world x). Returns 0 when the tier doesn't anticipate
-// or the aim point is unknown. Pure — callers add it to their drive target.
-export function anticipationLeanX({ difficulty, aiTargetX, baseX = 0 } = {}) {
+// or the aim point is unknown. `crossProb` defaults to the learned pattern
+// model; tests pass it explicitly for purity.
+export function anticipationLeanX({ difficulty, aiTargetX, baseX = 0, crossProb } = {}) {
   const f = ANTICIPATION_FRACTION_BY_DIFFICULTY[difficulty] ?? 0;
   if (!f || typeof aiTargetX !== 'number' || !Number.isFinite(aiTargetX)) return 0;
-  const expectedReturnX = -aiTargetX * ANTICIPATION_CROSS_BIAS;
+  const p = typeof crossProb === 'number' ? crossProb : _returnCrossProb;
+  // E[return x] ≈ contact x · (1 − 2p): p = 0.5 leans nowhere, p → 1 leans
+  // fully to the mirror side, p < 0.5 (a down-the-line specialist) leans
+  // SAME-side — the model can invert the old hardcoded assumption.
+  const expectedReturnX = aiTargetX * (1 - 2 * p);
   return clamp((expectedReturnX - baseX) * f, -ANTICIPATION_CAP_M, ANTICIPATION_CAP_M);
 }
 
@@ -125,6 +163,7 @@ export function resetRecentLandings() {
   _lastAIContact = null;
   _lastIncomingBall = null;
   _styleHomeDistance = DEFAULT_Z_BEHIND_AI_EDGE_M;
+  _returnCrossProb = RETURN_CROSS_PRIOR;
 }
 
 // Called when the AI paddle actually strikes the ball. Used to compute
@@ -249,6 +288,9 @@ export const READY_POSITION_CONSTANTS = Object.freeze({
   IDLE_WOBBLE_AMP_Y_M,
   IDLE_WOBBLE_PERIOD_X_MS,
   IDLE_WOBBLE_PERIOD_Y_MS,
-  ANTICIPATION_CROSS_BIAS,
   ANTICIPATION_CAP_M,
+  RETURN_CROSS_PRIOR,
+  RETURN_CROSS_EWMA_ALPHA,
+  RETURN_CROSS_MIN,
+  RETURN_CROSS_MAX,
 });

@@ -566,7 +566,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   uiInputReady = true;
 
   // --- Wrist menu actions ---
-  wristMenu.on('start', ({ drill, preset, difficulty, config }) => {
+  wristMenu.on('start', ({ drill, preset, difficulty, config, options }) => {
     // MULTI with no live peer connection opens the in-XR lobby panel instead
     // of bouncing off enterDrill's gate — before that panel existed, the tile
     // was a dead button in any solo session. With a connection already up
@@ -578,8 +578,11 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
     // `config` arrives fully edited from Custom Feed; `preset` is set only
     // when the config came straight from a preset and was not modified.
-    lastDrillParams = { drill, preset, difficulty, config };
-    enterDrill(drill, difficulty, preset, config);
+    // `options` carries the wrist menu's competition-rules flag (and any
+    // future per-launch flags) into the drill factory via enterDrill's
+    // spread.
+    lastDrillParams = { drill, preset, difficulty, config, options };
+    enterDrill(drill, difficulty, preset, config, options);
   });
   // The PLAY menu, opened from the wrist menu's PLAY tile as a SUB-menu. It
   // rides the same currentTuner machinery the physics tuner and calibration

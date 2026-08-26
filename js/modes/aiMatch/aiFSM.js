@@ -536,6 +536,13 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       reachFactor,
       timeToContactMs: intent.predictedContactPerfMs - performance.now(),
       incomingSpinRps,
+      // Crossover jam: lateral distance from the interception point to the
+      // AI's body line (its ready position). A ball straight at the body is
+      // the elbow ball — now as uncomfortable for the AI as its own
+      // elbow-seam tactic makes it for the player.
+      bodyJamOffsetM: (paddle.readyPose && paddle.readyPose.position)
+        ? intent.predictedContact.x - paddle.readyPose.position.x
+        : undefined,
     });
 
     const missRate = Math.min(1, situationalRate * shakenMult + streakBoost);

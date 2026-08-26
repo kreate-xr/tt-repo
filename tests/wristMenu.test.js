@@ -189,3 +189,44 @@ describe('the other tiles still work', () => {
     }
   });
 });
+
+describe('competition-rules toggle', () => {
+  function click(menu, id) {
+    const [u, v] = uvOfButton(menu, id);
+    menu.setHovered(menu.hitTestUV(u, v));
+    menu.selectHovered();
+  }
+
+  test('the rules dock exists, defaults off, and toggles with an event', () => {
+    const menu = new WristMenu();
+    expect(menu.competitionMode).toBe(false);
+    const seen = [];
+    menu.on('rules', (p) => seen.push(p));
+    click(menu, 'rules');
+    expect(menu.competitionMode).toBe(true);
+    expect(seen).toEqual([{ competition: true }]);
+    click(menu, 'rules');
+    expect(menu.competitionMode).toBe(false);
+    expect(seen[1]).toEqual({ competition: false });
+  });
+
+  test('start payloads carry the flag so the match factory can enforce it', () => {
+    const menu = new WristMenu();
+    const seen = [];
+    menu.on('start', (p) => seen.push(p));
+    click(menu, 'rules');                 // ON
+    click(menu, 'mode-aiMatch');
+    expect(seen[0].options).toEqual({ competition: true });
+    click(menu, 'rules');                 // OFF
+    click(menu, 'mode-aiMatch');
+    expect(seen[1].options).toEqual({ competition: false });
+  });
+
+  test('the toggle does not shadow the ball-color dock beside it', () => {
+    const menu = new WristMenu();
+    const [u, v] = uvOfButton(menu, 'ballColor');
+    expect(menu.hitTestUV(u, v)).toBe('ballColor');
+    const [u2, v2] = uvOfButton(menu, 'rules');
+    expect(menu.hitTestUV(u2, v2)).toBe('rules');
+  });
+});
