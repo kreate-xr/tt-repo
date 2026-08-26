@@ -2,7 +2,7 @@
 // dual-channel duplication, dedupe, implicit ACK via hid-tagged BALL_STATE,
 // stale-epoch drops, timeout fallback, and the pending-race rule.
 
-import { HandoffManager, HANDOFF_ACK_TIMEOUT_MS, HANDOFF_DUP_DELAYS_MS } from '../js/network/HandoffManager.js';
+import { HandoffManager, HANDOFF_ACK_TIMEOUT_MS, HANDOFF_ACK_TIMEOUT_CEILING_MS, HANDOFF_DUP_DELAYS_MS } from '../js/network/HandoffManager.js';
 import { PacketType } from '../js/network/serialization.js';
 
 function makeHm(role = 'host', nowRef = { t: 1000 }) {
@@ -163,5 +163,41 @@ describe('rally sequence', () => {
       expect(host.onRemoteHandoff({ hitId: g, ball: BALL })).toBe(true);
       expect(guest.onBallStateHid(g)).toBe('ack');
     }
+  });
+});
+
+describe('RTT-adaptive ACK timeout', () => {
+  function makeHm(now) {
+    return new HandoffManager({
+      role: 'host',
+      sendReliable: () => {},
+      sendGame: () => {},
+      now,
+    });
+  }
+
+  test('setAckTimeoutMs clamps to [floor, ceiling]', () => {
+    const hm = makeHm(() => 0);
+    hm.setAckTimeoutMs(50);
+    expect(hm.ackTimeoutMs).toBe(HANDOFF_ACK_TIMEOUT_MS);       // floor
+    hm.setAckTimeoutMs(5000);
+    expect(hm.ackTimeoutMs).toBe(HANDOFF_ACK_TIMEOUT_CEILING_MS); // ceiling
+    hm.setAckTimeoutMs(700);
+    expect(hm.ackTimeoutMs).toBe(700);
+    hm.setAckTimeoutMs(NaN);
+    expect(hm.ackTimeoutMs).toBe(700);                            // ignored
+  });
+
+  test('tick honours the adaptive window: a 300ms-RTT link no longer fires per shot', () => {
+    let t = 0;
+    const hm = makeHm(() => t);
+    hm.setAckTimeoutMs(600); // 1.5 x 333ms RTT + 100
+    hm.localHit({});
+    t = 450;                                  // past the old fixed 300...
+    expect(hm.tick(t)).toBe(false);           // ...but inside the adaptive window
+    expect(hm.isPending()).toBe(true);
+    t = 650;
+    expect(hm.tick(t)).toBe(true);            // expired for real
+    expect(hm.isPending()).toBe(false);
   });
 });

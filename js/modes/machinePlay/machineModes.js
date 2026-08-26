@@ -13,3 +13,8 @@ export const MACHINE_MODES = Object.freeze({
 });
 
 export const DEFAULT_CHALLENGE_TARGET = 25;
+
+// Targets a Score Challenge can be set to. Named stops rather than a slider
+// for the same reason burst count is: these are the numbers a player actually
+// picks, and a 1–200 slider makes every one of them awkward to hit.
+export const CHALLENGE_TARGETS = Object.freeze([10, 25, 50, 100]);

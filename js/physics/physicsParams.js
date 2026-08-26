@@ -57,7 +57,7 @@ export const EQUIPMENT_ROWS = [
   },
   {
     id: 'tableEn0', label: 'Table Restitution',
-    desc: 'Table COR median. Floors at regulation — no dead tables.',
+    desc: 'Table COR median. 0.82 = certified table; floors just below it.',
     get: () => P.TABLE_EN_0, set: (v) => P.setTableEn0(num(v)),
     step: 0.005, default: P.PHYSICS_PRESETS.ittf.tableEn0,
     fmt: (v) => v.toFixed(3),
@@ -139,15 +139,15 @@ export const FEEL_ROWS = [
   },
   {
     id: 'magnus', label: 'Magnus Curvature',
-    desc: 'How much spin bends flight. Runs above physical for VR legibility.',
+    desc: 'How much spin bends flight. 0.004 is the physical value.',
     get: () => P.MAGNUS_COEFFICIENT, set: (v) => P.setMagnusCoefficient(num(v)),
-    step: 0.002, default: 0.010, fmt: (v) => v.toFixed(3),
+    step: 0.001, default: 0.004, fmt: (v) => v.toFixed(3),
   },
   {
     id: 'sidespinKick', label: 'Sidespin Bounce Kick',
     desc: 'Lateral top-up at the bounce for pure vertical sidespin.',
     get: () => P.TABLE_SIDESPIN_KICK, set: (v) => P.setTableSidespinKick(num(v)),
-    step: 0.002, default: 0.002, fmt: (v) => v.toFixed(3),
+    step: 0.0004, default: 0.0008, fmt: (v) => v.toFixed(4),
   },
 ];
 

@@ -5,6 +5,7 @@
 //     live NetworkManager handed through.
 
 import { LobbyManager } from '../lobby/LobbyManager.js';
+import { friendlyLobbyError } from '../lobby/lobbyErrors.js';
 import { XR_MODES, XR_MODE_STORAGE_KEY, resolveStoredMode } from './xrModes.js';
 
 export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, startDesktop }) {
@@ -140,16 +141,6 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     if (old) {
       try { await old.teardown(); } catch { /* best-effort */ }
     }
-  }
-
-  function friendlyLobbyError(err, code) {
-    const msg = String((err && err.message) || err || '');
-    if (msg.includes('ROOM_NOT_FOUND')) return `Room ${code} not found — double-check the code with your friend.`;
-    if (msg.includes('ROOM_FULL')) return `Room ${code} already has two players. Ask your friend to create a new room.`;
-    if (msg.includes('ICE_TIMEOUT')) return 'Could not connect to the other player (network issue). Both of you: try again with a new room.';
-    // Unrecognized failure: keep the raw SDK/SDP error out of the UI.
-    console.error('lobby error:', err);
-    return 'Connection failed — check your internet connection and try again.';
   }
 
   function onLobbyConnected(nm, role) {

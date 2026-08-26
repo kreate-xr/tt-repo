@@ -28,6 +28,21 @@ const _rContactPaddle = new THREE.Vector3();
 const _ballSurfaceFromSpin = new THREE.Vector3();
 const _slipVel      = new THREE.Vector3();
 
+// A ping-pong ball is a thin shell: I = (2/3)·m·R². The SAME friction impulse
+// J that spins the ball also pushes it — Δv = J/m and Δω = 3J/(2mR), so the
+// linear and angular halves of the friction couple are locked together as
+//     Δv_t = (2/3)·R·Δω.
+// Spin capture below produces Δω = gain·slip, so the matching linear kick is
+// (2/3)·R·gain per unit slip (≈ 0.47·slip at R = 0.02, gain = 35). This is
+// the term that makes incoming spin MATTER at the racket: a blocked topspin
+// ball climbs off the face, a push against backspin drops, sidespin deflects
+// a flat hit sideways. Without it the reflection is normal-axis-only and
+// every spin is returned as if it were no spin.
+// Exported so the AI paddleSolver's pass-1 closed form can predict the kick
+// (it knows every slip term at plan time) instead of leaving it all to the
+// pass-2 correction loop.
+export const HOLLOW_SPHERE_MOI_FACTOR = 2 / 3;
+
 // Compute the post-impulse ball linear velocity, angular velocity, and the
 // supporting intermediate values the host needs for haptics / audio /
 // event emit.
@@ -192,9 +207,9 @@ export function computeImpulse(
     ballV_out.addScaledVector(faceNormal, 0.5);
   }
 
-  // Spin capture from slip at contact. NOTE: the original ball.js code
-  // uses the POST-impulse ballV (i.e., ballV_out) here — we match that
-  // exactly so behavior is bit-for-bit identical.
+  // Spin capture from slip at contact. Slip is measured against the
+  // POST-reflection ballV (ballV_out) — the original ball.js convention,
+  // kept so the extracted helper stayed regression-identical.
   _rContactPaddle.copy(faceNormal).multiplyScalar(-ballRadius);
   _ballSurfaceFromSpin.crossVectors(ballW, _rContactPaddle);
   _slipVel.copy(vContact).sub(ballV_out).sub(_ballSurfaceFromSpin);
@@ -206,6 +221,23 @@ export function computeImpulse(
     .crossVectors(slipTangent, faceNormal)
     .multiplyScalar(spinCaptureGain * sweetnessFactor);
   const ballW_out = ballW.clone().add(deltaOmega);
+
+  // Linear half of the friction couple (see HOLLOW_SPHERE_MOI_FACTOR above):
+  // the tangential impulse that produced deltaOmega also drags the ball along
+  // the slip direction. Gated on velDot < 0 — the "moving away" nudge branch
+  // has no normal impulse and therefore no friction to transmit. Saturation
+  // mirrors PADDLE_SPIN_CAP: the kick per unit slip is (2/3)·R·gain, so the
+  // slip magnitude past which spin saturates (CAP/gain) is also where the
+  // linear kick stops growing — one grip limit, two consistent halves.
+  if (velDot < 0) {
+    let kickPerSlip = HOLLOW_SPHERE_MOI_FACTOR * ballRadius * spinCaptureGain * sweetnessFactor;
+    if (PADDLE_SPIN_CAP > 0 && spinCaptureGain > 0) {
+      const slipMag = slipTangent.length();
+      const slipSat = PADDLE_SPIN_CAP / spinCaptureGain;
+      if (slipMag > slipSat) kickPerSlip *= slipSat / slipMag;
+    }
+    ballV_out.addScaledVector(slipTangent, kickPerSlip);
+  }
 
   // Torsional spin damping (Sony sim2real paper — es). Damps the outgoing ω
   // component parallel to the paddle face normal, modelling the rubber's

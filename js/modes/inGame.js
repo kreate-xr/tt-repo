@@ -31,6 +31,8 @@ import {
   PLANE_W as MENU_PLANE_W, PLANE_H as MENU_PLANE_H,
 } from '../scene/wristMenu.js';
 import { TrainingMenu } from '../scene/trainingMenu.js';
+import { MultiplayerMenu } from '../scene/multiplayerMenu.js';
+import { LobbyManager } from '../lobby/LobbyManager.js';
 import * as profileStore from '../profile/store.js';
 import { PhysicsTuner } from '../scene/physicsTuner.js';
 import { CalibrationWizard } from '../scene/calibrationWizard.js';
@@ -54,7 +56,6 @@ import { createTutorialDrill, TUTORIAL } from './training/drills/tutorial.js';
 import { createMultiplayerDrill, MULTIPLAYER } from './multiplayer/multiplayer.js';
 import { createAIMatchDrill, AI_MATCH } from './aiMatch/aiMatch.js';
 import { createMachinePlayDrill, MACHINE_PLAY } from './machinePlay/machinePlay.js';
-import { MachinePlayMenu } from '../scene/machinePlayMenu.js';
 import * as AudioContextBridge from '../network/AudioContextBridge.js';
 import { updateAudioListener } from '../scene/audio.js';
 import * as haptics from '../xr/haptics.js';
@@ -466,7 +467,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   const wristMenu = new WristMenu();
   scene.add(wristMenu.mesh); // floating in world; billboarded each frame
 
-  // P15 M0 training menu — a sub-menu of the wrist menu, not a replacement.
+  // The PLAY menu (P15 M0's training menu, which absorbed the P17 Machine
+  // Play menu) — a sub-menu of the wrist menu, not a replacement. One front
+  // door for everything the ball machine does: rally, drills, survival and
+  // score-challenge end conditions, free play.
   // Backed by the profile store so Saved Presets persist.
   // `lastSessionLog` is captured at teardown so M7 can review a drill AFTER
   // it ends — reading drillInstance directly would find it already disposed.
@@ -498,20 +502,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       : 'Too slow to clear the net at that placement — raise speed or pick a shorter zone';
   });
   scene.add(trainingMenu.mesh);
-
-  // P17 Machine Play — what the wrist menu's PLAY tile now opens. It used to
-  // drop straight onto an empty table with one hardcoded warmup feed behind a
-  // B/Y toggle, which gave the tile nothing to be about. Same sub-menu
-  // machinery as the training menu (show/hide/isVisible/mesh/selectHovered/
-  // 'back'), so it needed no new input plumbing either.
-  const machinePlayMenu = new MachinePlayMenu();
-  machinePlayMenu.setFeasibilityProbe((config) => {
-    if (!tableBox) return null;   // arena not loaded yet — nothing to check
-    const feed = solveFeed(config, buildFeedEnv());
-    return feed.feasible ? null
-      : 'Too slow to clear the net at that placement — raise speed or pick a shorter zone';
-  });
-  scene.add(machinePlayMenu.mesh);
 
   wristMenu.show(); // visible from the moment the session starts
   // --- Physics tuner (free-roaming panel, opened from the wrist menu) ---
@@ -577,16 +567,26 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
 
   // --- Wrist menu actions ---
   wristMenu.on('start', ({ drill, preset, difficulty, config }) => {
+    // MULTI with no live peer connection opens the in-XR lobby panel instead
+    // of bouncing off enterDrill's gate — before that panel existed, the tile
+    // was a dead button in any solo session. With a connection already up
+    // (lobby auto-entry, or a drill exited back to the menu) it goes straight
+    // into the match as before.
+    if (drill === 'multiplayer' && !(multiplayer && multiplayer.networkManager)) {
+      enterTuner(mpMenu);
+      return;
+    }
     // `config` arrives fully edited from Custom Feed; `preset` is set only
     // when the config came straight from a preset and was not modified.
     lastDrillParams = { drill, preset, difficulty, config };
     enterDrill(drill, difficulty, preset, config);
   });
-  // P15 M0 training menu, opened from the wrist menu's TRAINING pill as a
-  // SUB-menu. It rides the same currentTuner machinery the physics tuner and
-  // calibration wizard use — show/hide/isVisible/mesh/selectHovered/'back' —
-  // so backing out of it returns to the wrist menu completely unchanged, and
-  // no new input plumbing was needed.
+  // The PLAY menu, opened from the wrist menu's PLAY tile as a SUB-menu. It
+  // rides the same currentTuner machinery the physics tuner and calibration
+  // wizard use — show/hide/isVisible/mesh/selectHovered/'back' — so backing
+  // out of it returns to the wrist menu completely unchanged, and no new
+  // input plumbing was needed. (The wrist event is still named 'training':
+  // it is a stable key, and renaming it buys nothing.)
   wristMenu.on('training', ({ difficulty } = {}) => {
     if (difficulty) trainingMenu.setDifficulty(difficulty);
     enterTuner(trainingMenu);
@@ -598,11 +598,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     lastDrillParams = { drill, preset, difficulty, config, options };
     enterDrill(drill, difficulty, preset, config, options);
   });
-  trainingMenu.on('freeplay', () => {
-    trainingMenu.hide();
-    currentTuner = null;
-    enterFreePlay();
-  });
   // The footer shortcuts hand off to the existing panels rather than
   // reimplementing them.
   trainingMenu.on('calibrate', () => { trainingMenu.hide(); enterTuner(calibWizard); });
@@ -611,26 +606,21 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   trainingMenu.on('tune', () => { if (TUNER_ENABLED) { trainingMenu.hide(); enterTuner(tuner); } });
   trainingMenu.on('exit', () => onTunerBack());
 
-  // The PLAY tile opens the Machine Play menu instead of entering free play
-  // directly. Free Hit is still reachable — it is that menu's fifth row, and
-  // still the training menu's "8. Free Play" — so nothing was removed, it just
-  // stopped being the only thing behind the tile.
-  wristMenu.on('machinePlay', () => enterTuner(machinePlayMenu));
-  machinePlayMenu.on('back', onTunerBack);
-  machinePlayMenu.on('start', ({ mode, config, target }) => {
-    machinePlayMenu.hide();
+  // In-XR multiplayer lobby, opened from the wrist menu's MULTI tile when no
+  // peer connection exists yet. Rides the same currentTuner machinery as the
+  // training menu. On a negotiated connection it adopts the same
+  // { networkManager, role, lobby } bundle the 2D start screen hands through,
+  // so the drill (and session-end teardown, which reads `multiplayer`) can't
+  // tell the two entry paths apart.
+  const mpMenu = new MultiplayerMenu({ createLobby: () => new LobbyManager() });
+  scene.add(mpMenu.mesh);
+  mpMenu.on('back', onTunerBack);
+  mpMenu.on('connected', (mp) => {
+    multiplayer = mp;
+    mpMenu.hide();
     currentTuner = null;
-    const options = { machineMode: mode, target };
-    lastDrillParams = { drill: 'machinePlay', difficulty: null, config, options };
-    enterDrill('machinePlay', null, null, config, options);
+    enterDrill('multiplayer', null);
   });
-  machinePlayMenu.on('freeHit', () => {
-    machinePlayMenu.hide();
-    currentTuner = null;
-    enterFreePlay();
-  });
-  machinePlayMenu.on('calibrate', () => { machinePlayMenu.hide(); enterTuner(calibWizard); });
-  machinePlayMenu.on('tune', () => { if (TUNER_ENABLED) { machinePlayMenu.hide(); enterTuner(tuner); } });
 
   wristMenu.on('tune', () => { if (TUNER_ENABLED) enterTuner(tuner); });
   wristMenu.on('calibrate', () => enterTuner(calibWizard));
@@ -641,7 +631,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // wrist menu's fixed world anchor instead of head-billboarding at 1.1 m,
   // which puts a 1.4 m-wide panel too close to read, and they own sliders that
   // the trigger has to be able to drag.
-  const isMenuPanel = (p) => p === trainingMenu || p === machinePlayMenu;
+  const isMenuPanel = (p) => p === trainingMenu || p === mpMenu;
 
   function enterTuner(target) {
     prevStateBeforeTuner = state;
@@ -771,7 +761,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // Other drills ignore this slot.
     if (drill === 'multiplayer') {
       if (!multiplayer || !multiplayer.networkManager) {
-        hudLog('multiplayer: create or join a room from the start screen first');
+        hudLog('multiplayer: no connection — use the MULTI tile to create or join a room');
         enterMenu();
         return;
       }
@@ -1149,6 +1139,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     wristMenu.dispose();
     tuner.hide();
     tuner.dispose();
+    // hide() cancels any in-flight room the panel still owns; a DELIVERED
+    // connection is torn down below via the `multiplayer` bundle instead.
+    mpMenu.hide();
+    mpMenu.dispose();
     if (laser.parent) laser.parent.remove(laser);
     // The laser is a Group (beam tube + tip disc) — dispose its children.
     laser.traverse((child) => {

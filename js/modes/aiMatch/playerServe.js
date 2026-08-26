@@ -84,10 +84,14 @@ const MIN_SAMPLE_SPAN_MS = 20;
 // anything past this is a tracking glitch or a deliberate fastball throw, and
 // either way it shouldn't rocket the ball through the venue.
 const MAX_TOSS_SPEED_MPS = 5;
-// ITTF wants the toss to rise ≥16cm from the palm. Under weighty gravity
-// (-12 m/s²) that needs vy ≥ √(2·12·0.16) ≈ 1.96 m/s. We don't call a fault —
-// the physics will punish a flat toss naturally — we just coach via HUD.
-const LOW_TOSS_HINT_VY_MPS = 1.9;
+// ITTF 2.6.2 — the toss must rise ≥16 cm from the palm. Under standard
+// gravity that needs vy ≥ √(2·9.81·0.16) ≈ 1.77 m/s; 1.9 keeps a little
+// margin for tracking noise in the release estimate. By default we don't
+// call a fault — the physics punishes a flat toss naturally and the HUD
+// coaches — but the release below also notifies onLowToss listeners so a
+// strict-rules caller (rallyManager `strictToss`) can enforce the law.
+// Exported for that caller's tests.
+export const LOW_TOSS_HINT_VY_MPS = 1.9;
 
 // Pure helper — estimates release velocity from a time-ordered array of
 // {t, x, y, z} samples (t in ms). Writes into `out` (a THREE.Vector3) and
@@ -129,6 +133,12 @@ export function createPlayerServeController({ xr = null, now = () => performance
   // the only ball that can emit events is the PREVIOUS rally's leftover ball,
   // and treating its ballLost as "toss lost" double-schedules the serve.
   const launchListeners = [];
+  // Fired AFTER launch listeners when a physical toss left the hand with
+  // vy below the 16 cm-rise minimum ({ vy }). The trigger fallback always
+  // tosses legally, so it never fires there. Ordering matters: strict-rules
+  // consumers key their handling off the courtesy-ball window that the
+  // launch listeners just opened.
+  const lowTossListeners = [];
 
   // Physical-toss state.
   let holding = false;      // grip held, preview ball glued to the off-hand
@@ -162,6 +172,7 @@ export function createPlayerServeController({ xr = null, now = () => performance
   }
 
   function onLaunch(fn) { launchListeners.push(fn); }
+  function onLowToss(fn) { lowTossListeners.push(fn); }
 
   function arm() {
     armed = true;
@@ -335,12 +346,17 @@ export function createPlayerServeController({ xr = null, now = () => performance
     // spawnBallAt copies its arguments, so tmp vectors are safe to pass.
     tmpHoldPos.set(last.x, last.y, last.z);
     spawnBallAt(tmpHoldPos, tmpTossVel, new THREE.Vector3());
-    if (tmpTossVel.y < LOW_TOSS_HINT_VY_MPS) {
+    const lowToss = tmpTossVel.y < LOW_TOSS_HINT_VY_MPS;
+    if (lowToss) {
       hudLog('[serve] low toss — a real serve wants a ~16cm rise before the strike');
     }
     const hand = xr.getOffHandHandedness ? xr.getOffHandHandedness() : null;
     if (hand) pulseHand(hand, 0.2, 35);
     completeLaunch();
+    if (lowToss) {
+      const vy = tmpTossVel.y;
+      for (const fn of lowTossListeners) fn({ vy });
+    }
   }
 
   // Per-frame poll. Cheap when idle (single boolean check); only does work
@@ -387,5 +403,5 @@ export function createPlayerServeController({ xr = null, now = () => performance
     }
   }
 
-  return { arm, disarm, isArmed, isHolding, update, launch, onLaunch, dispose };
+  return { arm, disarm, isArmed, isHolding, update, launch, onLaunch, onLowToss, dispose };
 }

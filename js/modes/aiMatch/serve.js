@@ -370,9 +370,10 @@ export function solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchS
   const serverSign = Math.sign(launchPos.z - netZ) || -1;
   const recvSign = -serverSign;
 
-  // Horizontal aim straight at the target. The solved spin is pure top/back
-  // (axis perpendicular to this line), so lateral drift is second-order and
-  // folded into landingError rather than corrected separately.
+  // Horizontal aim straight at the target. Top/back spin (axis perpendicular
+  // to this line) drifts laterally only second-order and is folded into
+  // landingError; SIDESPIN curls first-order and is corrected by
+  // solveServeWithAimShift around this solver, not in here.
   const dir = new THREE.Vector3(
     targetWorld.x - launchPos.x, 0, targetWorld.z - launchPos.z);
   if (dir.lengthSq() < 1e-9) dir.set(0, 0, recvSign);
@@ -466,6 +467,36 @@ export function solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchS
   return best;
 }
 
+// Sidespin wrapper around solveTwoBounceServe. The two-bounce solver aims its
+// horizontal line straight at the target and can only trade speed for depth,
+// so the lateral Magnus curl of a real sidespin serve lands the ball off to
+// the side — enough on a heavy pendulum (10-18 rps) to fail legality at the
+// sideline. Fix is the same as paddleSolver's aim-shift: re-solve at a
+// virtual target displaced opposite the observed miss and let the curl bring
+// the ball back. Candidates are always scored against the REAL target, and
+// legality (own-half bounce, net clearance, receiver court) is geometric, so
+// the shift cannot trade a legal serve for an illegal one unnoticed.
+export function solveServeWithAimShift(launchPos, targetWorld, targetSpeed, launchSpin, env, maxIters = 3) {
+  let best = solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchSpin, env);
+  if (!best) return null;
+  const virtual = targetWorld.clone();
+  for (let i = 0; i < maxIters; i++) {
+    if (!best.sim || !best.sim.landing) break;
+    if (best.legal && best.landingError <= SERVE_LANDING_TOLERANCE_M) break;
+    virtual.x += targetWorld.x - best.sim.landing.x;
+    virtual.z += targetWorld.z - best.sim.landing.z;
+    const next = solveTwoBounceServe(launchPos, virtual, targetSpeed, launchSpin, env);
+    if (!next) break;
+    next.landingError = next.sim && next.sim.landing
+      ? Math.hypot(next.sim.landing.x - targetWorld.x, next.sim.landing.z - targetWorld.z)
+      : Infinity;
+    const better = (next.legal && !best.legal)
+      || (next.legal === best.legal && next.landingError < best.landingError);
+    if (better) best = next;
+  }
+  return best;
+}
+
 // --- Toss prediction -------------------------------------------------------
 //
 // Roll the tossed ball forward with the ACTIVE physics constants to find
@@ -532,9 +563,18 @@ export function predictTossContact(tossPos, tossVel, contactFloorY) {
 //                     opposite of servePos.x so pendulums sweep across
 //                     the body
 //   vertical        — vertical offset (m) applied to swing target
-// spin (rps, signed): negative = backspin (retards forward motion), positive
-//   = topspin, sign-of-servePos.x controls sidespin direction implicitly by
-//   the swing lateral term feeding into faceNormal rotation.
+// spin (rps, signed, PHYSICAL scale — see the spin-economy note on
+//   MAGNUS_COEFFICIENT in physics/constants.js): negative = backspin
+//   (retards forward motion), positive = topspin. Magnitudes are clamped to
+//   ~55 rps, the real elite serve ceiling (~3300 rpm).
+// sideSpin (rps, signed, optional): spin about the vertical axis — the
+//   defining weapon of the international serve game. ω_y > 0 curls the
+//   flight toward +x (Magnus, a = M·(ω × v) with v toward the player) and
+//   kicks off the bounce; ω_y < 0 mirrors. Signs follow the swing sweep the
+//   archetype choreographs: a pendulum from the AI's right sweeps toward −x,
+//   and brush slip (−x) × faceNormal (+z) = +ω_y, so pendulums from the
+//   right carry positive sidespin, tomahawk/reverse-pendulum from the left
+//   carry negative. Omitted = [0, 0] (pure top/back serve).
 // length (target_z, m from net into player side): short 0.15–0.40,
 //   half 0.55–0.85, long 1.00–1.30. ITTF legal service box ends at 1.37.
 // speedRange (m/s at ball landing, feeds solver targetSpeed).
@@ -559,7 +599,7 @@ const ARCHETYPES = Object.freeze([
   {
     id: 'soft_topspin_middle',
     swing: { type: 'straight', lateral: 0.00, vertical: 0.05 },
-    spinRange: [3, 6],
+    spinRange: [8, 15],
     lengthRange: [0.85, 1.10],
     placementXRange: [-0.15, 0.15],
     servePosX: 0.0,
@@ -570,7 +610,7 @@ const ARCHETYPES = Object.freeze([
   {
     id: 'soft_backspin_short',
     swing: { type: 'straight', lateral: 0.00, vertical: -0.05 },
-    spinRange: [-8, -4],
+    spinRange: [-20, -10],
     lengthRange: [0.35, 0.55],
     placementXRange: [-0.15, 0.15],
     servePosX: 0.0,
@@ -578,10 +618,18 @@ const ARCHETYPES = Object.freeze([
     difficultyWeights: { beginner: 2, intermediate: 1, pro: 0 },
     risk: 'safe',
   },
+  // DISGUISE: the two right-side pendulum archetypes (this and
+  // pendulum_sidespin_deep_crossline) share IDENTICAL swing kinematics on
+  // purpose — same stance, same sweep, same vertical. What differs is only
+  // the wrist at contact (heavy backspin short vs heavy sidespin deep),
+  // which the scripted strike doesn't render. That is the pendulum serve's
+  // whole menace at international level: one motion, two very different
+  // balls, and the receiver must read flight and bounce, not choreography.
   {
     id: 'pendulum_backspin_short_crossline',
-    swing: { type: 'pendulum', lateral: 0.18, vertical: -0.03 },
-    spinRange: [-22, -14],
+    swing: { type: 'pendulum', lateral: 0.19, vertical: -0.02 },
+    spinRange: [-55, -35],
+    sideSpinRange: [12, 25],
     lengthRange: [0.20, 0.38],
     placementXRange: [-0.55, -0.30],
     servePosX: +0.55,
@@ -591,8 +639,9 @@ const ARCHETYPES = Object.freeze([
   },
   {
     id: 'pendulum_sidespin_deep_crossline',
-    swing: { type: 'pendulum', lateral: 0.20, vertical: 0.00 },
-    spinRange: [-6, 6],
+    swing: { type: 'pendulum', lateral: 0.19, vertical: -0.02 },
+    spinRange: [-15, 15],
+    sideSpinRange: [25, 45],
     lengthRange: [1.00, 1.25],
     placementXRange: [-0.60, -0.35],
     servePosX: +0.55,
@@ -603,18 +652,27 @@ const ARCHETYPES = Object.freeze([
   {
     id: 'backhand_flat_middle',
     swing: { type: 'backhand', lateral: -0.08, vertical: 0.00 },
-    spinRange: [-4, 4],
-    lengthRange: [0.60, 0.90],
+    spinRange: [-10, 10],
+    sideSpinRange: [-20, -8],
+    // Half-long by intent (was 0.60-0.90): the flat backhand middle serve is
+    // played to die around the receiver's end line, not to arrive with rally
+    // pace — its 0.80-0.90 tail sat right on the deep-serve arrival test's
+    // boundary and arrived at ~2.48 m/s, under the 2.5 m/s floor that test
+    // demands of serves CLAIMING to be deep. 0.55-0.78 keeps it what it is:
+    // a half-long change-up (the deep flat role belongs to
+    // fast_deep_no_spin_downline).
+    lengthRange: [0.55, 0.78],
     placementXRange: [-0.15, 0.15],
     servePosX: -0.25,
-    speedRange: [4.5, 5.5],
+    speedRange: [5.0, 6.0],
     difficultyWeights: { beginner: 0, intermediate: 2, pro: 1 },
     risk: 'medium',
   },
   {
     id: 'tomahawk_sidespin_wide',
     swing: { type: 'tomahawk', lateral: -0.15, vertical: 0.18 },
-    spinRange: [8, 18],
+    spinRange: [20, 45],
+    sideSpinRange: [-45, -25],
     lengthRange: [0.70, 1.10],
     placementXRange: [+0.40, +0.60],
     servePosX: -0.45,
@@ -625,7 +683,8 @@ const ARCHETYPES = Object.freeze([
   {
     id: 'reverse_pendulum_topspin_deep',
     swing: { type: 'pendulum', lateral: -0.18, vertical: 0.05 },
-    spinRange: [10, 22],
+    spinRange: [25, 55],
+    sideSpinRange: [-35, -18],
     lengthRange: [1.05, 1.30],
     placementXRange: [+0.30, +0.55],
     servePosX: -0.40,
@@ -636,7 +695,8 @@ const ARCHETYPES = Object.freeze([
   {
     id: 'high_toss_heavy_backspin',
     swing: { type: 'high_toss', lateral: 0.08, vertical: 0.25 },
-    spinRange: [-28, -20],
+    spinRange: [-55, -45],
+    sideSpinRange: [10, 22],
     lengthRange: [0.30, 0.55],
     placementXRange: [-0.20, 0.20],
     servePosX: +0.30,
@@ -647,7 +707,7 @@ const ARCHETYPES = Object.freeze([
   {
     id: 'fast_deep_no_spin_downline',
     swing: { type: 'straight', lateral: 0.00, vertical: 0.02 },
-    spinRange: [-2, 2],
+    spinRange: [-5, 5],
     lengthRange: [1.10, 1.30],
     placementXRange: [+0.45, +0.65],
     servePosX: +0.45,
@@ -833,8 +893,8 @@ function weightedPickArchetype(difficulty, rng, avoidId = null, gameContext = nu
 
 // --- Target selection -------------------------------------------------------
 //
-// Returns { target_x, target_z, target_speed, target_spin, mode,
-//           archetype, servePos, swing, disguised }.
+// Returns { target_x, target_z, target_speed, target_spin, target_side_spin,
+//           mode, archetype, servePos, swing, disguised }.
 // target_z is in spec coords (meters from net on player side).
 // servePos.x is meters (already converted from fractional to world offset).
 // swing describes the cosmetic paddle motion for SERVE_SWING.
@@ -848,6 +908,7 @@ export function selectServeTarget(difficulty, rng = Math.random, opts = {}) {
   const target_x = pick(arch.placementXRange, rng);
   const target_speed = pick(arch.speedRange, rng);
   const target_spin = pick(arch.spinRange, rng);
+  const target_side_spin = arch.sideSpinRange ? pick(arch.sideSpinRange, rng) : 0;
 
   const halfWidth = tableBox
     ? (tableBox.max.x - tableBox.min.x) / 2
@@ -868,6 +929,7 @@ export function selectServeTarget(difficulty, rng = Math.random, opts = {}) {
     target_z,
     target_speed,
     target_spin,
+    target_side_spin,
     mode,
     archetype: arch.id,
     servePos: { x: servePosXMeters },
@@ -876,7 +938,11 @@ export function selectServeTarget(difficulty, rng = Math.random, opts = {}) {
       lateral: arch.swing.lateral,
       vertical: arch.swing.vertical,
     },
-    disguised: arch.swing.type === 'pendulum' && Math.sign(arch.spinRange[0]) !== Math.sign(arch.spinRange[1]),
+    // True when this serve's motion is shared with at least one other live
+    // archetype (the pendulum family's kinematics are deliberately
+    // identical), so the receiver cannot infer the spin from the
+    // choreography. Kept on the target for telemetry/UI ("what beat you").
+    disguised: arch.swing.type === 'pendulum',
   };
 }
 
@@ -1147,7 +1213,9 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
 
     // Outgoing spin: topspin/backspin about the horizontal axis perpendicular
     // to the direction of travel (feeder.js convention — ball toward +z,
-    // topspin = +x). target_spin is rps, signed; ball spin is rad/s.
+    // topspin = +x), PLUS the archetype's sidespin about the vertical axis —
+    // the component that makes a pendulum serve curl in flight and kick off
+    // the bounce. Both are rps in the target, rad/s on the ball.
     const dir = targetPoint.clone().sub(launchPos);
     dir.y = 0;
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
@@ -1156,8 +1224,9 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
       .crossVectors(new THREE.Vector3(0, 1, 0), dir)
       .normalize()
       .multiplyScalar(serveTarget.target_spin * 2 * Math.PI);
+    launchSpin.y += (serveTarget.target_side_spin || 0) * 2 * Math.PI;
 
-    const solved = solveTwoBounceServe(
+    const solved = solveServeWithAimShift(
       launchPos, targetPoint, serveTarget.target_speed, launchSpin, env,
     );
     let launchVel;

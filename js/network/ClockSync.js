@@ -38,6 +38,7 @@ export class ClockSync {
     this.offset = 0;   // peer clock minus local clock, ms
     this.hasSync = false;
     this.srtt = null;  // EWMA of raw RTT, ms — feeds queuingDelayMs()
+    this.lastPongAt = null; // local time of the newest accepted pong — liveness signal
   }
 
   // Build a ping packet. Caller sends it on the game channel.
@@ -59,6 +60,7 @@ export class ClockSync {
 
     this.samples.push({ offset: pong.t1 - (pong.t0 + now) / 2, rtt });
     if (this.samples.length > SAMPLE_WINDOW) this.samples.shift();
+    this.lastPongAt = now;
     this.srtt = this.srtt === null ? rtt : this.srtt + RTT_EWMA_ALPHA * (rtt - this.srtt);
 
     let best = this.samples[0];
@@ -101,6 +103,22 @@ export class ClockSync {
       if (s.rtt < min) min = s.rtt;
     }
     return Math.max(0, this.srtt - min);
+  }
+
+  // Smoothed round-trip time, ms — null before the first pong. Feeds the
+  // handoff ACK timeout so it scales with the actual link instead of a
+  // constant that intercontinental RTTs blow straight past.
+  smoothedRttMs() {
+    return this.srtt;
+  }
+
+  // Milliseconds since the last accepted pong, or null before the first.
+  // Pings run every PING_INTERVAL_MS, so a healthy link keeps this under
+  // ~500 ms even with loss; multiple seconds means the peer is silent (dead
+  // tab, slept headset) even while the RTCPeerConnection still claims
+  // 'connected'.
+  msSinceLastPong(now) {
+    return this.lastPongAt === null ? null : now - this.lastPongAt;
   }
 
   isReady() {

@@ -111,7 +111,7 @@ describe('solver envelope', () => {
   test('mid-depth targets are reachable across the full speed range', () => {
     for (const targetSpeed of [6, 10, 14, 18, 22]) {
       const { rate } = solveAt(CONTACTS, {
-        targetZ: 0.7, targetSpeed, targetSpin: 12, difficulty: 'pro',
+        targetZ: 0.7, targetSpeed, targetSpin: 30, difficulty: 'pro',
       });
       expect(rate).toBeGreaterThan(0.9);
     }
@@ -120,7 +120,7 @@ describe('solver envelope', () => {
   test('rally-pace shots are reachable at every depth', () => {
     for (const targetZ of [0.4, 0.7, 1.0, 1.3]) {
       const { rate } = solveAt(CONTACTS, {
-        targetZ, targetSpeed: 10, targetSpin: 12, difficulty: 'pro',
+        targetZ, targetSpeed: 10, targetSpin: 30, difficulty: 'pro',
       });
       expect(rate).toBeGreaterThan(0.9);
     }
@@ -131,8 +131,8 @@ describe('solver envelope', () => {
   // pin it as expected behaviour rather than a defect. It is also why the
   // engines couple shot pace to target depth.
   test('deep targets do get harder at high pace, as physics requires', () => {
-    const slow = solveAt(CONTACTS, { targetZ: 1.3, targetSpeed: 8, targetSpin: 12, difficulty: 'pro' });
-    const fast = solveAt(CONTACTS, { targetZ: 1.3, targetSpeed: 22, targetSpin: 12, difficulty: 'pro' });
+    const slow = solveAt(CONTACTS, { targetZ: 1.3, targetSpeed: 8, targetSpin: 30, difficulty: 'pro' });
+    const fast = solveAt(CONTACTS, { targetZ: 1.3, targetSpeed: 22, targetSpin: 30, difficulty: 'pro' });
     expect(slow.rate).toBeGreaterThan(0.9);
     expect(fast.rate).toBeLessThan(slow.rate);
   });
@@ -140,8 +140,15 @@ describe('solver envelope', () => {
   // The spin moment-arm bug made this a hard ceiling: |spin| above
   // maxPaddleSpeed / (0.09 * 2π) was rejected regardless of geometry —
   // 8.8 rps at beginner, 19.5 at intermediate, 23 at pro.
+  //
+  // Spin values are physical rps (spin-economy rescale ×2.5). Backspin's
+  // measured shoulder at THIS cell's geometry (z 0.9 at 9 m/s) sits near
+  // -45: heavier backspin at pace to depth floats long — the same
+  // "pace AT DEPTH" constraint the speed table above documents, now on the
+  // spin axis. The heavy end is asserted separately below at the geometry
+  // it is actually played at.
   test('spin no longer has a geometry-independent ceiling', () => {
-    for (const targetSpin of [-20, -10, 0, 10, 20, 30, 40]) {
+    for (const targetSpin of [-45, -25, 0, 25, 40, 55, 64]) {
       const { rate } = solveAt(CONTACTS, {
         targetZ: 0.9, targetSpeed: 9, targetSpin, difficulty: 'pro',
       });
@@ -149,10 +156,20 @@ describe('solver envelope', () => {
     }
   });
 
+  test('heavy chop backspin is deliverable at chop geometry', () => {
+    // Pro chop profile: ~-55 rps at 5-7 m/s to short/mid targets. Measured
+    // 98-100% feasible at z 0.6 / 7 m/s (vs ~58% if aimed deep at pace —
+    // which is why the chop profile pairs heavy spin with slow short balls).
+    const { rate } = solveAt(CONTACTS, {
+      targetZ: 0.6, targetSpeed: 7, targetSpin: -52, difficulty: 'pro',
+    });
+    expect(rate).toBeGreaterThan(0.9);
+  });
+
   test('no shot is rejected on the paddle-speed cap at rally pace', () => {
     // PADDLE_SPEED_CAP rejections were ~35% of all intermediate shots. At
     // sane speeds and spins the cap should never be the binding constraint.
-    for (const targetSpin of [-20, 0, 20]) {
+    for (const targetSpin of [-50, 0, 50]) {
       const { reasons } = solveAt(CONTACTS, {
         targetZ: 0.9, targetSpeed: 9, targetSpin, difficulty: 'intermediate',
       });
@@ -165,7 +182,7 @@ describe('solver envelope', () => {
     // instead, i.e. slower than the tier below it.
     for (const [difficulty, speed] of [['beginner', 5], ['intermediate', 9], ['pro', 11]]) {
       const { rate } = solveAt(CONTACTS, {
-        targetZ: 0.8, targetSpeed: speed, targetSpin: 10, difficulty,
+        targetZ: 0.8, targetSpeed: speed, targetSpin: 25, difficulty,
       });
       expect(rate).toBeGreaterThan(0.8);
     }
@@ -174,7 +191,7 @@ describe('solver envelope', () => {
   test('strike caps are not the binding constraint for any tier at its own pace', () => {
     for (const [difficulty, speed] of [['beginner', 5], ['intermediate', 9], ['pro', 11]]) {
       const { reasons } = solveAt(CONTACTS, {
-        targetZ: 0.8, targetSpeed: speed, targetSpin: 10, difficulty,
+        targetZ: 0.8, targetSpeed: speed, targetSpin: 25, difficulty,
       });
       const capped = (reasons[SOLVER_REASONS.PADDLE_SPEED_CAP] || 0)
         + (reasons[SOLVER_REASONS.CORRECTED_SPEED_CAP] || 0);
@@ -254,7 +271,7 @@ describe('solver accuracy', () => {
     for (const c of CONTACTS) {
       const targetZ = 0.9;
       const r = solvePaddle({
-        targetX: 0, targetZ, targetSpeed: 9, targetSpin: 10,
+        targetX: 0, targetZ, targetSpeed: 9, targetSpin: 25,
         contactPos: v(c.contactPoint.x, c.contactPoint.y, c.contactPoint.z),
         contactVel: v(c.contactVelocity.x, c.contactVelocity.y, c.contactVelocity.z),
         contactSpin: v(c.contactSpin.x, c.contactSpin.y, c.contactSpin.z),

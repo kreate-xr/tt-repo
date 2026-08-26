@@ -14,18 +14,10 @@
 import { SignalingClient } from '../network/SignalingClient.js';
 import { NetworkManager } from '../network/NetworkManager.js';
 import { getDefaultIceServers } from '../network/iceConfig.js';
-
-const ROOM_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // omit easily-confused chars
-const ROOM_CODE_LEN = 6;
-
-function generateRoomCode() {
-  let out = '';
-  const a = ROOM_CODE_ALPHABET;
-  for (let i = 0; i < ROOM_CODE_LEN; i++) {
-    out += a[Math.floor(Math.random() * a.length)];
-  }
-  return out;
-}
+// Code alphabet/length/generator live in roomCodes.js so UI code (the in-XR
+// lobby keyboard) can import the format without pulling in this module's
+// signaling/WebRTC dependency chain.
+import { generateRoomCode } from './roomCodes.js';
 
 export class LobbyManager {
   constructor({ iceServers } = {}) {

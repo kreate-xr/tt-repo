@@ -38,16 +38,16 @@ describe('Pro engine ball ranges', () => {
     }
   });
 
-  test('target_spin inside pro cap [-40, 40] rps over 10k samples', () => {
-    // Widened from ±32 to ±40 so Pro's CHOP shots (heavy defensive
-    // backspin, spec range -22 to -40 rps) don't get clamped and lose
-    // their identity. Cap set in DIFFICULTY_CAPS.pro in shotTypeSelector.js.
+  test('target_spin inside pro cap [-68, 68] rps over 10k samples', () => {
+    // Physical-rps spin economy: Pro's widest profile bounds are chop -64
+    // and loop +64; the DIFFICULTY_CAPS.pro rail sits clear at ±68
+    // (shotTypeSelector.js).
     const engine = createProEngine({ rng: mulberry32(32) });
     const history = new ShotHistory();
     for (let i = 0; i < 10000; i++) {
       const [, , , spin] = engine.computeTarget(history, {});
-      expect(spin).toBeGreaterThanOrEqual(-40.0);
-      expect(spin).toBeLessThanOrEqual(40.0);
+      expect(spin).toBeGreaterThanOrEqual(-68.0);
+      expect(spin).toBeLessThanOrEqual(68.0);
     }
   });
 
@@ -117,10 +117,10 @@ describe('Pro engine ball ranges', () => {
     const history = new ShotHistory();
     for (let i = 0; i < 2000; i++) {
       const [x, z] = engine.computeTarget(history, {});
-      expect(x).toBeGreaterThanOrEqual(-0.7);
-      expect(x).toBeLessThanOrEqual(0.7);
+      expect(x).toBeGreaterThanOrEqual(-0.745);
+      expect(x).toBeLessThanOrEqual(0.745);
       expect(z).toBeGreaterThanOrEqual(0.1);
-      expect(z).toBeLessThanOrEqual(1.3);
+      expect(z).toBeLessThanOrEqual(1.35);
     }
   });
 });

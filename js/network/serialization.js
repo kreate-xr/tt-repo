@@ -35,6 +35,12 @@ export const PacketType = Object.freeze({
   RALLY_END:          'RALLY_END',
   RECONCILIATION:     'RECONCILIATION',
   THERMAL_STATE:      'THERMAL_STATE',
+  // Sender's congestion governor engaged/cleared: { congested }. The peer
+  // widens its paddle/ball interpolation delay while our send rate is
+  // halved, exactly like the thermal path — without this, packet spacing
+  // doubles while the peer's jitter buffer stays sized for 60 Hz and the
+  // remote paddle freezes mid-swing.
+  CONGESTION_STATE:   'CONGESTION_STATE',
   PLAYER_PAUSED:      'PLAYER_PAUSED',
   GAME_READY:         'GAME_READY',
   HELLO:              'HELLO',

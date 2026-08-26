@@ -1,11 +1,11 @@
 // The feed editor — zone grid + attribute rows for one DrillConfig.
 //
-// This is the screen the Training menu calls "Custom Feed" and the Machine
-// Play menu calls "Rally Settings". They edit the same object with the same
-// validator (see modes/training/feedConfigModel.js), so they draw with the
-// same code: a copy would have let the two screens disagree about which
-// controls exist, which range a slider covers, or when spin amount is dimmed —
-// none of which is visible until you are in a headset on the second screen.
+// This is the Ball Machine screen. It once had a twin (the Machine Play
+// menu's "Rally Settings") which is why layout options like showSave exist;
+// any future second host must keep editing the same object with the same
+// validator (see modes/training/feedConfigModel.js) and draw with this code,
+// so the two screens can never disagree about which controls exist, which
+// range a slider covers, or when spin amount is dimmed.
 //
 // Split the same way panelKit is: layout is pure arithmetic over widget rects
 // and is therefore testable headless; drawing is ctx calls and is not. Both
@@ -37,10 +37,12 @@ const CONTROL_INSET = 210;   // label column width before a control starts
  * @param {number} opts.bodyY    first usable y below the panel header
  * @param {boolean} opts.showSave  whether to register the Save button
  * @param {boolean} opts.presetRow  register the ‹ preset › cycler above the
- *          zone grid (training menu only; Machine Play has no preset store)
+ *          zone grid
+ * @param {boolean} opts.endRow  register the ‹ end-condition › cycler as the
+ *          last attribute row (how the session ends: drill / survival / race)
  * @returns {{zoneGrid: object, fieldRows: Array, buttonsY: number,
- *          presetY: (number|null)}} geometry the draw pass needs; the host
- *          should keep it until the next layout.
+ *          presetY: (number|null), endRow: (object|null)}} geometry the draw
+ *          pass needs; the host should keep it until the next layout.
  */
 export function layoutFeedEditor(panel, {
   model,
@@ -50,15 +52,20 @@ export function layoutFeedEditor(panel, {
   bodyY = 88,
   showSave = true,
   presetRow = false,
+  endRow = false,
 } = {}) {
   // Difficulty segment. Meaningful wherever an AI tier is in play (ladders,
   // match modes); panels with no tier concept pass null and get no row.
+  // Right-aligned in the header, sized so "INTERNATIONAL" fits without
+  // shrinking the font below legible — at the old 112 px per segment it
+  // was drawn at 12 px and still brushed the segment edges.
   if (difficulties && difficulties.length) {
-    const segW = 180 / 1.6;
+    const segW = 150;
+    const segX0 = canvasW - 24 - difficulties.length * segW;
     for (let i = 0; i < difficulties.length; i++) {
       panel.add({
         id: `diff:${i}`, kind: WIDGETS.SEGMENT, shape: 'rect',
-        x: 620 + i * segW, y: 22, w: segW - 4, h: 36, index: i,
+        x: segX0 + i * segW, y: 20, w: segW - 4, h: 40, index: i,
       });
     }
   }
@@ -111,8 +118,10 @@ export function layoutFeedEditor(panel, {
     if (field.kind === 'zoneGrid') continue;   // drawn as the grid
     // A spin AMOUNT with no spin TYPE is meaningless, so the control is
     // registered disabled rather than omitted — a row that vanishes and
-    // reappears makes the list jump under the pointer.
-    const disabled = field.key === 'spinMagnitude' && !model.spinAmountEnabled;
+    // reappears makes the list jump under the pointer. Same treatment for a
+    // Balls count under an end condition that owns its own ending.
+    const disabled = (field.key === 'spinMagnitude' && !model.spinAmountEnabled)
+      || (field.key === 'burstCount' && model.burstEnabled === false);
     fieldRows.push({ field, x: fx, y, w: fw, h: FIELD_ROW_H, disabled });
 
     if (field.kind === 'slider') {
@@ -141,7 +150,23 @@ export function layoutFeedEditor(panel, {
     y += FIELD_ROW_H;
   }
 
-  return { zoneGrid, fieldRows, buttonsY, presetY };
+  // End-condition cycler, styled as one more attribute row at the bottom of
+  // the column: how the session ends is a property of the feed being set up,
+  // and drawing it anywhere else would suggest otherwise.
+  let endRowRect = null;
+  if (endRow) {
+    endRowRect = { x: fx, y, w: fw, h: FIELD_ROW_H };
+    panel.add({
+      id: 'end:-1', kind: WIDGETS.STEPPER, shape: 'rect',
+      x: fx + CONTROL_INSET, y: y + 4, w: 40, h: 32, delta: -1,
+    });
+    panel.add({
+      id: 'end:1', kind: WIDGETS.STEPPER, shape: 'rect',
+      x: fx + fw - 60, y: y + 4, w: 40, h: 32, delta: 1,
+    });
+  }
+
+  return { zoneGrid, fieldRows, buttonsY, presetY, endRow: endRowRect };
 }
 
 /**
@@ -159,6 +184,7 @@ export function drawFeedEditor(ctx, panel, {
   startLabel = 'START',
   zoneCaption = 'PLACEMENT  (near net → your end)',
   presetLabel = null,
+  endLabel = null,
 } = {}) {
   const hov = panel.hoveredId;
   const cfg = model.config;
@@ -201,7 +227,7 @@ export function drawFeedEditor(ctx, panel, {
       roundRect(ctx, w.x, w.y, w.w, w.h, 16);
       ctx.fill();
       ctx.fillStyle = on ? '#0e1116' : COLORS.muted;
-      ctx.font = F(600, 12);
+      ctx.font = F(600, 14);
       ctx.fillText(difficulties[i].label, w.x + w.w / 2, w.y + w.h / 2);
     }
   }
@@ -329,6 +355,36 @@ export function drawFeedEditor(ctx, panel, {
         ctx.textBaseline = 'middle';
         ctx.fillText(on ? 'ON' : 'OFF', w.x + w.w / 2, w.y + w.h / 2);
       }
+    }
+  }
+
+  // End-condition row — drawn exactly like a segment row so it reads as part
+  // of the attribute table it sits under.
+  if (layout.endRow) {
+    const row = layout.endRow;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = COLORS.text;
+    ctx.font = F(600, 17);
+    ctx.fillText('Ends', row.x, row.y + row.h / 2);
+
+    ctx.fillStyle = COLORS.accent;
+    ctx.font = F(600, 16);
+    ctx.textAlign = 'center';
+    ctx.fillText(endLabel || '',
+      row.x + (row.w + CONTROL_INSET - 20) / 2, row.y + row.h / 2);
+
+    for (const dir of [-1, 1]) {
+      const w = panel.get(`end:${dir}`);
+      if (!w) continue;
+      ctx.fillStyle = hov === w.id ? COLORS.panelHover : COLORS.panel;
+      roundRect(ctx, w.x, w.y, w.w, w.h, 16);
+      ctx.fill();
+      ctx.fillStyle = COLORS.text;
+      ctx.font = F(700, 18);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(dir < 0 ? '‹' : '›', w.x + w.w / 2, w.y + w.h / 2);
     }
   }
 }

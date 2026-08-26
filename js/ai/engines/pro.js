@@ -94,11 +94,14 @@ const PRO_TOPK_LIMIT = 3;
 // buffer keeps a bit more headroom.
 const RECENT_TYPES_WINDOW = 4;
 
-// Same safe zone (player side) as Intermediate.
-const SAFE_X_MIN = -0.7;
-const SAFE_X_MAX =  0.7;
+// Tighter to the lines than Intermediate (which runs ±0.72 / 1.33): elite
+// placement lives within ~2 cm of chalk. With jitter and solver landing
+// error on top, some of these genuinely miss — elite players donate points
+// to the lines too; that is what buying the unreachable ball costs.
+const SAFE_X_MIN = -0.745;
+const SAFE_X_MAX =  0.745;
 const SAFE_Z_MIN =  0.1;
-const SAFE_Z_MAX =  1.3;
+const SAFE_Z_MAX =  1.35;
 
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 

@@ -378,7 +378,7 @@ describe('feed solving — accuracy', () => {
       // speed and backspin extends it. Measuring reach with the ACTUAL spin
       // is what keeps the clamp correct across spin types.
       const reach = (spinType) => solveFeed(
-        cfg({ speed: 5, spinType, spinMagnitude: 140, depth: 'deep', scatterSigma: 0 }),
+        cfg({ speed: 5, spinType, spinMagnitude: 350, depth: 'deep', scatterSigma: 0 }),
         env, { rng: mulberry32(13) },
       ).maxReachM;
       expect(reach('back')).toBeGreaterThan(reach('top'));
@@ -454,14 +454,14 @@ describe('TEST M1: 500 feeds land within 2 cm of the commanded distribution', ()
   // The six Quick Feed presets, per M1.
   const PRESETS = {
     Warmup:        { speed: 6,  spinType: 'none', spinMagnitude: 0,   interval: 2.5, depth: 'half-long' },
-    'FH topspin':   { speed: 9,  spinType: 'top',  spinMagnitude: 120, placement: { kind: 'zone', zone: 9 } },
-    'BH topspin':   { speed: 9,  spinType: 'top',  spinMagnitude: 120, placement: { kind: 'zone', zone: 7 } },
+    'FH topspin':   { speed: 9,  spinType: 'top',  spinMagnitude: 300, placement: { kind: 'zone', zone: 9 } },
+    'BH topspin':   { speed: 9,  spinType: 'top',  spinMagnitude: 300, placement: { kind: 'zone', zone: 7 } },
     // Short placements need the far origin's longer, more arcing path — see
     // the short-feed test above.
-    'Backspin push': { speed: 7, spinType: 'back', spinMagnitude: 110, depth: 'short', arc: 'flat', feedOrigin: 'center-far' },
+    'Backspin push': { speed: 7, spinType: 'back', spinMagnitude: 275, depth: 'short', arc: 'flat', feedOrigin: 'center-far' },
     'Random light': { speed: 7,  spinType: 'none', spinMagnitude: 0,   scatterSigma: 0.2, placement: { kind: 'zone', zone: 8 } },
     // A smash setup is a ball the PLAYER attacks: high and unhurried, not fast.
-    'Smash setup':  { speed: 8,  spinType: 'top',  spinMagnitude: 90,  arc: 'lob', depth: 'half-long' },
+    'Smash setup':  { speed: 8,  spinType: 'top',  spinMagnitude: 225, arc: 'lob', depth: 'half-long' },
   };
 
   for (const [name, over] of Object.entries(PRESETS)) {

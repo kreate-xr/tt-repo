@@ -47,7 +47,7 @@ const CUE_PROFILES = {
 // Middling pace, real spin. The pattern's steps override spinType per ball;
 // speed/interval here set the rhythm they all share.
 const BASE_CONFIG = {
-  speed: 7, spinType: 'top', spinMagnitude: 120,
+  speed: 7, spinType: 'top', spinMagnitude: 300,
   placement: { kind: 'zone', zone: 5 }, depth: 'deep',
   scatterSigma: 0.06, interval: 2.8, burstCount: INFINITE,
 };

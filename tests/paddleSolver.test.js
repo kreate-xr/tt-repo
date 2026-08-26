@@ -55,12 +55,14 @@ function defaultContact() {
 }
 
 describe('solvePaddle — basic sanity', () => {
-  // Strike caps, re-tuned for the international ladder. These are racket-head
-  // speed at contact — distinct from aiPaddle.MOVEMENT_SPEED_MPS (footwork).
-  test('exports max paddle speeds (5 / 11 / 13)', () => {
-    expect(MAX_PADDLE_SPEED_MPS.beginner).toBeCloseTo(5.0, 8);
-    expect(MAX_PADDLE_SPEED_MPS.intermediate).toBeCloseTo(11.0, 8);
-    expect(MAX_PADDLE_SPEED_MPS.pro).toBeCloseTo(13.0, 8);
+  // Strike caps, re-tuned for the physical spin economy: real racket-head
+  // speeds at contact (an elite loop swings 15-20 m/s) so the tangential
+  // brush component of physical-rps spin requests fits under the rail.
+  // Distinct from aiPaddle.MOVEMENT_SPEED_MPS (footwork).
+  test('exports max paddle speeds (7 / 15 / 18)', () => {
+    expect(MAX_PADDLE_SPEED_MPS.beginner).toBeCloseTo(7.0, 8);
+    expect(MAX_PADDLE_SPEED_MPS.intermediate).toBeCloseTo(15.0, 8);
+    expect(MAX_PADDLE_SPEED_MPS.pro).toBeCloseTo(18.0, 8);
   });
 
   // NOTE: the companion invariant "strike cap > footwork speed for every tier"
@@ -69,10 +71,10 @@ describe('solvePaddle — basic sanity', () => {
   // is covered in tests/reachability.test.js instead.
 
   test('maxPaddleSpeedForDifficulty returns the tier value, with beginner fallback', () => {
-    expect(maxPaddleSpeedForDifficulty('beginner')).toBe(5.0);
-    expect(maxPaddleSpeedForDifficulty('intermediate')).toBe(11.0);
-    expect(maxPaddleSpeedForDifficulty('pro')).toBe(13.0);
-    expect(maxPaddleSpeedForDifficulty('unknown')).toBe(5.0);
+    expect(maxPaddleSpeedForDifficulty('beginner')).toBe(7.0);
+    expect(maxPaddleSpeedForDifficulty('intermediate')).toBe(15.0);
+    expect(maxPaddleSpeedForDifficulty('pro')).toBe(18.0);
+    expect(maxPaddleSpeedForDifficulty('unknown')).toBe(7.0);
   });
 
   test('feasible result for a routine Beginner shot at center', () => {

@@ -34,7 +34,7 @@ import { AIPaddle } from './aiPaddle.js';
 import { createIntent } from './intent.js';
 import { createAIFSM } from './aiFSM.js';
 import { recordPlayerLanding, recordIncomingBall, resetRecentLandings, setStyleHomeDistance } from './readyPosition.js';
-import { pickStyleForMatch, homeDistanceForStyle } from '../../ai/playerStyles.js';
+import { pickStyleForMatch, homeDistanceForStyle, contactDelayForStyle } from '../../ai/playerStyles.js';
 import { createServer } from './serve.js';
 import { createPlayerServeController } from './playerServe.js';
 import { createRallyManager } from './rallyManager.js';
@@ -217,6 +217,11 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
   // anticipatory bias starts fresh.
   resetRecentLandings();
   setStyleHomeDistance(homeDistanceForStyle(style));
+  // Contact TIMING is the other half of the style signature: the blocker
+  // takes the ball on the rise, the chopper late on the descent (see
+  // STYLE_CONTACT_DELAY_MS). Set once — the interception rollout uses it
+  // for every ball of the match.
+  shotAdapter.setContactDelayMs(contactDelayForStyle(style));
   const paddle = new AIPaddle({ difficulty, style });
   const intent = createIntent();
   intent.difficulty = difficulty;
@@ -367,7 +372,13 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
   // real velocity); the trigger auto-toss stays as the always-available
   // fallback, so this remains constructable without xr (headless tests).
   const playerServe = createPlayerServeController({ xr });
-  const rallyManager = createRallyManager({ ballEvents, server, playerServe });
+  // Serve toss: a fair coin decides who serves first, like the real thing —
+  // the AI used to serve first every match, which also meant the player
+  // NEVER opened a match with their own serve.
+  const rallyManager = createRallyManager({
+    ballEvents, server, playerServe,
+    config: { firstServer: Math.random() < 0.5 ? 'player' : 'ai' },
+  });
   // Probe is the paddle's face centre, which ball.js already maintains every
   // frame for collision — no extra pose work, and it's the point that
   // actually contacts things.

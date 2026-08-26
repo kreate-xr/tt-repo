@@ -23,6 +23,7 @@ import {
   FLOOR_LEVEL_Y, FLOOR_RESTITUTION, FLOOR_FRICTION, FLOOR_SPIN_DAMP,
   TABLE_EDGE_SPIN_DAMP, TABLE_EDGE_COR_SCALE,
   STATIONARY_VEL, STATIONARY_TIME,
+  DEAD_BALL_BOUNCES, DEAD_BALL_COR_SCALE,
   ROLLING_FRICTION, ROLLING_VY_THRESHOLD,
   SQUASH_DURATION, SQUASH_AMOUNT,
   HAPTIC_FLOOR, HAPTIC_MAX_SPEED, HAPTIC_DURATION_MIN_MS, HAPTIC_DURATION_MAX_MS,
@@ -181,6 +182,10 @@ let lastHitTime = 0;
 // NET_HIT_COOLDOWN of clock start.
 let lastNetHitTime = -Infinity;
 let stationaryTime = 0;
+// Table bounces since the last paddle contact. At DEAD_BALL_BOUNCES the ball
+// is dead in every mode (see constants.js) and each further bounce takes the
+// DEAD_BALL_COR_SCALE damp so it settles in seconds, not tens of seconds.
+let bouncesSinceContact = 0;
 
 // Previous-frame ball position, used as the "pre" sample for swept paddle
 // collision. Tracking it at module scope (rather than recomputing inside the
@@ -321,6 +326,7 @@ export function spawnBallAt(pos, velocity, angularVelocity) {
   lastHitTime = 0;
   lastNetHitTime = -Infinity;
   stationaryTime = 0;
+  bouncesSinceContact = 0;
   squashUntil = 0;
   lastBallPos.copy(pos);
   hadBallPos = false;
@@ -373,6 +379,9 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
 
   if (result.crossed && result.hit && (clockTime - ctx.getLastHit()) > HIT_COOLDOWN) {
     ctx.setLastHit(clockTime);
+    // The ball is back in play: its table bounces count from zero again for
+    // the dead-ball damp.
+    bouncesSinceContact = 0;
 
     // Edge-strike detection. Only the player paddle triggers the wood-blade
     // model — AI paddles' edge-zone contacts fall back to standard face
@@ -449,7 +458,9 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
     // "flat hit" classifier. AI paddles are excluded — their pose is
     // authoritative and can't drift.
     if (ctx.origin === 'player' && impactSpeed > 0.05) {
-      const utOverVn = impactSpeed > 1e-4 ? tangentVel / impactSpeed : 0;
+      // tangentVel is a Vector3 — dividing it by a scalar yields NaN, which
+      // silently poisoned every logged hit's flat-hit ratio for a while.
+      const utOverVn = impactSpeed > 1e-4 ? tangentVel.length() / impactSpeed : 0;
       recordContactLogHit(result.onPlane.x, result.onPlane.y, result.onPlane.z, utOverVn);
     }
 
@@ -948,6 +959,15 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       // allocation-free. Returns |v_y| BEFORE the reflection, which drives
       // sound, haptic, and squash intensity consistently.
       const bounceImpact = applyTableBounce(ballVelocity, ballAngularVelocity, ballRadius);
+      // Dead-ball damping: from the third bounce with no paddle contact the
+      // ball is dead in every mode, and at the lively-table COR (clamped at
+      // COR_MAX for all impacts below ~3.9 m/s) it would otherwise keep
+      // bouncing for 15+ seconds before the stuck-ball detector could fire —
+      // stalling any feeder that waits on ballLost. Bleed extra vertical
+      // energy so it visibly comes to rest within a few hops.
+      if (++bouncesSinceContact >= DEAD_BALL_BOUNCES) {
+        ballVelocity.y *= DEAD_BALL_COR_SCALE;
+      }
       const bounceIntensity = Math.min(bounceImpact / 5, 1.0);
       playBounceSound(bounceIntensity, ballModel.position);
       // Light haptic so the table has felt presence — scaled below paddle hits

@@ -8,11 +8,14 @@
 //
 // ── SPIN RANGE ──────────────────────────────────────────────────────────────
 // M1 specifies spinMagnitude 0–900 rad/s. The engine cannot land a ball
-// anywhere near that. The AI code works in REVOLUTIONS PER SECOND and
-// js/ai/shotTypeSelector.js records the measured limits: the solver "cannot
-// hold backspin past about -25 rps on the table", and its most extreme
-// topspin profile tops out near +26 rps. That is ≈ ±160 rad/s — the spec's
-// range is roughly 5.6× beyond what the physics can honour.
+// anywhere near that. The AI code works in REVOLUTIONS PER SECOND; the old
+// cap of 160 rad/s derived from js/ai/shotTypeSelector.js's measured limits
+// of "±25/26 rps" under the old MAGNUS_COEFFICIENT of 0.010. That coefficient
+// is now the physical 0.004, and the AI spin economy was rescaled ×2.5 to
+// physical rad/s at the same time (top ~64 rps ≈ 400 rad/s), so 400 is the
+// new matching cap. Every training-layer spin magnitude was scaled ×2.5 in
+// the same pass, which preserves M·ω (0.010·ω_old == 0.004·2.5·ω_old) and
+// therefore keeps every feed trajectory identical.
 //
 // Decision (recorded in tt-training-migration-plan.md §3.1): clamp to the
 // feasible envelope rather than ship a slider whose top half silently
@@ -20,9 +23,9 @@
 // ceiling, so raising it later is a one-line change gated by the M1 landing
 // test rather than a hunt through the UI.
 //
-// The spec's DEFAULT of 150 rad/s sits just inside this ceiling, so the
-// default feed is unaffected by the clamp.
-export const SPIN_MAX_RAD_S = 160;
+// The DEFAULT of 375 rad/s (the spec's 150, rescaled ×2.5) sits just inside
+// this ceiling, so the default feed is unaffected by the clamp.
+export const SPIN_MAX_RAD_S = 400;
 
 export const CONFIG_VERSION = 1;
 
@@ -50,7 +53,7 @@ export const INFINITE = Infinity;
 // validator accepts.
 export const FIELD_SPECS = Object.freeze({
   speed:         { type: 'number', min: 2,   max: 25,  step: 0.5,  default: 8 },
-  spinMagnitude: { type: 'number', min: 0,   max: SPIN_MAX_RAD_S, step: 10, default: 150 },
+  spinMagnitude: { type: 'number', min: 0,   max: SPIN_MAX_RAD_S, step: 25, default: 375 },
   omegaX:        { type: 'number', min: -SPIN_MAX_RAD_S, max: SPIN_MAX_RAD_S, step: 10, default: 0 },
   omegaY:        { type: 'number', min: -SPIN_MAX_RAD_S, max: SPIN_MAX_RAD_S, step: 10, default: 0 },
   omegaZ:        { type: 'number', min: -SPIN_MAX_RAD_S, max: SPIN_MAX_RAD_S, step: 10, default: 0 },
@@ -203,6 +206,11 @@ export function resolveSpinVector(config) {
 // enough to debug from a pasted link. Field ORDER is frozen per version —
 // a new field means CONFIG_VERSION + 1 and a new decoder branch, never an
 // insertion into the v1 order.
+//
+// NOTE on the ×2.5 spin rescale: spinMagnitude (and the ω components) are
+// serialized verbatim, so codes minted before the ×2.5 spin rescale carry
+// values ≤160 and now decode to visibly flatter feeds than intended. That is
+// accepted — the trajectory is still valid, just weaker-spun.
 
 const SPIN_CODES   = { none: 'n', top: 't', back: 'b', 'side-L': 'l', 'side-R': 'r', combo: 'c' };
 const DEPTH_CODES  = { short: 's', 'half-long': 'h', deep: 'd' };

@@ -53,7 +53,7 @@ import { solvePaddle, maxPaddleSpeedForDifficulty } from '../../ai/paddleSolver.
 import { STREAK_THRESHOLD, STREAK_MISS_BOOST_ADDITIVE } from '../../ai/momentum.js';
 import { checkReachability, REACHABILITY } from './reachability.js';
 import { planTrajectory, interpolateTrajectory } from './interception.js';
-import { recordAIContact, idleSettleOffset } from './readyPosition.js';
+import { recordAIContact, idleSettleOffset, anticipationLeanX } from './readyPosition.js';
 
 export const STATES = Object.freeze({
   IDLE: 'IDLE',
@@ -83,6 +83,20 @@ export { COMMIT_LOCK_BEFORE_CONTACT_MS };
 // has time to correct, and it only bites on balls with real spin (see
 // MISREAD_MIN_OFFSET_M) so flat rallies are untouched.
 export const READ_LATENCY_MS = 120;
+// Per-tier read latency. This used to be the flat 120 above for everyone,
+// which meant CLUB and ELITE perceived the ball identically and only
+// footwork and dice separated them — no real ladder works that way. How
+// fast you read spin off the opponent's racket IS a skill axis: a club
+// player commits to their first (spin-blind) read for most of the approach;
+// an elite player has the curve decoded almost off the bounce of the
+// opponent's contact. Every value stays under COMMIT_LOCK_BEFORE_CONTACT_MS
+// with margin at rally flight times, so this remains a mid-approach
+// correction, never an uncorrectable blindfold.
+export const READ_LATENCY_MS_BY_DIFFICULTY = Object.freeze({
+  beginner: 280,
+  intermediate: 150,
+  pro: 90,
+});
 // Minimum distance between the spin-blind and true interception points for
 // the misread to be worth simulating. Below this the correction would be
 // inside the existing micro-correction budget and invisible.
@@ -137,6 +151,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
   const _swingDirTmp      = new THREE.Vector3();
   const _idlePoseTmp      = new THREE.Vector3();
   const _idleWobbleTmp    = { x: 0, y: 0, z: 0 };
+  const _disguiseFaceTmp  = new THREE.Vector3();
   // V2 §section_2 interception trajectory interpolation temps.
   const _trajectoryPos    = new THREE.Vector3();
   const _trajectoryFace   = new THREE.Vector3();
@@ -195,6 +210,24 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
   function planTrajectoryTo(contactPos) {
     const timeBudgetMs = intent.predictedContactPerfMs - performance.now();
     if (timeBudgetMs <= 50) return false;
+    // Pace-scaled face reveal: the visible face starts rotating toward the
+    // contact normal telegraphLeadMs before contact (150/250/350 by power),
+    // so a smash's backswing is readable in real time, not as a fixed sliver
+    // of whatever the budget happens to be.
+    const speed = intent.target ? intent.target[2] : 0;
+    // Pro disguise: the reveal passes through the DISGUISED shot type's face
+    // for the first 2/3 of the window, then wrist-snaps to the true contact
+    // face. displayedShotType is set by onTargetReceived (Pro only, spinful
+    // shots only); this is the path that finally consumes it — the old one
+    // only ran when the solver had already failed.
+    let disguiseFace = null;
+    if (difficulty === 'pro'
+        && intent.displayedShotType
+        && intent.displayedShotType !== intent.shotType) {
+      disguiseFace = faceNormalForShot(
+        intent.displayedShotType, contactPos, intent.targetWorld, _disguiseFaceTmp,
+      );
+    }
     const plan = planTrajectory({
       currentPos: paddle.faceCenterWorld,
       currentFaceNormal: paddle.faceNormalWorld,
@@ -204,6 +237,8 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       timeBudgetMs,
       maxPaddleSpeed: maxPaddleSpeedForDifficulty(difficulty),
       maxApproachSpeed: footworkSpeed(),
+      telegraphLeadMs: speed > 0 ? telegraphLeadMsForSpeed(speed) : null,
+      disguiseFaceNormal: disguiseFace,
     });
     if (!plan || !plan.keyframes || plan.keyframes.length === 0) return false;
     intent.trajectory = plan.keyframes;
@@ -314,7 +349,8 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
         misreadCorrectionPending = true;
       }
     }
-    readCompleteAtPerfMs = performance.now() + READ_LATENCY_MS;
+    readCompleteAtPerfMs = performance.now()
+      + (READ_LATENCY_MS_BY_DIFFICULTY[difficulty] ?? READ_LATENCY_MS);
 
     intent.predictedContact.set(
       rolloutResult.contactPoint.x,
@@ -573,6 +609,10 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     // Drop any pending spin-read correction — it belongs to a rally that no
     // longer exists, and leaving it armed would fire against the next one.
     misreadCorrectionPending = false;
+    // And the pre-contact anticipation lean with it: the next rally opens
+    // from a neutral ready position (receiving a serve with a stale lean
+    // from last rally's aim point would be leaning at a ghost).
+    intent.targetWorld.set(0, 0, 0);
     transition(STATES.IDLE);
   }
 
@@ -607,6 +647,19 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
         _idlePoseTmp.copy(paddle.readyPose.position);
         _idlePoseTmp.x += _idleWobbleTmp.x;
         _idlePoseTmp.y += _idleWobbleTmp.y;
+        // Pre-contact anticipation: with our own shot away toward
+        // intent.targetWorld, drift toward the expected (crosscourt-biased)
+        // return corridor BEFORE the player's contact. targetWorld is zeroed
+        // by intent.reset() each rally, so this only engages mid-rally when
+        // the aim point is real; a down-the-line reply wrong-foots the lean,
+        // as it should.
+        if (intent.targetWorld.lengthSq() > 1e-6) {
+          _idlePoseTmp.x += anticipationLeanX({
+            difficulty,
+            aiTargetX: intent.targetWorld.x,
+            baseX: paddle.readyPose.position.x,
+          });
+        }
         paddle.driveTowardPose(
           _idlePoseTmp, paddle.readyPose.normal,
           dt, baseSpeed,

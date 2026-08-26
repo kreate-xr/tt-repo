@@ -176,6 +176,11 @@ export function createShotAdapter({ worker, ballEvents }) {
   let pending = null;
   let lastRollout = null;
   let lastRolloutSpinBlind = null;
+  // Post-bounce delay to the interception point. Style-dependent (see
+  // playerStyles.STYLE_CONTACT_DELAY_MS): the caller sets it once the
+  // match's style is picked — a blocker meets the ball on the rise, a
+  // chopper late on the descent.
+  let contactDelayMs = CONTACT_DELAY_MS_DEFAULT;
   // True between an AI contact and the ball's next player-side bounce — the
   // window in which a bounce IS that AI shot's landing. Guards against
   // crediting a double bounce, or an AI-side net clip, as the landing.
@@ -224,11 +229,15 @@ export function createShotAdapter({ worker, ballEvents }) {
   function runInterceptionRollout() {
     if (!ballModel) return;
     lastRollout = rolloutForAIInterception(
-      ballModel.position, ballVelocity, ballAngularVelocity,
+      ballModel.position, ballVelocity, ballAngularVelocity, contactDelayMs,
     );
     lastRolloutSpinBlind = rolloutForAIInterception(
-      ballModel.position, ballVelocity, _zeroSpin,
+      ballModel.position, ballVelocity, _zeroSpin, contactDelayMs,
     );
+  }
+
+  function setContactDelayMs(ms) {
+    if (Number.isFinite(ms) && ms > 0) contactDelayMs = ms;
   }
 
   // The AI's shot has landed on the player's half. Open a record for it and
@@ -334,5 +343,5 @@ export function createShotAdapter({ worker, ballEvents }) {
   // spin. Null when the spin-blind integration finds no AI-side bounce.
   function getLastRolloutSpinBlind() { return lastRolloutSpinBlind; }
 
-  return { sampleEachFrame, getLastRollout, getLastRolloutSpinBlind, dispose };
+  return { sampleEachFrame, getLastRollout, getLastRolloutSpinBlind, setContactDelayMs, dispose };
 }

@@ -8,10 +8,10 @@
 //                              DIFFICULTY_CAPS.beginner.minSpeed, applied
 //                              after depthSpeedFactor scales pace for deep
 //                              targets)
-//   spin    ∈ [-15, 15]       (PROFILE_OVERRIDES.beginner spin bounds — NOT
-//                              the ±20 rail, which deliberately sits clear.
-//                              Beginner's widest live types are loop +14.4
-//                              and slice -12)
+//   spin    ∈ [-45, 36]       (PROFILE_OVERRIDES.beginner spin bounds — NOT
+//                              the ±50 rail, which deliberately sits clear.
+//                              Beginner's widest live types are loop +36
+//                              and slice -30, physical rps)
 //   payload length = 7        (shot type in slot [5], sidespin rps in [6],
 //                              same as Int/Pro)
 //
@@ -112,18 +112,18 @@ describe('createBeginnerEngine', () => {
     }
   });
 
-  test('target_spin respects Beginner profile range [-15, 15] rps over 10k samples', () => {
+  test('target_spin respects Beginner profile range [-45, 36] rps over 10k samples', () => {
     // Bounds come from PROFILE_OVERRIDES.beginner, not from the rail. Before
-    // those spin overrides existed, DIFFICULTY_CAPS.maxSpin (±15) did the
-    // shaping and 100% of beginner loops emitted EXACTLY +15.0 rps, 77% of
-    // slices exactly -15.0 — the collapse defect, still live on the spin axis
-    // after it had been fixed on the speed axis.
+    // those spin overrides existed, DIFFICULTY_CAPS.maxSpin did the shaping
+    // and 100% of beginner loops emitted EXACTLY the rail value — the
+    // collapse defect, still live on the spin axis after it had been fixed
+    // on the speed axis. Values are physical rps.
     const engine = createBeginnerEngine({ rng: mulberry32(6) });
     const N = 10000;
     for (let i = 0; i < N; i++) {
       const [, , , spin] = engine.computeTarget(null, {});
-      expect(spin).toBeGreaterThanOrEqual(-15.0);
-      expect(spin).toBeLessThanOrEqual(15.0);
+      expect(spin).toBeGreaterThanOrEqual(-45.0);
+      expect(spin).toBeLessThanOrEqual(36.0);
     }
   });
 
@@ -273,9 +273,10 @@ describe('createBeginnerEngine', () => {
       const side = t[6];
       expect(Number.isFinite(side)).toBe(true);
       if (side !== 0) {
-        // Beginner band from SIDESPIN_BY_DIFFICULTY: 2-6 rps magnitude.
-        expect(Math.abs(side)).toBeGreaterThanOrEqual(2.0);
-        expect(Math.abs(side)).toBeLessThanOrEqual(6.0);
+        // Beginner band from SIDESPIN_BY_DIFFICULTY: 5-15 rps magnitude
+        // (physical rps).
+        expect(Math.abs(side)).toBeGreaterThanOrEqual(5.0);
+        expect(Math.abs(side)).toBeLessThanOrEqual(15.0);
         withSide += 1;
         if (side < 0) left += 1;
       }

@@ -42,7 +42,7 @@ import { TelemetryReporter } from '../../network/TelemetryReporter.js';
 import { ReconnectHandler } from '../../network/ReconnectHandler.js';
 import { SessionState } from '../../lobby/SessionState.js';
 import { hudLog } from '../../scene/hud.js';
-import { createMatchModel, createRallyTracker } from './matchModel.js';
+import { createMatchModel, createRallyTracker, firstServerFromCode } from './matchModel.js';
 import { createPlayerServeController } from '../aiMatch/playerServe.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
 import { faultRuleText } from '../../scene/faultText.js';
@@ -112,7 +112,10 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // peers; myAbs/oppAbs translate to/from this peer's perspective.
   const myAbs = role === 'host' ? 'host' : 'guest';
   const oppAbs = myAbs === 'host' ? 'guest' : 'host';
-  const match = createMatchModel({ firstServer: 'host' });
+  // First server comes from a deterministic hash of the room code — a serve
+  // "toss" both peers compute identically with no extra wire traffic. The
+  // old hardcoded 'host' gave the host the first serve of every match.
+  const match = createMatchModel({ firstServer: firstServerFromCode(lobby && lobby.code) });
   // Full ITTF rulebook, shared with the AI match (js/modes/rallyRules.js).
   // Geometry is read live so service-position and obstruction tests use the
   // same table the physics does.
@@ -193,6 +196,16 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // Render delay for the remote timeline; widened while the peer is
   // thermally throttled (see REMOTE_INTERP_DELAY_MS).
   let remoteInterpDelayMs = REMOTE_INTERP_DELAY_MS;
+  // The peer's send rate halves under EITHER its thermal governor or its
+  // congestion governor; both must widen our interpolation delay, and it
+  // narrows again only when both have cleared.
+  let peerThrottled = false;
+  let peerCongested = false;
+  function recomputeInterpDelay() {
+    remoteInterpDelayMs = (peerThrottled || peerCongested)
+      ? REMOTE_INTERP_DELAY_THROTTLED_MS
+      : REMOTE_INTERP_DELAY_MS;
+  }
 
   // --- Instant event sounds ---
   // Table bounce: played from the local mini-sim the moment the displayed
@@ -242,6 +255,21 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // ball, it is now flying toward us, we take authority.
   function adoptHandoff(msg) {
     if (!hm.onRemoteHandoff(msg)) return; // duplicate or stale
+    // Serve-window race: both peers schedule their serve windows from their
+    // OWN applyRallyEnd, so the two timers start one-way-latency apart. On a
+    // slow link the server can toss and strike before our (later) window
+    // fires — this handoff IS that serve arriving. Open the rally state our
+    // window would have set and cancel the pending timer, which would
+    // otherwise fire mid-rally, hide the live ball, reset the tracker and
+    // strand authority on both sides.
+    if (rallyDecided) {
+      if (serveTimer) { clearTimeout(serveTimer); serveTimer = null; }
+      tracker.reset({ server: 'opponent' });
+      rallyDecided = false;
+      tossLive = false;
+      playerServe.disarm();
+      if (serveArrow) serveArrow.hide();
+    }
     const decoded = gameSync.decodeFromWire(msg.ball);
     if (decoded && ballModel) {
       // Project by the packet's age so adoption lands on the CURRENT point
@@ -370,9 +398,48 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         hudLog(`peer thermal: ${msg.throttled ? 'THROTTLED' : 'ok'}`);
         // Peer's send rate halves to 30 Hz while throttled — widen the
         // interpolation delay so we still bracket between two packets.
-        remoteInterpDelayMs = msg.throttled
-          ? REMOTE_INTERP_DELAY_THROTTLED_MS
-          : REMOTE_INTERP_DELAY_MS;
+        peerThrottled = !!msg.throttled;
+        recomputeInterpDelay();
+        break;
+      }
+      case PacketType.CONGESTION_STATE: {
+        hudLog(`peer congestion: ${msg.congested ? 'backing off' : 'clear'}`);
+        // Same physics as the thermal path: their packet spacing doubled, so
+        // our jitter buffer must look further back or their paddle freezes
+        // at extrapolation's 50 ms cap exactly when we're reading a swing.
+        peerCongested = !!msg.congested;
+        recomputeInterpDelay();
+        break;
+      }
+      case PacketType.SCORE_UPDATE: {
+        // Host-authoritative score reconciliation. Crossed rally verdicts
+        // (both peers deciding the same rally in a race) are DROPPED by the
+        // rallySeq dedupe, which prevented double-counting but let the two
+        // scoreboards diverge permanently — each peer kept its own verdict
+        // and nothing ever reconciled them. The host's serialized match
+        // state is the tie-break: the guest adopts whenever the host is
+        // ahead, or level on rallySeq with different state. Not a cheat
+        // defence (nothing peer-to-peer is) — a divergence repair.
+        if (role === 'host' || !msg.match) break;
+        const snap = msg.match;
+        const local = match.getState();
+        if (typeof snap.rallySeq !== 'number') break;
+        if (snap.rallySeq < local.rallySeq) break;   // we're ahead; host will catch up
+        const differs = JSON.stringify(match.serialize()) !== JSON.stringify(snap);
+        if (!differs) break;
+        match.restore(snap);
+        refreshScoreUi();
+        hudLog(`score reconciled from host (rally ${snap.rallySeq})`);
+        const s = match.getState();
+        if (s.matchOver && scoreboard) {
+          const myGames = myAbs === 'host' ? s.gamesHost : s.gamesGuest;
+          const oppGames = myAbs === 'host' ? s.gamesGuest : s.gamesHost;
+          scoreboard.setMatchOverBanner(
+            s.matchWinner === myAbs
+              ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
+              : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
+          );
+        }
         break;
       }
       case PacketType.PLAYER_PAUSED: {
@@ -543,6 +610,10 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // releases authority and waits for BALL_STATE packets. The serve strike is
   // an ordinary paddle hit — the existing handoff protocol takes over.
   let serveTimer = null;
+  // Break between games — long enough to read the game banner and reset,
+  // short enough that a 2-player session doesn't stall. (ITTF allows up to
+  // a minute; nobody wants that in a headset.)
+  const GAME_BREAK_MS = 6000;
   function scheduleServeWindow(delayMs = NEXT_SERVE_DELAY_MS) {
     if (serveTimer) clearTimeout(serveTimer);
     serveTimer = setTimeout(() => {
@@ -552,6 +623,13 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   }
   function openServeWindow() {
     if (match.getState().gameOver) return;
+    // Backstop for the serve-window race (see adoptHandoff): if a rally is
+    // already live — the opponent's serve beat this timer — opening the
+    // window now would hide the live ball and reset the rulebook mid-point.
+    if (!rallyDecided && tracker.isActive()) return;
+    // A between-games banner ("GAME 2: 11-7") stays up through the game
+    // break; the next game's first serve clears it.
+    if (scoreboard) scoreboard.setMatchOverBanner(null);
     // Retire the previous rally's ball on both sides BEFORE authority flips —
     // a dead ball still rolling in the ex-owner's sim would freeze mid-air
     // the moment tickPhysics stops integrating for the new non-owner.
@@ -582,6 +660,15 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
       scoreboard.update({
         playerScore: sessionState.scoreSelf,
         aiScore: sessionState.scoreOpponent,
+        playerGames: myAbs === 'host' ? s.gamesHost : s.gamesGuest,
+        aiGames: myAbs === 'host' ? s.gamesGuest : s.gamesHost,
+        bestOf: s.bestOf,
+        // Layout convention: per-game history rows are { playerScore, aiScore }
+        // in the LOCAL perspective.
+        gameHistory: s.games.map((g) => ({
+          playerScore: myAbs === 'host' ? g.scoreHost : g.scoreGuest,
+          aiScore: myAbs === 'host' ? g.scoreGuest : g.scoreHost,
+        })),
         currentServer: s.currentServer === myAbs ? 'player' : 'ai',
       });
     }
@@ -622,6 +709,12 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // inputs (absolute winner) + identical model = identical resulting state.
   function applyRallyEnd(winnerAbs, reason, detail = null, foulAbs = null) {
     const s = match.applyRallyEnd(winnerAbs);
+    // Host broadcasts its post-transition state after every rally (plus a
+    // periodic heartbeat in update()) — the reconciliation half of the
+    // crossed-verdict story; see the SCORE_UPDATE receive handler.
+    if (role === 'host') {
+      nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize() });
+    }
     // The rally is over but the ball is still on the table until the serve
     // window opens. Nothing that happens to it from here counts.
     rallyDecided = true;
@@ -655,15 +748,35 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
       playFoulWhistle();
       hudLog(`[FOUL] ${faultRuleText(reason, detail)}`);
     }
-    if (s.gameOver) {
+    if (s.matchOver) {
+      const myGames = myAbs === 'host' ? s.gamesHost : s.gamesGuest;
+      const oppGames = myAbs === 'host' ? s.gamesGuest : s.gamesHost;
       if (scoreboard) {
         scoreboard.setMatchOverBanner(
-          s.gameWinner === myAbs
-            ? `YOU WIN ${sessionState.scoreSelf}-${sessionState.scoreOpponent}`
-            : `OPPONENT WINS ${sessionState.scoreOpponent}-${sessionState.scoreSelf}`,
+          s.matchWinner === myAbs
+            ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
+            : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
         );
       }
-      hudLog(`game over: ${s.gameWinner === myAbs ? 'you win' : 'opponent wins'}`);
+      hudLog(`match over: ${s.matchWinner === myAbs ? 'you win' : 'opponent wins'} ${myGames}-${oppGames}`);
+      return;
+    }
+    if (s.gameJustEnded) {
+      // A game ended mid-match: banner it through the break, then the next
+      // game's serve window (openServeWindow) clears the banner.
+      const g = s.gameJustEnded;
+      const my = myAbs === 'host' ? g.scoreHost : g.scoreGuest;
+      const opp = myAbs === 'host' ? g.scoreGuest : g.scoreHost;
+      const n = s.games.length;
+      if (scoreboard) {
+        scoreboard.setMatchOverBanner(
+          g.winner === myAbs
+            ? `GAME ${n} TO YOU  ${my}-${opp}`
+            : `GAME ${n} TO OPPONENT  ${opp}-${my}`,
+        );
+      }
+      hudLog(`game ${n} over: ${g.winner === myAbs ? 'you' : 'opponent'} ${my}-${opp}`);
+      scheduleServeWindow(GAME_BREAK_MS);
       return;
     }
     scheduleServeWindow();
@@ -707,12 +820,15 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   function wireConnection() {
     nm.on('gameMessage', onGameMessage);
     nm.on('eventMessage', onEventMessage);
-    // Congestion governor transitions (NetworkManager halves/restores the
-    // send rate itself; this is just operator visibility).
+    // Congestion governor transitions. NetworkManager halves/restores the
+    // send rate itself; we log for operator visibility AND tell the peer —
+    // like the thermal path — so it widens its interpolation delay to match
+    // our doubled packet spacing instead of under-running its jitter buffer.
     nm.on('congestion', ({ congested, bufferedBytes, queuingDelayMs }) => {
       hudLog(congested
         ? `net congestion: backing off (buffered=${bufferedBytes}B queue=${queuingDelayMs === null ? '?' : queuingDelayMs.toFixed(0)}ms)`
         : 'net congestion: clear — rate restored');
+      nm.sendEvent({ type: PacketType.CONGESTION_STATE, congested: !!congested });
     });
     nm.startSendLoop(60);
     startTelemetry();
@@ -791,6 +907,11 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
 
   // --- Per-frame update (called by inGame.js before tickPhysics) ---
   let reconcilAccum = 0;
+  let scoreSyncAccum = 0;
+  const SCORE_SYNC_INTERVAL_S = 5;
+  // Silent-peer watchdog state — see 0e below.
+  let peerSilentWarned = false;
+  const PEER_SILENT_WARN_MS = 3000;
   const tmpQuat = new THREE.Quaternion();
   const tmpRemoteDelta = new THREE.Vector3();
   function update(dt) {
@@ -804,8 +925,43 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     }
 
     // 0c. Feed measured one-way latency into the ball projection cap so slow
-    // links dead-reckon to "now" instead of lagging by (packet age − cap).
-    if (nm.clock) gameSync.setLatencyMs(nm.clock.oneWayMs());
+    // links dead-reckon to "now" instead of lagging by (packet age − cap),
+    // and scale the handoff ACK timeout to the same measured link — a fixed
+    // window fires on every shot once RTT exceeds it.
+    if (nm.clock) {
+      gameSync.setLatencyMs(nm.clock.oneWayMs());
+      const rtt = nm.clock.smoothedRttMs && nm.clock.smoothedRttMs();
+      if (rtt !== null && rtt !== undefined) hm.setAckTimeoutMs(rtt * 1.5 + 100);
+    }
+
+    // 0d. Host score heartbeat — repairs any divergence RALLY_END racing
+    // left behind, even if the immediate post-rally SCORE_UPDATE was lost.
+    if (role === 'host') {
+      scoreSyncAccum += dt;
+      if (scoreSyncAccum >= SCORE_SYNC_INTERVAL_S) {
+        scoreSyncAccum = 0;
+        nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize() });
+      }
+    }
+
+    // 0e. Silent-peer watchdog. Pings run at 4 Hz, so seconds without a pong
+    // means the peer is gone (dead tab, slept headset) even while the
+    // RTCPeerConnection still reports 'connected'. Surface it — a silent
+    // freeze with no message reads as "the game broke", not "they left".
+    // The transport-level grace timer in NetworkManager handles the actual
+    // disconnect escalation; this is the early human-facing signal.
+    if (nm.clock && nm.clock.msSinceLastPong) {
+      const silentMs = nm.clock.msSinceLastPong(performance.now());
+      if (silentMs !== null && silentMs > PEER_SILENT_WARN_MS) {
+        if (!peerSilentWarned) {
+          peerSilentWarned = true;
+          hudLog(`opponent not responding (${(silentMs / 1000).toFixed(0)}s) — connection unstable`);
+        }
+      } else if (peerSilentWarned && silentMs !== null && silentMs < 1000) {
+        peerSilentWarned = false;
+        hudLog('opponent connection recovered');
+      }
+    }
 
     // 1. Sample local paddle face → outbound paddle packet.
     paddleSync.writeLocal(nm.outboundState, paddleFaceCenterWorld, paddleFaceNormalWorld, paddleVelocity);

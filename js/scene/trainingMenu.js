@@ -19,7 +19,9 @@ import * as haptics from '../xr/haptics.js';
 import { Panel, WIDGETS } from './panelKit.js';
 import { COLORS, F, roundRect } from './panelStyle.js';
 import { layoutFeedEditor, drawFeedEditor } from './feedEditor.js';
-import { TrainingMenuModel, SCREENS } from '../modes/training/menuModel.js';
+import {
+  TrainingMenuModel, SCREENS, endConditionLabel,
+} from '../modes/training/menuModel.js';
 import { bladeHeatmap } from '../modes/training/analysis.js';
 import { TUNER_ENABLED } from './hud.js';
 
@@ -198,7 +200,6 @@ export class TrainingMenu {
 
     if (id.startsWith('item:')) {
       const res = m.selectItem(id.slice(5));
-      if (res && res.action === 'freePlay') return this.emit('freeplay');
       if (res && res.action === 'start') {
         return this.start(res.config, res.preset, res.drill, res.options);
       }
@@ -217,7 +218,13 @@ export class TrainingMenu {
       return this.rebuild();
     }
 
-    if (id === 'start') return this.start(m.config, m.selectedPreset);
+    // START on the editor goes through the model, which shapes the action by
+    // the end condition: a plain drill starts the ball machine; Survival and
+    // Race start the machine-play scorer over the same config.
+    if (id === 'start') {
+      const res = m.startCurrent();
+      return this.start(res.config, res.preset, res.drill, res.options);
+    }
     if (id === 'save') {
       // Auto-named: in-headset text entry does not exist, and blocking the
       // save behind a keyboard would make the feature unreachable.
@@ -234,6 +241,10 @@ export class TrainingMenu {
       return undefined;
     }
 
+    if (id.startsWith('end:')) {
+      m.cycleEndCondition(Number(id.slice(4)));
+      return this.rebuild();
+    }
     if (id.startsWith('zone:')) {
       m.setZone(Number(id.slice(5)));
       this._refreshFeasibility();
@@ -335,10 +346,15 @@ export class TrainingMenu {
     // — and because the footer is registered later it won the hit test, making
     // "Free Play" and "Tutorial" unclickable (a click on Free Play activated
     // PHYSICS instead). Fitting to the available height makes that structural.
+    //
+    // The cap works the other way too: with the root trimmed to four rows
+    // (Machine Play's rows and Free Play folded elsewhere), a 56 px cap left
+    // the bottom third of the panel empty. 96 px lets a short list spread
+    // into that space — bigger targets, same fit guarantee for long lists.
     const available = (FOOTER_Y - 18) - top;
     const rowH = Math.max(
       36,
-      Math.min(56, Math.floor(available / Math.max(1, items.length)) - gap),
+      Math.min(96, Math.floor(available / Math.max(1, items.length)) - gap),
     );
 
     let y = top;
@@ -349,7 +365,7 @@ export class TrainingMenu {
         id: `item:${item.id}`, kind: WIDGETS.LIST_ROW, shape: 'rect',
         ...rect, disabled: item.available === false,
       });
-      this._rows.push({ item, rect, compact: rowH < 48 });
+      this._rows.push({ item, rect, compact: rowH < 48, tall: rowH >= 72 });
       y += rowH + gap;
     }
   }
@@ -368,6 +384,9 @@ export class TrainingMenu {
       bodyY: BODY_Y,
       showSave: true,
       presetRow: true,
+      // How the session ends — drill / survival / race — absorbed from the
+      // old Machine Play menu, where each end condition was a separate row.
+      endRow: true,
     });
   }
 
@@ -430,7 +449,7 @@ export class TrainingMenu {
   drawList() {
     const ctx = this.ctx;
     const hov = this.panel.hoveredId;
-    for (const { item, rect, compact } of this._rows || []) {
+    for (const { item, rect, compact, tall } of this._rows || []) {
       const disabled = item.available === false;
       const hovered = hov === `item:${item.id}` && !disabled;
 
@@ -447,18 +466,22 @@ export class TrainingMenu {
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
       ctx.fillStyle = disabled ? COLORS.disabled : COLORS.text;
-      ctx.font = F(600, compact ? 19 : 22);
+      ctx.font = F(600, compact ? 19 : tall ? 25 : 22);
       const sub = item.subtitle || item.note;
       // In compact rows there is no room for two stacked lines, so the
       // subtitle moves to the right of the label rather than being clipped.
       const stacked = sub && !compact;
-      ctx.fillText(item.label, rect.x + 22, rect.y + (stacked ? 20 : rect.h / 2));
+      // The stacked pair is centred as a block, not pinned to the top edge:
+      // rows now vary from 36 to 96 px, and a fixed offset that looks right
+      // at 56 px leaves a tall row's text floating at its top.
+      const labelDy = stacked ? rect.h / 2 - (tall ? 14 : 11) : rect.h / 2;
+      ctx.fillText(item.label, rect.x + 22, rect.y + labelDy);
 
       if (sub) {
         ctx.fillStyle = disabled ? COLORS.disabled : COLORS.muted;
-        ctx.font = F(500, compact ? 13 : 15);
+        ctx.font = F(500, compact ? 13 : tall ? 17 : 15);
         if (stacked) {
-          ctx.fillText(sub, rect.x + 22, rect.y + 41);
+          ctx.fillText(sub, rect.x + 22, rect.y + rect.h / 2 + (tall ? 16 : 12));
         } else {
           ctx.textAlign = 'right';
           ctx.fillText(sub, rect.x + rect.w - 46, rect.y + rect.h / 2);
@@ -484,6 +507,7 @@ export class TrainingMenu {
       difficultyIndex: this.difficultyIndex,
       startLabel: 'START',
       presetLabel: this.model.presetLabel,
+      endLabel: endConditionLabel(this.model.endCondition),
     });
   }
 

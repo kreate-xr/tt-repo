@@ -4,9 +4,9 @@
 //
 // Composition (left → right):
 //   - Left dock: single utility icon (Tune Physics).
-//   - Center row: four large circular mode tiles (Drill / Free / AI / Multi),
+//   - Center row: three large circular mode tiles (Play / AI / Multi),
 //     each with a coloured crosshair ring, icon, main label + subtitle.
-//   - Top pills: difficulty segmented control + drill picker (◄ NAME ►).
+//   - Top pill: difficulty segmented control.
 //   - Bottom pill: Exit.
 //
 // Input paths: laser raycast, plus off-hand poke via inGame.js's
@@ -58,9 +58,9 @@ const COLORS = {
 };
 
 const FONT_FAMILY    = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-const FONT_MODE_MAIN = `700 26px ${FONT_FAMILY}`;
-const FONT_MODE_SUB  = `600 12px ${FONT_FAMILY}`;
-const FONT_PILL      = `600 14px ${FONT_FAMILY}`;
+const FONT_MODE_MAIN = `700 28px ${FONT_FAMILY}`;
+const FONT_MODE_SUB  = `600 13px ${FONT_FAMILY}`;
+const FONT_PILL      = `600 17px ${FONT_FAMILY}`;
 const FONT_EXIT      = `600 14px ${FONT_FAMILY}`;
 
 // The drill picker that used to live here is gone. Every drill — the ball
@@ -82,15 +82,18 @@ const DIFFICULTIES = [
   { id: 'pro',          label: 'ELITE' },
 ];
 
-// Top-level modes rendered as four crosshair circles. Each has its own ring
-// colour so the tile is instantly telegraphed. The DRILL tile's icon +
-// subtitle track the currently-selected drill via the top drill picker.
+// Top-level modes rendered as crosshair circles; the row centres itself from
+// this list's length. Each has its own ring colour so the tile is instantly
+// telegraphed.
+//
+// PLAY is the one front door to the ball machine. It used to be two tiles —
+// TRAINING (drills menu) and PLAY (Machine Play menu) — both opening menus
+// over the same machine; the Machine Play menu's modes are now rows and an
+// end-condition cycler inside the unified menu, so the second tile had
+// nothing left to open. The id stays 'training' because it is the stable
+// event key inGame.js listens on.
 const MODES = [
-  { id: 'training',    label: 'TRAINING', ring: '#ffc857', icon: 'ballMachine', subtitle: 'DRILLS · PRESETS' },
-  // Was FREE / PLAY, which entered an empty table directly. It now opens the
-  // Machine Play menu (rally, survival, score challenge, free hit) — the tile
-  // is a mode with a menu behind it, like TRAINING, rather than a single state.
-  { id: 'machinePlay', label: 'PLAY',  ring: '#3ec9d6', icon: 'paddle',     subtitle: 'VS MACHINE' },
+  { id: 'training',    label: 'PLAY',  ring: '#ffc857', icon: 'ballMachine', subtitle: 'RALLY · DRILLS' },
   { id: 'aiMatch',     label: 'AI',    ring: '#3ddc97', icon: 'aiMatch',    subtitle: 'MATCH'  },
   { id: 'multiplayer', label: 'MULTI', ring: '#ff8a5b', icon: 'multiplayer', subtitle: 'PLAYER' },
 ];
@@ -342,9 +345,12 @@ export class WristMenu {
     // The drill picker that sat beside it is gone; drills are chosen inside
     // the TRAINING menu now. The difficulty control stays because it selects
     // the AI tier for the match modes, which is independent of training.
-    const TOP_Y = 40;
-    const TOP_H = 44;
-    const diffW  = 300;
+    // With the picker's half of the row freed, the control takes the width
+    // it always needed: at 300px each segment was 100px, which clipped
+    // "INTERNATIONAL" at any legible font size.
+    const TOP_Y = 36;
+    const TOP_H = 54;
+    const diffW  = 520;
     const rowX = (CANVAS_W - diffW) / 2;
 
     this._diffPill = { x: rowX, y: TOP_Y, w: diffW, h: TOP_H };
@@ -358,11 +364,15 @@ export class WristMenu {
     }
 
     // --- Mode circles: main row ---
-    const CIRCLE_R = 70;
-    const CIRCLE_GAP = 34;
+    // Sized for a three-tile row: dropping the fourth tile freed enough
+    // width that 70px tiles floated in empty panel, so both radius and gap
+    // grew. Row centre sits midway between the difficulty pill's bottom and
+    // the exit pill's top.
+    const CIRCLE_R = 80;
+    const CIRCLE_GAP = 56;
     const CIRCLE_ROW_W = MODES.length * (CIRCLE_R * 2) + (MODES.length - 1) * CIRCLE_GAP;
     const circleRowX = (CANVAS_W - CIRCLE_ROW_W) / 2;
-    const CIRCLE_Y = 218;
+    const CIRCLE_Y = 224;
 
     for (let i = 0; i < MODES.length; i++) {
       const cx = circleRowX + CIRCLE_R + i * (CIRCLE_R * 2 + CIRCLE_GAP);
@@ -378,13 +388,13 @@ export class WristMenu {
     if (this.showTune) {
       this.buttons.push({
         id: 'tune', kind: 'dock', icon: 'gear',
-        shape: 'rect', x: 32, y: CIRCLE_Y - 26, w: 52, h: 52, radius: 14,
+        shape: 'rect', x: 32, y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
       });
     }
     this.buttons.push({
       id: 'calibrate', kind: 'dock', icon: 'paddle',
-      shape: 'rect', x: this.showTune ? 32 + 52 + 8 : 32,
-      y: CIRCLE_Y - 26, w: 52, h: 52, radius: 14,
+      shape: 'rect', x: this.showTune ? 32 + 56 + 8 : 32,
+      y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
     });
 
     // --- Right dock: ball color toggle. Mirror of the left gear so the
@@ -394,7 +404,7 @@ export class WristMenu {
     // BALL_COLOR_ORDER (currently just orange ↔ white — ITTF legal).
     this.buttons.push({
       id: 'ballColor', kind: 'dock', icon: 'ballSwatch',
-      shape: 'rect', x: CANVAS_W - 32 - 52, y: CIRCLE_Y - 26, w: 52, h: 52, radius: 14,
+      shape: 'rect', x: CANVAS_W - 32 - 56, y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
     });
 
     // --- Bottom exit pill ---
@@ -541,7 +551,7 @@ export class WristMenu {
     const drawIcon = ICONS[mode.icon];
     if (drawIcon) {
       ctx.save();
-      drawIcon(ctx, cx, cy - 20, 60, mode.ring);
+      drawIcon(ctx, cx, cy - 24, 68, mode.ring);
       ctx.restore();
     }
 
@@ -551,12 +561,12 @@ export class WristMenu {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     if ('letterSpacing' in ctx) ctx.letterSpacing = '1px';
-    ctx.fillText(mode.label, cx, cy + 22);
+    ctx.fillText(mode.label, cx, cy + 26);
 
     ctx.fillStyle = COLORS.chromeMuted;
     ctx.font = FONT_MODE_SUB;
     if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
-    ctx.fillText(mode.subtitle || '', cx, cy + 42);
+    ctx.fillText(mode.subtitle || '', cx, cy + 48);
     if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
   }
 
@@ -688,11 +698,8 @@ export class WristMenu {
     if (button.kind === 'mode') {
       const difficultyId = DIFFICULTIES[this.selectedDifficultyIndex].id;
       if (button.modeId === 'training') {
-        // Opens the M0 training menu; drill selection happens in there.
+        // Opens the unified PLAY menu; what to play is chosen in there.
         this.emit('training', { difficulty: difficultyId });
-      } else if (button.modeId === 'machinePlay') {
-        // Opens the Machine Play menu; the mode is chosen in there.
-        this.emit('machinePlay');
       } else if (button.modeId === 'aiMatch') {
         this.emit('start', { drill: 'aiMatch', difficulty: difficultyId });
       } else if (button.modeId === 'multiplayer') {

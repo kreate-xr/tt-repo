@@ -798,6 +798,38 @@ export async function loadModels(loadingScreen, statusEl) {
     ).expandByScalar(ballRadius);
     logInfo('Net bounds (inflated):', netBox.min, netBox.max);
 
+    // ITTF conformance check. Every rule, physics tolerance and AI envelope
+    // in this codebase assumes a regulation table (2.74 × 1.525 m, net cord
+    // 15.25 cm above the surface) — but the dimensions come entirely from
+    // Table.glb's anchors, so a re-exported asset can silently change them
+    // and with them the game's claim to play real table tennis. The ball is
+    // asserted against its spec at load already (below); the table gets the
+    // same treatment. Warn, don't throw: a 2 cm-off table still plays, but
+    // whoever swapped the asset must see it.
+    {
+      const ITTF_LENGTH_M = 2.74;
+      const ITTF_WIDTH_M = 1.525;
+      const ITTF_NET_HEIGHT_M = 0.1525;
+      const DIM_TOLERANCE_M = 0.01;
+      const measured = {
+        length: edgeNear.z - edgeFar.z,
+        width: edgeRight.x - edgeLeft.x,
+        netHeight: netCtr.y - tableSurfaceY,
+      };
+      const offSpec = [
+        ['table length', measured.length, ITTF_LENGTH_M],
+        ['table width', measured.width, ITTF_WIDTH_M],
+        ['net height', measured.netHeight, ITTF_NET_HEIGHT_M],
+      ].filter(([, got, want]) => Math.abs(got - want) > DIM_TOLERANCE_M);
+      for (const [what, got, want] of offSpec) {
+        console.warn(
+          `[models] Table.glb is off ITTF spec: ${what} = ${got.toFixed(4)} m ` +
+          `(regulation ${want} m). Rules, physics tuning and AI envelopes ` +
+          'assume regulation geometry — re-export the asset or expect drift.',
+        );
+      }
+    }
+
     // --- Paddle ---
     if (glbPaddle) {
       paddleModel = paddleGltf.scene;

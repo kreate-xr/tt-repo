@@ -77,13 +77,15 @@ describe('difficulty rails never bind', () => {
     }
   });
 
-  // Backspin has a measured physical ceiling around -25 rps in this model:
+  // Backspin has a measured physical ceiling around -62 rps in this model:
   // heavier backspin floats the ball long and cannot be held on the table at
-  // any pace (see tests/solverEnvelope.test.js). Requesting more just produces
-  // infeasible solves that fall back to a slow safe ball.
+  // any pace (see tests/solverEnvelope.test.js; the ceiling is geometry-
+  // dependent — heavy chop backspin only holds at chop pace and depth).
+  // Requesting more just produces infeasible solves that fall back to a slow
+  // safe ball.
   test.each(DIFFICULTIES)('%s: no profile requests backspin beyond the envelope', (difficulty) => {
     for (const type of TYPES) {
-      expect(profileFor(type, difficulty).spinMin).toBeGreaterThanOrEqual(-27);
+      expect(profileFor(type, difficulty).spinMin).toBeGreaterThanOrEqual(-64);
     }
   });
 
@@ -231,8 +233,9 @@ describe('spin scales sanely across tiers', () => {
       const p = profileFor(type, 'pro').spinMean;
       expect(i).toBeGreaterThan(b);
       expect(p).toBeGreaterThanOrEqual(i);
-      // Never past the point where the arc stops reading as table tennis.
-      expect(p).toBeLessThanOrEqual(30);
+      // Never past the 64 rps grip ceiling (PADDLE_SPIN_CAP ≈ 67 rps) —
+      // past what the impulse model can deliver, the arc is fiction.
+      expect(p).toBeLessThanOrEqual(64);
     }
   });
 
@@ -241,7 +244,7 @@ describe('spin scales sanely across tiers', () => {
     // of the ladder stops being distinguishable.
     for (const type of TYPES) {
       const p = profileFor(type, 'beginner');
-      expect(Math.abs(p.spinMean)).toBeLessThanOrEqual(15);
+      expect(Math.abs(p.spinMean)).toBeLessThanOrEqual(37);
     }
   });
 

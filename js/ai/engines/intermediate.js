@@ -80,13 +80,18 @@ const EXPLOIT_FACTOR = 0.85;
 // read, which stopped being true when the graduated penalties landed.
 const RECENT_TYPES_WINDOW = 4;
 
-// Safe zone (player side, spec coords). target_x leaves a 0.0625m safety
-// margin from the table edge (±0.7625 → ±0.7). target_z stays inside
-// [0.1, 1.3] so the ball doesn't land on the net line or off the table.
-const SAFE_X_MIN = -0.7;
-const SAFE_X_MAX =  0.7;
+// Safe zone (player side, spec coords). The international tier aims within
+// ~4 cm of the sidelines (±0.7625 → ±0.72) and ~4 cm of the end line
+// (1.37 → 1.33). That is NOT free accuracy: solver landing error and target
+// jitter both reach several centimetres, so a ball aimed at the clamp
+// genuinely goes out sometimes — the honest price of attacking the lines,
+// which the old ±0.70 / 1.30 court never paid (its most aggressive ball
+// landed 6+ cm inside every line, a courtesy strip no international
+// opponent grants). target_z floors at 0.1 so nothing lands on the net line.
+const SAFE_X_MIN = -0.72;
+const SAFE_X_MAX =  0.72;
 const SAFE_Z_MIN =  0.1;
-const SAFE_Z_MAX =  1.3;
+const SAFE_Z_MAX =  1.33;
 
 // Landing zones (PLAYER side, spec coords) — the Voronoi tessellates here.
 // Seeds come from where the AI's own past shots bounced on the player's half

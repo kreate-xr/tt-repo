@@ -2,7 +2,7 @@
 
 const THREE = require('three');
 
-import {
+import { anticipationLeanX,
   computeReadyPose,
   recordPlayerLanding,
   resetRecentLandings,
@@ -139,5 +139,26 @@ describe('recordPlayerLanding + Pro anticipatory bias', () => {
     recordPlayerLanding(0, Infinity);
     recordPlayerLanding(undefined, 0);
     expect(_recentLandingCount()).toBe(0);
+  });
+});
+
+describe('anticipationLeanX — pre-contact lean toward the return corridor', () => {
+  test('pro leans opposite its own aim point (crosscourt mirror), capped', () => {
+    const lean = anticipationLeanX({ difficulty: 'pro', aiTargetX: 0.6, baseX: 0 });
+    expect(lean).toBeLessThan(0);                            // aimed right → expect crosscourt back left
+    expect(Math.abs(lean)).toBeLessThanOrEqual(0.22 + 1e-9); // ANTICIPATION_CAP_M
+    expect(anticipationLeanX({ difficulty: 'pro', aiTargetX: -0.6, baseX: 0 })).toBeGreaterThan(0);
+  });
+
+  test('intermediate leans half of pro; beginner does not anticipate', () => {
+    const pro = anticipationLeanX({ difficulty: 'pro', aiTargetX: 0.3, baseX: 0 });
+    const int_ = anticipationLeanX({ difficulty: 'intermediate', aiTargetX: 0.3, baseX: 0 });
+    expect(anticipationLeanX({ difficulty: 'beginner', aiTargetX: 0.3, baseX: 0 })).toBe(0);
+    expect(Math.abs(int_)).toBeCloseTo(Math.abs(pro) / 2, 6);
+  });
+
+  test('unknown aim point leans nowhere', () => {
+    expect(anticipationLeanX({ difficulty: 'pro', aiTargetX: NaN })).toBe(0);
+    expect(anticipationLeanX({ difficulty: 'pro' })).toBe(0);
   });
 });

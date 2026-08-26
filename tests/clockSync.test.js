@@ -134,3 +134,31 @@ describe('ClockSync', () => {
     expect(pong.t1).toBe(9999);
   });
 });
+
+describe('liveness + RTT getters', () => {
+  test('msSinceLastPong tracks the newest accepted pong; null before any', () => {
+    const cs = new ClockSync();
+    expect(cs.msSinceLastPong(1000)).toBeNull();
+    cs.onPong({ t0: 0, t1: 20 }, 40);       // rtt 40, accepted at t=40
+    expect(cs.msSinceLastPong(40)).toBe(0);
+    expect(cs.msSinceLastPong(3040)).toBe(3000);
+    cs.onPong({ t0: 3000, t1: 3020 }, 3050);
+    expect(cs.msSinceLastPong(3060)).toBe(10);
+  });
+
+  test('a rejected pong does not refresh liveness', () => {
+    const cs = new ClockSync();
+    cs.onPong({ t0: 0, t1: 20 }, 40);
+    cs.onPong({ t0: 500, t1: 510 }, 400);   // rtt negative -> rejected
+    expect(cs.msSinceLastPong(440)).toBe(400);
+  });
+
+  test('smoothedRttMs is null before the first pong, then tracks EWMA of RTT', () => {
+    const cs = new ClockSync();
+    expect(cs.smoothedRttMs()).toBeNull();
+    cs.onPong({ t0: 0, t1: 50 }, 100);      // rtt 100
+    expect(cs.smoothedRttMs()).toBe(100);
+    cs.onPong({ t0: 200, t1: 300 }, 500);   // rtt 300 -> ewma 100 + 0.25*200 = 150
+    expect(cs.smoothedRttMs()).toBeCloseTo(150, 6);
+  });
+});

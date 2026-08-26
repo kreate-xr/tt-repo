@@ -52,6 +52,7 @@ import {
   ensureNetClearance,
   predictTossContact,
   solveTwoBounceServe,
+  solveServeWithAimShift,
   simulateTwoBounceServe,
 } from '../js/modes/aiMatch/serve.js';
 import {
@@ -633,6 +634,73 @@ describe('solveTwoBounceServe — ITTF two-bounce serves', () => {
     const res = simulateTwoBounceServe(
       launchPos(0), new THREE.Vector3(0, 1.2, 7.0), new THREE.Vector3(), fullEnv());
     expect(res.crossedNetBeforeBounce).toBe(true);
+  });
+
+  // --- Real sidespin serves --------------------------------------------------
+  //
+  // The sidespin archetypes used to launch pure top/back spin: strikeBall
+  // built the spin axis as up × dir (horizontal only), so "pendulum sidespin"
+  // and "tomahawk" serves neither curled in flight nor kicked off the bounce.
+  // These pin the vertical (ω_y) channel end-to-end.
+  describe('sidespin serves', () => {
+    const sidespinFor = (rps) => new THREE.Vector3(0, rps * 2 * Math.PI, 0);
+
+    test('sidespin archetypes sample a nonzero vertical spin channel', () => {
+      const rng = mulberry32(77);
+      const seen = {};
+      for (let i = 0; i < 300; i++) {
+        const t = selectServeTarget('pro', rng);
+        seen[t.archetype] = t.target_side_spin;
+      }
+      expect(Math.abs(seen.pendulum_sidespin_deep_crossline)).toBeGreaterThanOrEqual(10);
+      expect(seen.tomahawk_sidespin_wide).toBeLessThanOrEqual(-10);
+      expect(seen.fast_deep_no_spin_downline || 0).toBe(0);
+    });
+
+    test('pure sidespin actually curls the flight laterally, sign-symmetric', () => {
+      // Same launch, mirrored ω_y → mirrored lateral drift of the landing.
+      const from = launchPos(0);
+      const vel = new THREE.Vector3(0, 0.4, 4.6);
+      const plus = simulateTwoBounceServe(from, vel, sidespinFor(15), fullEnv());
+      const minus = simulateTwoBounceServe(from, vel, sidespinFor(-15), fullEnv());
+      expect(plus.landing).toBeTruthy();
+      expect(minus.landing).toBeTruthy();
+      // ω_y > 0 with flight toward +z curls +x (a = M·(ω × v)).
+      expect(plus.landing.x).toBeGreaterThan(0.03);
+      expect(minus.landing.x).toBeCloseTo(-plus.landing.x, 2);
+    });
+
+    test('aim shift lands a heavy sidespin serve on target where the straight solver misses', () => {
+      const env = fullEnv();
+      const from = launchPos(0.5);
+      const target = new THREE.Vector3(-0.45, 0, 1.10);
+      const spin = spinFor(2, from, target).add(sidespinFor(16));
+      const straight = solveTwoBounceServe(from, target, 6.0, spin, env);
+      const shifted = solveServeWithAimShift(from, target, 6.0, spin, env);
+      expect(shifted).toBeTruthy();
+      expect(shifted.legal).toBe(true);
+      expect(shifted.landingError).toBeLessThanOrEqual(straight.landingError + 1e-9);
+      expect(shifted.landingError).toBeLessThan(0.20);
+    });
+
+    test('every archetype with its FULL composed spin solves legally via aim shift', () => {
+      const env = fullEnv();
+      for (const difficulty of ['intermediate', 'pro']) {
+        const rng = mulberry32(1300 + difficulty.length);
+        let legal = 0;
+        const N = 30;
+        for (let i = 0; i < N; i++) {
+          const t = selectServeTarget(difficulty, rng);
+          const from = launchPos(t.servePos.x);
+          const target = new THREE.Vector3(t.target_x, 0, t.target_z);
+          const spin = spinFor(t.target_spin, from, target)
+            .add(sidespinFor(t.target_side_spin || 0));
+          const res = solveServeWithAimShift(from, target, t.target_speed, spin, env);
+          if (res && res.legal) legal++;
+        }
+        expect(legal / N).toBeGreaterThanOrEqual(0.9);
+      }
+    });
   });
 });
 

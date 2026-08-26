@@ -213,3 +213,64 @@ describe('planTrajectory — windup arc', () => {
     expect(midKf.position.y).toBeGreaterThan(chordY);
   });
 });
+
+// --- Pace-scaled face reveal + disguise -----------------------------------
+
+describe('planTrajectory — telegraphLeadMs face reveal', () => {
+  // Angle between a keyframe face and the neutral face tells us whether the
+  // reveal has begun at that keyframe.
+  function faceAngleTo(kf, ref) {
+    const d = Math.min(1, Math.max(-1,
+      kf.faceNormal.x * ref.x + kf.faceNormal.y * ref.y + kf.faceNormal.z * ref.z));
+    return Math.acos(d);
+  }
+
+  test('a long lead starts the reveal earlier than the legacy 50%-of-swing rule', () => {
+    const args = defaultArgs();               // budget 400ms → legacy reveal at 320ms
+    const legacy = planTrajectory(args);
+    const led = planTrajectory({ ...defaultArgs(), telegraphLeadMs: 350 }); // reveal at 50ms
+    // Keyframe index 3 sits at ~171ms — before the legacy reveal, well after
+    // the 350ms-lead reveal. Under the lead it must already have rotated
+    // toward the contact normal; under legacy it is still neutral-ish.
+    const contactFace = defaultArgs().contactFaceNormal;
+    expect(faceAngleTo(led.keyframes[3], contactFace))
+      .toBeLessThan(faceAngleTo(legacy.keyframes[3], contactFace));
+  });
+
+  test('face at contact always equals the solver normal, lead or not', () => {
+    for (const telegraphLeadMs of [null, 150, 350]) {
+      const args = { ...defaultArgs(), telegraphLeadMs };
+      const r = planTrajectory(args);
+      const last = r.keyframes[NUM_KEYFRAMES - 1];
+      expect(last.faceNormal.x).toBeCloseTo(args.contactFaceNormal.x, 4);
+      expect(last.faceNormal.y).toBeCloseTo(args.contactFaceNormal.y, 4);
+      expect(last.faceNormal.z).toBeCloseTo(args.contactFaceNormal.z, 4);
+    }
+  });
+
+  test('disguise face is shown mid-reveal, true face restored by contact', () => {
+    const disguise = v(0, -0.35, 0.94).normalize();  // slice-like open face
+    const args = {
+      ...defaultArgs(),
+      timeBudgetMs: 600,
+      telegraphLeadMs: 350,
+      disguiseFaceNormal: disguise,
+    };
+    const r = planTrajectory(args);
+    // Mid-reveal keyframes should sit closer to the disguise face than to
+    // the true contact face at least once.
+    const contactFace = args.contactFaceNormal;
+    let sawDisguise = false;
+    for (const kf of r.keyframes.slice(0, NUM_KEYFRAMES - 1)) {
+      const toDisguise = Math.acos(Math.min(1, kf.faceNormal.dot(disguise)));
+      const toContact = Math.acos(Math.min(1, kf.faceNormal.dot(contactFace)));
+      if (toDisguise < 0.15 && toDisguise < toContact) sawDisguise = true;
+    }
+    expect(sawDisguise).toBe(true);
+    // And the wrist snap lands on the truth.
+    const last = r.keyframes[NUM_KEYFRAMES - 1];
+    expect(last.faceNormal.x).toBeCloseTo(contactFace.x, 4);
+    expect(last.faceNormal.y).toBeCloseTo(contactFace.y, 4);
+    expect(last.faceNormal.z).toBeCloseTo(contactFace.z, 4);
+  });
+});

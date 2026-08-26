@@ -1,7 +1,9 @@
-// WristMenu — does the TRAINING tile actually emit?
+// WristMenu — does the PLAY tile actually emit?
 //
-// Bisects "training click is not working": if this passes, the wrist menu is
+// Bisects "play click is not working": if this passes, the wrist menu is
 // fine and the fault is downstream in inGame; if it fails, it is here.
+// (The tile's event is still named 'training' — the stable key from before
+// the Machine Play menu merged into the unified PLAY menu.)
 
 jest.mock('../js/scene/sceneSetup.js', () => ({ scene: { add: () => {}, remove: () => {} } }));
 jest.mock('../js/scene/audio.js', () => ({
@@ -46,8 +48,8 @@ function uvOfButton(menu, id) {
   return [px / 1024, 1 - py / 410];
 }
 
-describe('TRAINING tile', () => {
-  test('a training mode button exists', () => {
+describe('PLAY tile', () => {
+  test('a play mode button exists (id kept as mode-training)', () => {
     const menu = new WristMenu();
     const ids = menu.buttons.map((b) => b.id);
     expect(ids).toContain('mode-training');
@@ -151,7 +153,7 @@ describe('event registration', () => {
     // Guards the inverse mistake: a tile wired to an event name that nothing
     // downstream listens for.
     const menu = new WristMenu();
-    for (const event of ['start', 'freeplay', 'training', 'tune', 'calibrate', 'ballColor', 'exit']) {
+    for (const event of ['start', 'training', 'tune', 'calibrate', 'ballColor', 'exit']) {
       let fired = false;
       menu.on(event, () => { fired = true; });
       menu.emit(event, {});
@@ -161,17 +163,12 @@ describe('event registration', () => {
 });
 
 describe('the other tiles still work', () => {
-  test('the PLAY tile opens the Machine Play menu', () => {
-    // It used to emit 'freeplay' and drop straight onto an empty table. It
-    // now opens a menu, so the tile emits its own event and the mode is
-    // chosen in there — Free Hit is that menu's fifth row.
-    const menu = new WristMenu();
-    let n = 0;
-    menu.on('machinePlay', () => { n++; });
-    const [u, v] = uvOfButton(menu, 'mode-machinePlay');
-    menu.setHovered(menu.hitTestUV(u, v));
-    menu.selectHovered();
-    expect(n).toBe(1);
+  test('the second Machine Play tile is gone — one front door to the machine', () => {
+    // Rally, survival and score challenge live inside the unified PLAY menu
+    // now (as a root row and the editor's end-condition cycler), so a
+    // separate tile would open a menu with nothing left in it.
+    const ids = new WristMenu().buttons.map((b) => b.id);
+    expect(ids).not.toContain('mode-machinePlay');
   });
 
   test('ai match emits start with its drill id', () => {
@@ -186,7 +183,7 @@ describe('the other tiles still work', () => {
 
   test('every mode tile resolves to itself, none shadowed', () => {
     const menu = new WristMenu();
-    for (const id of ['mode-training', 'mode-machinePlay', 'mode-aiMatch', 'mode-multiplayer']) {
+    for (const id of ['mode-training', 'mode-aiMatch', 'mode-multiplayer']) {
       const [u, v] = uvOfButton(menu, id);
       expect(menu.hitTestUV(u, v)).toBe(id);
     }

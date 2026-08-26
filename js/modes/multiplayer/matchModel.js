@@ -10,9 +10,16 @@
 //     ABSOLUTELY ('host' | 'guest'), the same on both peers, so a rally-end
 //     verdict travels the wire without perspective inversion and both peers
 //     run the identical deterministic transition. Rules mirror the AI match's
-//     rallyManager: game to `firstTo` win-by-2, serve swaps every
-//     `serveRotationEvery` points (every point at deuce). Single game per
-//     session (no best-of yet).
+//     rallyManager: best-of-`bestOf` games to `firstTo` win-by-2, serve swaps
+//     every `serveRotationEvery` points (every point at deuce), and the
+//     game's first server alternates between games (ITTF 2.13.3).
+//
+//     Field semantics kept from the single-game era so existing consumers
+//     stay correct: `gameOver`/`gameWinner` mean THE SESSION IS OVER (now:
+//     the match), not "a game just finished". A mid-match game transition is
+//     reported only on the state returned by applyRallyEnd, as the transient
+//     `gameJustEnded` — both peers compute it from the same verdict, so it
+//     is as replicated as everything else.
 //
 //   createRallyTracker — per-rally bookkeeping in the LOCAL frame
 //     ('self' | 'opponent'). Only the ball owner's tracker ever decides a
@@ -29,6 +36,7 @@
 import { createRallyRules } from '../rallyRules.js';
 
 export const MATCH_DEFAULTS = Object.freeze({
+  bestOf: 5,
   firstTo: 11,
   deucePoint: 10,
   serveRotationEvery: 2,
@@ -37,11 +45,19 @@ export const MATCH_DEFAULTS = Object.freeze({
 
 export function createMatchModel(cfgIn = {}) {
   const cfg = { ...MATCH_DEFAULTS, ...cfgIn };
+  const gamesNeeded = Math.floor(cfg.bestOf / 2) + 1;
 
   let scoreHost = 0;
   let scoreGuest = 0;
+  let gamesHost = 0;
+  let gamesGuest = 0;
+  // Finished games in order: [{ scoreHost, scoreGuest, winner }].
+  let games = [];
+  // Who serves first in the CURRENT game — alternates each game.
+  let gameStartServer = cfg.firstServer;
   let currentServer = cfg.firstServer;
   let pointsSinceSwitch = 0;
+  // Session-terminal flags (see header note): true only when the MATCH ends.
   let gameOver = false;
   let gameWinner = null;
   // Increments on EVERY rally end (including no-point re-serves). RALLY_END
@@ -51,12 +67,21 @@ export function createMatchModel(cfgIn = {}) {
 
   function getState() {
     return {
-      scoreHost, scoreGuest, currentServer, pointsSinceSwitch,
-      gameOver, gameWinner, rallySeq, firstTo: cfg.firstTo,
+      scoreHost, scoreGuest, gamesHost, gamesGuest,
+      games: games.slice(),
+      currentServer, gameStartServer, pointsSinceSwitch,
+      gameOver, gameWinner,
+      matchOver: gameOver, matchWinner: gameWinner,
+      rallySeq, firstTo: cfg.firstTo, bestOf: cfg.bestOf,
     };
   }
 
   // winner: 'host' | 'guest' | null (null = void rally, same server re-serves)
+  //
+  // Returns the post-transition state; when this rally closed out a game the
+  // return additionally carries `gameJustEnded: { winner, scoreHost,
+  // scoreGuest }` (final totals of the game that just finished — the live
+  // scores have already reset for the next game unless the match is over).
   function applyRallyEnd(winner) {
     if (gameOver) return getState();
     rallySeq += 1;
@@ -69,9 +94,25 @@ export function createMatchModel(cfgIn = {}) {
     const top = Math.max(scoreHost, scoreGuest);
     const lead = Math.abs(scoreHost - scoreGuest);
     if (top >= cfg.firstTo && lead >= 2) {
-      gameOver = true;
-      gameWinner = scoreHost > scoreGuest ? 'host' : 'guest';
-      return getState();
+      const gWinner = scoreHost > scoreGuest ? 'host' : 'guest';
+      const finished = { scoreHost, scoreGuest, winner: gWinner };
+      games.push(finished);
+      if (gWinner === 'host') gamesHost += 1;
+      else gamesGuest += 1;
+
+      if (gamesHost >= gamesNeeded || gamesGuest >= gamesNeeded) {
+        gameOver = true;
+        gameWinner = gamesHost > gamesGuest ? 'host' : 'guest';
+        return { ...getState(), gameJustEnded: finished };
+      }
+
+      // Next game: scores reset, first server alternates (ITTF 2.13.3).
+      scoreHost = 0;
+      scoreGuest = 0;
+      pointsSinceSwitch = 0;
+      gameStartServer = gameStartServer === 'host' ? 'guest' : 'host';
+      currentServer = gameStartServer;
+      return { ...getState(), gameJustEnded: finished };
     }
 
     const isDeuce = scoreHost >= cfg.deucePoint && scoreGuest >= cfg.deucePoint;
@@ -89,14 +130,42 @@ export function createMatchModel(cfgIn = {}) {
     if (!snap) return;
     scoreHost = snap.scoreHost | 0;
     scoreGuest = snap.scoreGuest | 0;
+    gamesHost = snap.gamesHost | 0;
+    gamesGuest = snap.gamesGuest | 0;
+    games = Array.isArray(snap.games)
+      ? snap.games.map((g) => ({
+          scoreHost: g.scoreHost | 0,
+          scoreGuest: g.scoreGuest | 0,
+          winner: g.winner === 'guest' ? 'guest' : 'host',
+        }))
+      : [];
     currentServer = snap.currentServer === 'guest' ? 'guest' : 'host';
+    gameStartServer = snap.gameStartServer === 'guest' ? 'guest'
+      : snap.gameStartServer === 'host' ? 'host'
+      : cfg.firstServer;
     pointsSinceSwitch = snap.pointsSinceSwitch | 0;
-    gameOver = !!snap.gameOver;
-    gameWinner = snap.gameWinner === 'host' || snap.gameWinner === 'guest' ? snap.gameWinner : null;
+    gameOver = !!(snap.gameOver || snap.matchOver);
+    const gw = snap.gameWinner ?? snap.matchWinner;
+    gameWinner = gw === 'host' || gw === 'guest' ? gw : null;
     rallySeq = snap.rallySeq | 0;
   }
 
   return { applyRallyEnd, getState, serialize, restore };
+}
+
+// Deterministic serve "toss" for the match's first server. Both peers know
+// the room code, so hashing it gives them the same answer with no extra
+// wire message and no host bias — the old hardcoded host-serves-first gave
+// the host the serve every single match. FNV-1a over the code string; null /
+// empty codes fall back to 'host' (the previous behavior).
+export function firstServerFromCode(code) {
+  if (!code || typeof code !== 'string') return 'host';
+  let h = 0x811c9dc5;
+  for (let i = 0; i < code.length; i++) {
+    h ^= code.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h & 1) === 0 ? 'host' : 'guest';
 }
 
 // Per-rally verdicts, in the LOCAL frame ('self' | 'opponent').

@@ -107,6 +107,25 @@ export const STYLE_MOVEMENT_MULTIPLIER = Object.freeze({
   allround: 1.00,
 });
 
+// Contact timing: ms after the AI-side bounce at which the stroke is taken
+// (feeds shotAdapter's interception rollout via setContactDelayMs). This
+// used to be a flat 200 for every style, which contradicted everything the
+// home distances above say: a blocker glued to the edge takes the ball ON
+// THE RISE — that is the entire style — while a chopper 1.2 m back takes it
+// late and low on the descent. Timing is the most VISIBLE style signature
+// there is; the paddle meeting the ball at a different point in its arc is
+// what makes a blocker read as a blocker before they've hit three balls.
+// (The physics is indifferent — the solver solves whatever contact point
+// the rollout hands it — so this is pure style expression, with the real
+// tactical consequences timing has: earlier contact returns the ball
+// sooner and lower, later contact buys reach and time.)
+export const STYLE_CONTACT_DELAY_MS = Object.freeze({
+  attacker: 160,   // near the top of the bounce — takes it early to press
+  blocker:  110,   // on the rise, right off the bounce
+  chopper:  320,   // late and low, well into the descent
+  allround: 200,   // the neutral timing the sim always used
+});
+
 // Not all styles suit all difficulties. A beginner is by definition
 // "no developed style yet" — beginners are always allround. Intermediate
 // and Pro get random assignment from all four.
@@ -163,4 +182,7 @@ export function homeDistanceForStyle(style) {
 }
 export function movementMultiplierForStyle(style) {
   return STYLE_MOVEMENT_MULTIPLIER[style] ?? 1.0;
+}
+export function contactDelayForStyle(style) {
+  return STYLE_CONTACT_DELAY_MS[style] ?? STYLE_CONTACT_DELAY_MS.allround;
 }

@@ -345,3 +345,52 @@ describe('physical toss (grip hold/release)', () => {
     expect(spawnBallAt).not.toHaveBeenCalled();
   });
 });
+
+describe('low-toss detection (ITTF 2.6.2)', () => {
+  // Drive a physical toss whose hand rises at `mps` and release it.
+  function physicalToss(mps) {
+    const xr = makeFakeXR();
+    const { ctrl, setTime } = makeController(xr);
+    const events = [];
+    const low = jest.fn((e) => events.push('low'));
+    ctrl.onLaunch(() => events.push('launch'));
+    ctrl.onLowToss(low);
+    ctrl.arm();
+    xr.state.pressed = true;
+    ctrl.update(1 / 72);
+    const step = mps * 0.03; // per 30 ms frame
+    for (let i = 1; i <= 3; i++) {
+      setTime(i * 30);
+      xr.grip.position.y = 1.0 + step * i;
+      ctrl.update(1 / 72);
+    }
+    setTime(120);
+    xr.grip.position.y = 1.0 + step * 4;
+    xr.state.pressed = false;
+    ctrl.update(1 / 72);
+    return { low, events };
+  }
+
+  test('a flat toss fires onLowToss, after the launch listeners', () => {
+    const { low, events } = physicalToss(1.0); // < LOW_TOSS_HINT_VY_MPS
+    expect(low).toHaveBeenCalledTimes(1);
+    expect(low.mock.calls[0][0].vy).toBeCloseTo(1.0, 2);
+    expect(events).toEqual(['launch', 'low']); // strict-rules callers key off the launch window
+  });
+
+  test('a legal toss does not fire onLowToss', () => {
+    const { low } = physicalToss(2.5);
+    expect(low).not.toHaveBeenCalled();
+  });
+
+  test('the trigger fallback always tosses legally — never fires onLowToss', () => {
+    const xr = makeFakeXR();
+    const { ctrl } = makeController(xr);
+    const low = jest.fn();
+    ctrl.onLowToss(low);
+    ctrl.arm();
+    ctrl.update(1 / 72);
+    expect(ctrl.launch()).toBe(true);
+    expect(low).not.toHaveBeenCalled();
+  });
+});

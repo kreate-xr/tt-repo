@@ -1,7 +1,7 @@
 // Unit tests for the multiplayer match model + rally tracker
 // (js/modes/multiplayer/matchModel.js). Pure logic — no scene/physics mocks.
 
-import { createMatchModel, createRallyTracker, MATCH_DEFAULTS } from '../js/modes/multiplayer/matchModel.js';
+import { createMatchModel, createRallyTracker, MATCH_DEFAULTS, firstServerFromCode } from '../js/modes/multiplayer/matchModel.js';
 
 describe('createMatchModel', () => {
   test('host serves first by default', () => {
@@ -33,20 +33,60 @@ describe('createMatchModel', () => {
     expect(after.rallySeq).toBe(before.rallySeq + 1);
   });
 
-  test('game ends at 11 with a 2-point lead', () => {
-    const m = createMatchModel();
+  test('game ends at 11 with a 2-point lead (bestOf: 1 = single-game session)', () => {
+    const m = createMatchModel({ bestOf: 1 });
     for (let i = 0; i < 10; i++) m.applyRallyEnd('host');
     for (let i = 0; i < 5; i++) m.applyRallyEnd('guest');
     expect(m.getState().gameOver).toBe(false);
-    m.applyRallyEnd('host'); // 11-5
-    const s = m.getState();
+    const s = m.applyRallyEnd('host'); // 11-5
     expect(s.gameOver).toBe(true);
     expect(s.gameWinner).toBe('host');
-    expect(s.scoreHost).toBe(11);
+    expect(s.gameJustEnded).toEqual({ scoreHost: 11, scoreGuest: 5, winner: 'host' });
+  });
+
+  test('best-of-5: a game win banks a game, resets scores, alternates first server', () => {
+    const m = createMatchModel(); // bestOf 5, host serves game 1
+    for (let i = 0; i < 11; i++) m.applyRallyEnd('host');
+    const s = m.getState();
+    expect(s.gamesHost).toBe(1);
+    expect(s.gamesGuest).toBe(0);
+    expect(s.games).toEqual([{ scoreHost: 11, scoreGuest: 0, winner: 'host' }]);
+    expect(s.scoreHost).toBe(0);            // fresh game
+    expect(s.scoreGuest).toBe(0);
+    expect(s.gameOver).toBe(false);         // match continues
+    expect(s.matchOver).toBe(false);
+    expect(s.currentServer).toBe('guest');  // ITTF 2.13.3 — first server alternates
+    expect(s.gameStartServer).toBe('guest');
+  });
+
+  test('best-of-5: match ends at 3 games, and gameOver stays the terminal flag', () => {
+    const m = createMatchModel();
+    for (let g = 0; g < 3; g++) {
+      for (let i = 0; i < 11; i++) m.applyRallyEnd('guest');
+    }
+    const s = m.getState();
+    expect(s.gamesGuest).toBe(3);
+    expect(s.matchOver).toBe(true);
+    expect(s.matchWinner).toBe('guest');
+    expect(s.gameOver).toBe(true);          // legacy consumers read this as session over
+    expect(s.gameWinner).toBe('guest');
+    expect(s.games).toHaveLength(3);
+  });
+
+  test('firstServerFromCode: deterministic, both values reachable, null-safe', () => {
+    expect(firstServerFromCode('ABC123')).toBe(firstServerFromCode('ABC123'));
+    const seen = new Set();
+    for (const code of ['AAAAAA', 'AAAAAB', 'AAAAAC', 'AAAAAD', 'AAAAAE', 'AAAAAF', 'AAAAAG', 'AAAAAH']) {
+      seen.add(firstServerFromCode(code));
+    }
+    expect(seen.has('host')).toBe(true);
+    expect(seen.has('guest')).toBe(true);
+    expect(firstServerFromCode(null)).toBe('host');
+    expect(firstServerFromCode('')).toBe('host');
   });
 
   test('no game end at 11-10; deuce swaps serve every point', () => {
-    const m = createMatchModel();
+    const m = createMatchModel({ bestOf: 1 });
     for (let i = 0; i < 10; i++) { m.applyRallyEnd('host'); m.applyRallyEnd('guest'); }
     // 10-10 deuce
     expect(m.getState().gameOver).toBe(false);
@@ -59,8 +99,8 @@ describe('createMatchModel', () => {
     expect(m.getState().gameWinner).toBe('host');
   });
 
-  test('scoring is frozen after game over', () => {
-    const m = createMatchModel({ firstTo: 2, deucePoint: 99 });
+  test('scoring is frozen after match over', () => {
+    const m = createMatchModel({ firstTo: 2, deucePoint: 99, bestOf: 1 });
     m.applyRallyEnd('guest');
     m.applyRallyEnd('guest'); // 0-2, game over
     const seq = m.getState().rallySeq;
@@ -91,6 +131,7 @@ describe('createMatchModel', () => {
   });
 
   test('defaults match ITTF-simplified config', () => {
+    expect(MATCH_DEFAULTS.bestOf).toBe(5);
     expect(MATCH_DEFAULTS.firstTo).toBe(11);
     expect(MATCH_DEFAULTS.deucePoint).toBe(10);
     expect(MATCH_DEFAULTS.serveRotationEvery).toBe(2);

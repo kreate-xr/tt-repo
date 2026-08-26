@@ -31,9 +31,10 @@
 // FACE_Y_BY_SHOT_TYPE lookup in telegraph.js becomes informational only.
 
 import * as THREE from 'three';
-import { computeImpulse } from '../physics/impulse.js';
+import { computeImpulse, HOLLOW_SPHERE_MOI_FACTOR } from '../physics/impulse.js';
 import {
-  GRAVITY, PADDLE_RESTITUTION, SPIN_CAPTURE_GAIN, paddleRestitution,
+  GRAVITY, PADDLE_RESTITUTION, SPIN_CAPTURE_GAIN, PADDLE_SPIN_CAP,
+  paddleRestitution,
 } from '../physics/constants.js';
 import {
   rolloutToFirstBounce as sharedRolloutToFirstBounce, DT_PRESETS,
@@ -48,35 +49,42 @@ import {
 // (roughly paddle = (v_out + e*v_in) / (1 + e), plus the tangential spin
 // component). Intermediate's fastest profile is a 20 m/s smash.
 //
-// These are NOT the binding constraint and raising them buys nothing. Measured
-// at a 24 m/s request against a 13.0 cap, the solved paddle speed peaked at
-// 9.51 — nowhere near it. What actually limits delivered ball speed is that
-// the launch-angle search can only return trajectories that still LAND, which
+// Raised 5/11/13 → 7/15/18 in the spin-economy unification: spin requests
+// are now physical rps (×2.5), and the tangential paddle speed needed is
+// slip ≈ ω/SPIN_CAPTURE_GAIN — a 58 rps pro loop alone needs ~10.4 m/s of
+// brush on top of the normal drive component. The new caps are real
+// racket-head speeds (an elite forehand loop swings 15-20 m/s at contact),
+// so they stay what they were designed to be: a rail, not the binding
+// constraint. What actually limits delivered ball speed is that the
+// launch-angle search can only return trajectories that still LAND, which
 // saturates delivery around 15.6-18 m/s depending on target depth. The
 // profiles in shotTypeSelector are set inside that band for exactly this
 // reason.
 export const MAX_PADDLE_SPEED_MPS = Object.freeze({
-  beginner: 5.0,
-  intermediate: 11.0,
-  pro: 13.0,
+  beginner: 7.0,
+  intermediate: 15.0,
+  pro: 18.0,
 });
 
 // Spin-tilt sensitivity (spec §section_1.algorithm.step_3). Tilt angle in
-// radians = atan(target_spin_rps * 0.025). At ±15 rps that's ±atan(0.375)
-// ≈ ±20.5°; at ±30 rps that's ±atan(0.75) ≈ ±36.9°. Reasonable visual
-// telegraph range.
-const SPIN_TILT_COEFFICIENT = 0.025;
+// radians = atan(target_spin_rps * 0.010). At ±37 rps that's ±atan(0.37)
+// ≈ ±20.4°; at ±60 rps ±atan(0.6) ≈ ±31°. Reasonable visual telegraph
+// range. Was 0.025 before the spin-economy rescale (×2.5 on every rps
+// request); 0.010 keeps the tilt-per-SHOT unchanged so the swept
+// SPIN_TILT_APPLY optimum below still holds.
+const SPIN_TILT_COEFFICIENT = 0.010;
 
 // Fraction of that tilt actually applied to the CONTACT face normal.
 //
 // The full tilt cannot be applied, because in this physics model the face
-// normal rigidly determines where the ball goes. computeImpulse only changes
-// the velocity component along n:
-//     v_out = v_in - (1+e)(v_rel·n) n
-// so v_out is confined to the line v_in + λn. Pass 1 solves a ballistic
-// trajectory, sets faceNormal = normalize(v_out - v_in), and then rotating
-// that normal for spin INVALIDATES the solution it just computed — the ball
-// leaves along a different line than the one aimed at the target.
+// normal dominates where the ball goes. computeImpulse reflects along n:
+//     v_out = v_in - (1+e)(v_rel·n) n  [+ the tangential friction kick,
+//     (2/3)·R·gain·slip, which pass 1 does not model — pass 2 and the
+//     correction loop absorb it the same way they absorb drag and Magnus]
+// so to first order v_out lives near the line v_in + λn. Pass 1 solves a
+// ballistic trajectory, sets faceNormal = normalize(v_out - v_in), and then
+// rotating that normal for spin INVALIDATES the solution it just computed —
+// the ball leaves along a different line than the one aimed at the target.
 //
 // At full tilt the effect is severe: a 20 rps request tilts the face 26.6°,
 // launching the ball upward at 2.35 m/s so it descends at z = 1.90, well past
@@ -114,9 +122,13 @@ const ACCEPTABLE_LANDING_ERROR_M = 0.15;
 // Measured against pass 2 over 6000 randomized shots (feasible fraction):
 //   iters   1      2      4      6      8
 //           16.6%  22.0%  27.7%  29.0%  29.3%
-// 6 is the knee — 8 buys 0.3pt for another rollout. Each iteration terminates
-// at first bounce, so the typical cost is far below the 800-step ceiling.
-const CORRECTION_MAX_ITERS = 6;
+// 6 was the knee under the old spin economy; the physical-rps rescale made
+// heavy-spin shots carry ~2.5× the brush (bigger tangential kick, bigger
+// pass-1 residual), and the envelope suite showed deep high-spin cells
+// landing just outside tolerance at 6 — 8 recovers them. Each iteration
+// terminates at first bounce, so the typical cost stays far below the
+// 800-step ceiling.
+const CORRECTION_MAX_ITERS = 8;
 // Per-step velocity scale bounds. Narrower than the old [0.4, 2.5] because the
 // scale is now sqrt(rangeRatio) rather than the raw ratio, and because
 // iterating means a single step no longer has to cover the whole gap.
@@ -131,13 +143,14 @@ const CORRECTION_MAX_SCALE = 1.8;
 // bar.
 const CORRECTION_TARGET_ERROR_M = 0.05;
 
-// Aim-shift budget for sidespin shots (see the aim-shift pass in solvePaddle).
-// Each iteration is one pass-1 closed form + one pass-2 rollout. The lateral
-// drift is near-linear in the aim offset, so the fixed-point iteration
-// converges fast — 3 covers the tier sidespin bands with margin, and shots
-// that haven't converged by then still enter the range-correction loop with
-// the best shifted solution found.
-const AIM_SHIFT_MAX_ITERS = 3;
+// Aim-shift budget (see the aim-shift pass in solvePaddle — it now runs on
+// any persistent miss, not just sidespin). Each iteration is one pass-1
+// closed form + one pass-2 rollout. The lateral drift is near-linear in the
+// aim offset, so the fixed-point iteration converges fast; 5 covers the
+// physical-rps spin bands (heavier brush → bigger first-shot miss than the
+// old economy's 3 was sized for), and shots that haven't converged by then
+// still enter the range-correction loop with the best shifted solution.
+const AIM_SHIFT_MAX_ITERS = 5;
 
 // Launch-angle bisection budget. Each iteration is one closed-form evaluation
 // (no rollout), so this is cheap — but raising it past ~10 does not help,
@@ -257,7 +270,7 @@ function rolloutToFirstBounce(startPos, startVel, startSpin, env) {
 
 // Pass-1 analytical inverse. Returns { paddleV_out, faceNormal, paddle_v_normal_mag,
 //                                       paddle_v_tangent_mag, feasible } or { feasible: false }.
-function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed) {
+function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin = null, ballRadius = 0.02) {
   // Iterate launch angle to find a velocity vector whose flight from
   // contactPos arrives at targetWorld with magnitude ≈ targetSpeed at
   // landing. Spec is intentionally loose ("interpret target_speed as
@@ -319,67 +332,9 @@ function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targe
   if (!bestV) return { feasible: false, reason: SOLVER_REASONS.NO_BALLISTIC_SOLUTION };
   const v_out = bestV;
 
-  // Impulse vector (in ball frame).
-  const impulse = v_out.clone().sub(contactVel);
-  const impulseMag = impulse.length();
-  if (impulseMag < 1e-6) {
-    // No change in velocity needed — degenerate case, return a low-energy
-    // hold (paddle barely brushes ball).
-    return {
-      feasible: true,
-      paddleV: new THREE.Vector3(0, 0, 0),
-      faceNormal: new THREE.Vector3(0, 0, 1),
-      v_out,
-    };
-  }
-
-  // Face normal = normalize(impulse) with topspin/slice tilt.
-  const faceNormal = impulse.clone().multiplyScalar(1 / impulseMag);
-  // Tilt direction: perpendicular to faceNormal in the vertical plane
-  // containing faceNormal and world up. = (worldUp × faceNormal) × faceNormal,
-  // normalized — points "up the impact axis".
-  const worldUp = new THREE.Vector3(0, 1, 0);
-  const tiltAxis = new THREE.Vector3().crossVectors(worldUp, faceNormal);
-  if (tiltAxis.lengthSq() > 1e-8) {
-    tiltAxis.normalize();
-    const tiltAngle = Math.atan(targetSpin * SPIN_TILT_COEFFICIENT);
-    faceNormal.applyAxisAngle(tiltAxis, -tiltAngle * SPIN_TILT_APPLY);
-    faceNormal.normalize();
-  }
-
-  // Paddle velocity decomposition.
+  // Tangential paddle speeds needed to impart the requested spins.
   //
-  // The spec's stated formula `paddle_v_normal = |impulse| / (1 + e)` only
-  // holds when the ball is at rest in the paddle's frame at contact. In
-  // general, derive from elastic-with-restitution reflection:
-  //   v_out · n = -e * v_in_paddle · n + paddle_v · n
-  //   v_out · n = -e * (v_in - paddle_v) · n + paddle_v · n
-  //   v_out · n = -e * v_in · n + (1+e) * paddle_v · n
-  //   paddle_v · n = (v_out · n + e * v_in · n) / (1+e)
-  //
-  // Since faceNormal = impulse.normalize(), v_out · n = v_in · n + |impulse|,
-  // so the formula simplifies to:
-  //   paddle_v · n = v_in · n + |impulse| / (1 + e)
-  //
-  // The spec's formula missed the v_in · n term. With it, the solver
-  // produces paddle velocities that actually drive the ball to target
-  // through the host's collision physics (verified by pass 2).
-  // Analytic inverse uses the scalar PADDLE_RESTITUTION (curve median) as a
-  // linearization anchor. The true COR is speed-dependent (see
-  // paddleRestitution), so a fast smash sees slightly less bounce than this
-  // formula predicts — pass-2 verification below re-simulates with the real
-  // curve and rejects solutions whose landing error exceeds
-  // ACCEPTABLE_LANDING_ERROR_M. In practice the linearization error is
-  // ~5-10% of paddle speed at rally speeds, well within the search band.
-  const vInDotN = contactVel.dot(faceNormal);
-  const paddleNormalMag = vInDotN + impulseMag / (1 + PADDLE_RESTITUTION);
-  // Tangent direction = the tilt axis projected onto the plane perpendicular
-  // to faceNormal. For zero spin, magnitude = 0. For topspin, paddle moves
-  // up along the face; for slice, paddle moves down.
-  const tangentDir = new THREE.Vector3().crossVectors(faceNormal, tiltAxis).normalize();
-  // Tangential paddle speed needed to impart target_spin.
-  //
-  // This is the INVERSE of what the physics actually does. impulse.js:200-202
+  // This is the INVERSE of what the physics actually does. impulse.js
   // generates spin from slip, not from rolling the ball around an arm:
   //     Δω = (slipTangent × n) · SPIN_CAPTURE_GAIN
   // so producing ω rad/s requires slip ≈ ω / SPIN_CAPTURE_GAIN. To first order
@@ -399,20 +354,120 @@ function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targe
   // ~87% of intermediate loops and 100% of chops. Rejected shots fall back to a
   // spin-0 safe target in aiFSM — which succeeded precisely BECAUSE it dropped
   // the spin request, masking the bug.
-  const paddleTangentMag = (targetSpin * 2 * Math.PI) / SPIN_CAPTURE_GAIN;
-
-  // Sidespin: a SECOND tangential component, along the horizontal face-plane
+  //
+  // Sidespin is a SECOND tangential component, along the horizontal face-plane
   // axis (tiltAxis) instead of the vertical one. Horizontal slip crosses the
   // face normal into a vertical Δω — spin about the up axis, which Magnus
-  // turns into lateral curl. Same slip inversion as the vertical component
-  // above; the face normal is NOT re-tilted for it (the top/back tilt is a
-  // telegraph of elevation intent — sidespin lives purely in the brush).
-  //
-  // The lateral curl this produces lands the ball OFF the ballistic aim
-  // point; solvePaddle cancels that systematically with the aim-shift pass
-  // rather than asking pass 1 to model Magnus (see the measurement note
-  // above on why folding Magnus into the closed form makes things worse).
+  // turns into lateral curl. The face normal is NOT re-tilted for it (the
+  // top/back tilt is a telegraph of elevation intent — sidespin lives purely
+  // in the brush). The lateral curl lands the ball OFF the ballistic aim
+  // point; solvePaddle cancels that with the aim-shift pass rather than
+  // asking pass 1 to model Magnus.
+  const paddleTangentMag = (targetSpin * 2 * Math.PI) / SPIN_CAPTURE_GAIN;
   const paddleSideTangentMag = (targetSideSpin * 2 * Math.PI) / SPIN_CAPTURE_GAIN;
+
+  // The friction couple's linear half (impulse.js): the same tangential slip
+  // that spins the ball also DRAGS it, Δv = (2/3)·R·gain·slip. That kick moves
+  // v_out off the reflection line, and unlike drag/Magnus it acts at launch,
+  // so leaving it to the pass-2 range loop (which can only scale pace along
+  // the solved direction) tanks feasibility on spin shots. Every slip term is
+  // known at plan time — paddle tangential motion, incoming tangential
+  // velocity, incoming spin — so predict the kick and aim the reflection at
+  // (v_out − kick) instead. Two fixed-point rounds converge: round 0 is the
+  // old kick-blind solution, round 1 re-derives the face from the adjusted
+  // target; the kick is sub-half of the (small) tangential magnitude.
+  const worldUp = new THREE.Vector3(0, 1, 0);
+  const kickGain = HOLLOW_SPHERE_MOI_FACTOR * ballRadius * SPIN_CAPTURE_GAIN;
+  const slipSat = PADDLE_SPIN_CAP > 0 ? PADDLE_SPIN_CAP / SPIN_CAPTURE_GAIN : Infinity;
+  const predictedKick = new THREE.Vector3();
+  const vOutAdj = new THREE.Vector3();
+  let faceNormal = null;
+  let tiltAxis = null;
+  let tangentDir = null;
+  let paddleNormalMag = 0;
+
+  for (let round = 0; round < 2; round++) {
+    vOutAdj.copy(v_out).sub(predictedKick);
+
+    // Impulse vector (in ball frame).
+    const impulse = vOutAdj.clone().sub(contactVel);
+    const impulseMag = impulse.length();
+    if (impulseMag < 1e-6) {
+      // No change in velocity needed — degenerate case, return a low-energy
+      // hold (paddle barely brushes ball).
+      return {
+        feasible: true,
+        paddleV: new THREE.Vector3(0, 0, 0),
+        faceNormal: new THREE.Vector3(0, 0, 1),
+        v_out,
+      };
+    }
+
+    // Face normal = normalize(impulse) with topspin/slice tilt.
+    faceNormal = impulse.clone().multiplyScalar(1 / impulseMag);
+    // Tilt direction: perpendicular to faceNormal in the vertical plane
+    // containing faceNormal and world up. = (worldUp × faceNormal) × faceNormal,
+    // normalized — points "up the impact axis".
+    tiltAxis = new THREE.Vector3().crossVectors(worldUp, faceNormal);
+    if (tiltAxis.lengthSq() > 1e-8) {
+      tiltAxis.normalize();
+      const tiltAngle = Math.atan(targetSpin * SPIN_TILT_COEFFICIENT);
+      faceNormal.applyAxisAngle(tiltAxis, -tiltAngle * SPIN_TILT_APPLY);
+      faceNormal.normalize();
+    }
+
+    // Paddle velocity decomposition.
+    //
+    // The spec's stated formula `paddle_v_normal = |impulse| / (1 + e)` only
+    // holds when the ball is at rest in the paddle's frame at contact. In
+    // general, derive from elastic-with-restitution reflection:
+    //   v_out · n = -e * v_in_paddle · n + paddle_v · n
+    //   v_out · n = -e * (v_in - paddle_v) · n + paddle_v · n
+    //   v_out · n = -e * v_in · n + (1+e) * paddle_v · n
+    //   paddle_v · n = (v_out · n + e * v_in · n) / (1+e)
+    //
+    // Since faceNormal = impulse.normalize(), v_out · n = v_in · n + |impulse|,
+    // so the formula simplifies to:
+    //   paddle_v · n = v_in · n + |impulse| / (1 + e)
+    //
+    // The spec's formula missed the v_in · n term. With it, the solver
+    // produces paddle velocities that actually drive the ball to target
+    // through the host's collision physics (verified by pass 2).
+    // Analytic inverse uses the scalar PADDLE_RESTITUTION (curve median) as a
+    // linearization anchor. The true COR is speed-dependent (see
+    // paddleRestitution), so a fast smash sees slightly less bounce than this
+    // formula predicts — pass-2 verification below re-simulates with the real
+    // curve and rejects solutions whose landing error exceeds
+    // ACCEPTABLE_LANDING_ERROR_M. In practice the linearization error is
+    // ~5-10% of paddle speed at rally speeds, well within the search band.
+    const vInDotN = contactVel.dot(faceNormal);
+    paddleNormalMag = vInDotN + impulseMag / (1 + PADDLE_RESTITUTION);
+    // Tangent direction = the tilt axis projected onto the plane perpendicular
+    // to faceNormal. For zero spin, magnitude = 0. For topspin, paddle moves
+    // up along the face; for slice, paddle moves down.
+    tangentDir = new THREE.Vector3().crossVectors(faceNormal, tiltAxis).normalize();
+
+    // Predict the slip computeImpulse will see (same expression, tangential
+    // part): slip = vContact − ballV_out − ω×r with r = −R·n. The normal
+    // reflection leaves the ball's tangential velocity untouched, so
+    //   slip_t = paddle_t − v_in_t + R·(ω_in × n).
+    const slip = new THREE.Vector3()
+      .addScaledVector(tangentDir, paddleTangentMag)
+      .addScaledVector(tiltAxis, paddleSideTangentMag)
+      .sub(contactVel);
+    if (contactSpin) {
+      slip.addScaledVector(
+        new THREE.Vector3().crossVectors(contactSpin, faceNormal), ballRadius,
+      );
+    }
+    slip.addScaledVector(faceNormal, -slip.dot(faceNormal));
+
+    // Mirror computeImpulse's grip saturation: past CAP/gain of slip the kick
+    // stops growing.
+    predictedKick.copy(slip).multiplyScalar(kickGain);
+    const slipMag = slip.length();
+    if (slipMag > slipSat) predictedKick.multiplyScalar(slipSat / slipMag);
+  }
 
   const paddleV = new THREE.Vector3()
     .addScaledVector(faceNormal, paddleNormalMag)
@@ -486,7 +541,7 @@ export function solvePaddle({
   specTargetToWorld(targetX, targetZ, env.tableCenterZ, env.tableSurfaceY, targetWorld);
 
   // Pass 1.
-  const pass1 = pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed);
+  const pass1 = pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin, env.ballRadius);
   if (!pass1.feasible) {
     return {
       feasible: false,
@@ -500,9 +555,31 @@ export function solvePaddle({
   }
 
   // Pass 2 verify.
-  const verify = pass2Verify(contactPos, contactVel, contactSpin, pass1.paddleV, pass1.faceNormal, env);
+  let verify = pass2Verify(contactPos, contactVel, contactSpin, pass1.paddleV, pass1.faceNormal, env);
   if (!verify.landing) {
-    // Ball didn't land — no bounce in 2.4s. Mark infeasible.
+    // Ball didn't land — no bounce in 2.4s. On a table this small that is
+    // almost always a range OVERSHOOT (the ball cleared the far edge), so
+    // before giving up, do what a player does with a shot flying long: swing
+    // softer. Scale the NORMAL component down (tangent preserved so the spin
+    // request survives) and re-verify. This rescue is what keeps deep
+    // high-pace targets solvable — the correction loop below can only run
+    // once SOME landing exists to shoot against.
+    for (const scale of [0.85, 0.72, 0.6]) {
+      const normalVec = pass1.faceNormal.clone()
+        .multiplyScalar(pass1.paddleV.dot(pass1.faceNormal) * scale);
+      const tangentVec = pass1.paddleV.clone()
+        .addScaledVector(pass1.faceNormal, -pass1.paddleV.dot(pass1.faceNormal));
+      const damped = normalVec.add(tangentVec);
+      const retry = pass2Verify(contactPos, contactVel, contactSpin, damped, pass1.faceNormal, env);
+      if (retry.landing) {
+        pass1.paddleV = damped;
+        pass1.paddleSpeed = damped.length();
+        verify = retry;
+        break;
+      }
+    }
+  }
+  if (!verify.landing) {
     return {
       feasible: false,
       reason: SOLVER_REASONS.NO_LANDING,
@@ -529,7 +606,7 @@ export function solvePaddle({
     };
   }
 
-  // Aim-shift pass — sidespin only.
+  // Aim-shift pass — any persistent miss.
   //
   // Sidespin Magnus curls the flight LATERALLY, so the ball lands off to the
   // side of the ballistic aim point. The range-correction loop below can only
@@ -543,15 +620,23 @@ export function solvePaddle({
   // observed miss (fixed-point iteration, cumulative shift), keeping the best
   // verified solution. Not folded into pass 1 analytically for the same
   // measured reason Magnus isn't (see the note above pass1Analytical).
+  //
+  // Originally gated to targetSideSpin ≠ 0, because only sidespin missed
+  // laterally. The tangential friction kick changed that: incoming spin on
+  // the CONTACT deflects the launch too, and pass 1's kick prediction is
+  // first-order, so any spin-heavy contact can leave a systematic 15-25 cm
+  // residual the range loop cannot see. The shift now runs whenever the
+  // verified landing stays outside tolerance — a few extra rollouts on
+  // exactly the shots that would otherwise be rejected.
   let base = pass1;
   let baseLanding = verify.landing;
   let baseError = error;
-  if (targetSideSpin !== 0) {
+  if (baseError > ACCEPTABLE_LANDING_ERROR_M) {
     const virtualTarget = targetWorld.clone();
     for (let i = 0; i < AIM_SHIFT_MAX_ITERS && baseError > ACCEPTABLE_LANDING_ERROR_M; i++) {
       virtualTarget.x += targetWorld.x - baseLanding.x;
       virtualTarget.z += targetWorld.z - baseLanding.z;
-      const p = pass1Analytical(contactPos, contactVel, virtualTarget, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed);
+      const p = pass1Analytical(contactPos, contactVel, virtualTarget, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin, env.ballRadius);
       if (!p.feasible) break;
       const vv = pass2Verify(contactPos, contactVel, contactSpin, p.paddleV, p.faceNormal, env);
       if (!vv.landing) break;

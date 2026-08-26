@@ -32,19 +32,19 @@ export const QUICK_FEED = {
   }),
 
   FHTopspin: preset('FH topspin', {
-    speed: 9, spinType: 'top', spinMagnitude: 120,
+    speed: 9, spinType: 'top', spinMagnitude: 300,
     placement: { kind: 'zone', zone: 9 }, depth: 'deep',
     interval: 2.0, burstCount: 20,
   }),
 
   BHTopspin: preset('BH topspin', {
-    speed: 9, spinType: 'top', spinMagnitude: 120,
+    speed: 9, spinType: 'top', spinMagnitude: 300,
     placement: { kind: 'zone', zone: 7 }, depth: 'deep',
     interval: 2.0, burstCount: 20,
   }),
 
   BackspinPush: preset('Backspin push', {
-    speed: 7, spinType: 'back', spinMagnitude: 110,
+    speed: 7, spinType: 'back', spinMagnitude: 275,
     placement: { kind: 'zone', zone: 2 }, depth: 'short',
     arc: 'flat', feedOrigin: 'center-far',
     interval: 2.2, burstCount: 20,
@@ -58,7 +58,7 @@ export const QUICK_FEED = {
   }),
 
   SmashSetup: preset('Smash setup', {
-    speed: 8, spinType: 'top', spinMagnitude: 90,
+    speed: 8, spinType: 'top', spinMagnitude: 225,
     arc: 'lob',
     placement: { kind: 'zone', zone: 5 }, depth: 'half-long',
     interval: 2.6, burstCount: 20,

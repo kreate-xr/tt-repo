@@ -7,7 +7,7 @@
 // pre-P15 era, which made Trajectory Practice read as a different app from
 // the training menu that launched it. Hit geometry and routing now come from
 // Panel; the visual language (dark glass card, accent-green selection, muted
-// labels) is the same one trainingMenu and machinePlayMenu draw.
+// labels) is the same one trainingMenu draws.
 //
 // The public surface is unchanged — SPINS / SPEED_LEVELS / INTENSITY_LEVELS,
 // the spinChange / speedChange / intensityChange / back / hide events, and

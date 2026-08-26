@@ -1,6 +1,6 @@
 // Shared canvas-panel styling.
 //
-// trainingMenu.js and machinePlayMenu.js draw the same visual language — dark
+// trainingMenu.js and the other panels draw the same visual language — dark
 // glass card, accent-green selection, muted subtitles. These constants and the
 // roundRect helper lived in trainingMenu.js as file-locals; a second panel
 // wanting the same look had to copy them, and the two copies would then drift

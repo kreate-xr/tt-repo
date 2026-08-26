@@ -95,7 +95,7 @@ describe('buildStepConfig', () => {
 
   test('a step cannot inject an out-of-range value', () => {
     const c = buildStepConfig(base, { wing: WINGS.FH, spinMagnitude: 9000 });
-    expect(c.spinMagnitude).toBeLessThanOrEqual(160);
+    expect(c.spinMagnitude).toBeLessThanOrEqual(400);
   });
 
   test('a step can move the machine itself', () => {

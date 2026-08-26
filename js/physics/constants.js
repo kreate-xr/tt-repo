@@ -88,29 +88,30 @@ export const CORKSCREW_RETAIN = 0.35;
 // mostly manifest in the second half of the trajectory when the coefficient
 // is at a realistic level.
 //
-// 0.010 gives (2× original 0.005, still below the 0.018 that was "too much"):
-//   ω = 50 rad/s (light brush), v = 5 m/s: a_M = 2.5 m/s²  → ~14 cm bounce-time
-//   ω = 100 rad/s (moderate),   v = 8 m/s: a_M = 8 m/s²    → ~35 cm
-//   ω = 200 rad/s (heavy),      v = 10 m/s: a_M = 20 m/s²  → ~90 cm
+// 0.004 is the PHYSICAL coefficient (CL ≈ 1/(2 + v/ωr) empirical sphere fit;
+// a_M ≈ 3 m/s² at ω=100 rad/s, v=8 m/s — the older "k_m ≈ 3e-6 → ~1.1e-3"
+// figure in git history underestimated it). Reference points at 0.004:
+//   ω = 125 rad/s (light brush), v = 5 m/s: a_M = 2.5 m/s²
+//   ω = 250 rad/s (moderate),    v = 8 m/s: a_M = 8 m/s²
+//   ω = 400 rad/s (elite loop),  v = 10 m/s: a_M = 16 m/s²
 //
-// REALISM DEBT, measured and deliberately kept (realism pass, 2026-08):
-// the true physical coefficient is ~0.004 (CL ≈ 1/(2 + v/ωr) empirical
-// sphere fit gives a_M ≈ 3 m/s² at ω=100, v=8 — note the older "k_m ≈ 3e-6
-// → ~1.1e-3" figure in git history underestimated it). So 0.010 is ~2.5×
-// physical. Dropping it to 0.006 was implemented and MEASURED against the
-// solver-envelope harness: pro-tier high-pace feasibility collapsed (18-22
-// m/s targets: 41/120 solvable vs 115/120 at 0.010) because Magnus dip is
-// the mechanism that lands fast shots, and the AI's shot vocabulary encodes
-// spin at ~1/4 of real-world ω (shotTypeSelector tops out near 100 rad/s
-// where real loops run 300-450) — so the exaggerated coefficient and the
-// undersized ω CANCEL on AI shots, landing the product a_M = M·ω·v near
-// physical truth. The honest fix is rescaling the whole AI spin economy
-// (shotTypeSelector spin tables ×~3, solver paddle-speed caps to match)
-// and dropping this to ~0.004 together — that is a coupled retune needing
-// headset validation, not a constants edit. Until then: AI arcs are
-// near-physical by cancellation; PLAYER brush shots (real-scale ω off
-// SPIN_CAPTURE_GAIN) curve ~2.5× real, bounded by PADDLE_SPIN_CAP below.
-export let MAGNUS_COEFFICIENT = 0.010;
+// HISTORY — this shipped at 0.010 (~2.5× physical) for a long time, as
+// documented "REALISM DEBT": the AI's shot vocabulary encoded spin at ~1/4
+// of real-world ω (shotTypeSelector topped out near 100 rad/s where real
+// loops run 300-450), so the exaggerated coefficient and the undersized ω
+// CANCELLED on AI shots — while PLAYER brush shots (real-scale ω off
+// SPIN_CAPTURE_GAIN) curved ~2.5× real. The debt was retired in the spin-
+// economy unification (2026-08): shotTypeSelector spin tables, serve
+// archetypes and the training feeds all scaled ×2.5 to physical rad/s
+// (M·ω preserved, so every AI arc is unchanged), solver strike caps raised
+// to real racket-head speeds to carry the bigger tangential component, and
+// this dropped to the physical 0.004. Player shots now curve at true scale,
+// and one ball obeys one spin economy everywhere. Note an earlier lone
+// attempt to drop just the coefficient (to 0.006, tables unscaled) tanked
+// pro-tier high-pace feasibility (41/120 vs 115/120 solvable at 18-22 m/s)
+// — Magnus dip is the mechanism that lands fast shots, which is why the
+// coefficient and the spin tables must move TOGETHER.
+export let MAGNUS_COEFFICIENT = 0.004;
 // Vertical Magnus scale — controls topspin drop / backspin lift visibility.
 // Was 0.85 (dampening the vertical curve to keep "runaway dips" in check).
 // Lifted to 1.0 so topspin loops actually DIVE into the court and backspin
@@ -226,10 +227,13 @@ export const TABLE_RESTITUTION_V_STAR    = 8.0;    // m/s transition scale
 // players observe and rely on it as a bounce "kick" that reads distinct
 // from the pre-bounce Magnus drift.
 //
-// 0.002 (realism pass, down from 0.010): ~0.2 m/s kick for a moderate
-// ω_y=100 rad/s serve on a fully-formed bounce — still a perceptual assist
+// 0.0008 (spin-economy unification, down from 0.002): the assist was tuned
+// as "~0.2 m/s kick at a moderate sidespin serve" when moderate meant
+// ω_y = 100 rad/s; with the AI/training spin tables rescaled ×2.5 to
+// physical rad/s, the same serve now carries ω_y ≈ 250, so the coefficient
+// drops ×2.5 to keep the tuned kick strength — still a perceptual assist
 // over the ~1-5 cm/s physical value, but no longer a 7° instant direction
-// change. The old 1 m/s kick was ~20× physical and, more importantly, was
+// change. The pre-realism-pass 1 m/s kick was ~20× physical and was
 // compensating for a mechanism this sim had DELETED: the real "kick off the
 // bounce" on hook/fade serves comes from tilted spin axes (ω with a
 // component along the direction of travel), which the corkscrew-stripping
@@ -245,7 +249,7 @@ export const TABLE_RESTITUTION_V_STAR    = 8.0;    // m/s transition scale
 // which acts as a centripetal force and spirals the ball in loops on the
 // table instead of letting it die out. The gate matches the physical
 // mechanism — finite-patch effects only matter when contact force is real.
-export let TABLE_SIDESPIN_KICK = 0.002;
+export let TABLE_SIDESPIN_KICK = 0.0008;
 
 // --- Table edge ("edge ball" — spec P8) ------------------------------------
 // When the ball grazes the top edge of the table (center outside the XZ AABB
@@ -500,6 +504,23 @@ export const SWING_HAPTIC_CURVE         = 1.4;  // ramp exponent; 1 = linear
 export const STATIONARY_VEL = 0.18;     // m/s
 export const STATIONARY_TIME = 0.9;     // seconds
 
+// Dead-ball bounce damping. With the lively-table default (median 0.92) the
+// COR curve sits at the COR_MAX clamp for every impact below ~3.9 m/s, so a
+// ball left bouncing on the table loses only 5% of its speed per bounce and
+// takes ~2v/(g(1−e)) ≈ 15+ seconds to dwindle below the stuck-ball detector
+// — during which the feeder (which waits for ballLost) cannot advance.
+//
+// The first bounce or two of any ball are LIVE play and must keep the full
+// curve: a machine feed bounces once before the return, a serve bounces on
+// both sides before the receiver's hit. A THIRD bounce with no paddle
+// contact in between is dead in every ruleset and every mode, so from that
+// bounce on the outgoing vertical velocity takes an extra scale — the ball
+// visibly dies over a few hops and comes to rest in ~2-3 s instead. Live
+// physics only (ball.js); the predictive rollouts never simulate past the
+// bounces that matter for aiming, so they stay on the undamped shared math.
+export const DEAD_BALL_BOUNCES = 3;      // bounces since last paddle contact
+export const DEAD_BALL_COR_SCALE = 0.65; // extra v_y loss per dead bounce
+
 // Rolling friction on the table. Applied per frame while the ball is
 // resting on the surface (y at rest, |v_y| tiny). Without this, once a ball
 // settles it glides frictionlessly across the table until it falls off the
@@ -532,9 +553,12 @@ const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), hi);
 //
 // Ranges are tighter than the legacy setters on purpose: the equipment layer
 // models a bat and table someone could actually buy. TABLE_EN_0 floors at
-// 0.90 — the old dead-table tuning (median 0.75, e(2.4) ≈ 0.76) sat well
-// under ITTF regulation and read as broken equipment, so stored values from
-// that era clamp up into range on migration rather than being reproduced.
+// 0.80 — just under the CERTIFIED median 0.82 (the ITTF drop-test value the
+// curve comment above TABLE_RESTITUTION derives), so the regulation table is
+// reachable from the tuner. The floor used to be 0.90, which made the
+// certified value unreachable and the 'ittf' preset a lie; the old
+// dead-table tuning (median 0.75, e(2.4) ≈ 0.76) still reads as broken
+// equipment and still clamps up into range on migration.
 export let PADDLE_E0 = PADDLE_RESTITUTION;
 export let TABLE_EN_0 = TABLE_RESTITUTION;
 
@@ -544,7 +568,7 @@ export function setPaddleE0(v) {
 }
 
 export function setTableEn0(v) {
-  TABLE_EN_0 = clamp(v, 0.90, 0.98);
+  TABLE_EN_0 = clamp(v, 0.80, 0.98);
   TABLE_RESTITUTION = TABLE_EN_0;
 }
 
@@ -562,8 +586,13 @@ export function setTableMu(v) {
 // comparisons. Note the shipped LOAD default (weighty-ball paddle median
 // 0.82, lively table 0.92) is a standing feel choice documented at the
 // definitions above — presets are explicit user actions, not the boot state.
+// ittf.tableEn0 is the certified median 0.82: with the ±0.13 curve offsets
+// this reproduces the ITTF drop test (e(2.4) ≈ 0.88 → ~23 cm rebound from
+// 30 cm) instead of the lively 0.92 it shipped with for a while — which made
+// the preset labelled "ITTF" bounce well above a regulation table, with the
+// setter floor (then 0.90) making the honest value unreachable entirely.
 export const PHYSICS_PRESETS = {
-  ittf:   { paddleE0: 0.878, tableEn0: 0.92, tableMu: 0.25 },
+  ittf:   { paddleE0: 0.878, tableEn0: 0.82, tableMu: 0.25 },
   lively: { paddleE0: 0.90,  tableEn0: 0.95, tableMu: 0.25 },
   dead:   { paddleE0: 0.80,  tableEn0: 0.90, tableMu: 0.18 },
 };

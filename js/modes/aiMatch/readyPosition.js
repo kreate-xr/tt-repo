@@ -60,6 +60,39 @@ const SHORT_BOUNCE_DEPTH_THRESHOLD_M = 0.45;
 const HIGH_BALL_SQUAT_M = -0.03;
 const SHORT_BALL_LIFT_M = 0.02;
 
+// Pre-contact anticipation (spec §pre_contact_lead_time) — the live,
+// mid-rally counterpart of the between-rally centroid bias above. The
+// moment the AI's own shot is away it KNOWS where the player will have to
+// take the ball (its own aim point), and a skilled player is already
+// drifting toward the likely reply corridor before the opponent's contact
+// — that pre-move is most of what separates "anticipates" from "reacts".
+// The corridor model is the simplest true one: the crosscourt return (x
+// sign flips on a diagonal) is the high-margin, high-frequency reply, so
+// the lean is toward the mirror of the AI's own target x, damped by
+// ANTICIPATION_CROSS_BIAS because down-the-line exists. Which is also the
+// counter-play: a player who reads the lean and goes down the line
+// wrong-foots the AI — anticipation SHOULD be punishable, and the cap
+// keeps the punishment window honest rather than terminal.
+// Beginner doesn't anticipate (reacting late IS the club tell);
+// Intermediate leans half; Pro leans fully.
+const ANTICIPATION_CROSS_BIAS = 0.6;
+const ANTICIPATION_FRACTION_BY_DIFFICULTY = Object.freeze({
+  beginner: 0,
+  intermediate: 0.5,
+  pro: 1.0,
+});
+const ANTICIPATION_CAP_M = 0.22;
+
+// Lateral lean toward the expected return corridor, given where the AI just
+// aimed its own shot (world x). Returns 0 when the tier doesn't anticipate
+// or the aim point is unknown. Pure — callers add it to their drive target.
+export function anticipationLeanX({ difficulty, aiTargetX, baseX = 0 } = {}) {
+  const f = ANTICIPATION_FRACTION_BY_DIFFICULTY[difficulty] ?? 0;
+  if (!f || typeof aiTargetX !== 'number' || !Number.isFinite(aiTargetX)) return 0;
+  const expectedReturnX = -aiTargetX * ANTICIPATION_CROSS_BIAS;
+  return clamp((expectedReturnX - baseX) * f, -ANTICIPATION_CAP_M, ANTICIPATION_CAP_M);
+}
+
 // Idle "settle" wobble — the paddle sways gently between rallies instead
 // of holding a statue pose. Two overlapping sines (different periods and
 // axes) produce a natural, non-repeating drift. Amplitudes are small
@@ -216,4 +249,6 @@ export const READY_POSITION_CONSTANTS = Object.freeze({
   IDLE_WOBBLE_AMP_Y_M,
   IDLE_WOBBLE_PERIOD_X_MS,
   IDLE_WOBBLE_PERIOD_Y_MS,
+  ANTICIPATION_CROSS_BIAS,
+  ANTICIPATION_CAP_M,
 });

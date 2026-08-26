@@ -2,7 +2,7 @@
 
 const {
   TrainingMenuModel, SCREENS, SETTING_ROWS, CUSTOM_FIELDS, BURST_STOPS,
-  describeConfig, formatField,
+  describeConfig, formatField, END_CONDITIONS, endConditionLabel,
 } = require('../js/modes/training/menuModel.js');
 const { INFINITE, SPIN_MAX_RAD_S, validateConfig } = require('../js/modes/training/drillConfig.js');
 
@@ -28,8 +28,14 @@ describe('navigation', () => {
     expect(m.canGoBack).toBe(false);
   });
 
-  test('lists the five live M0 branches', () => {
-    expect(new TrainingMenuModel().items()).toHaveLength(5);
+  test('lists the three live root branches', () => {
+    expect(new TrainingMenuModel().items().map((i) => i.id))
+      .toEqual(['justRally', 'practice', 'ballMachine']);
+  });
+
+  test('root rows are numbered top to bottom', () => {
+    const labels = new TrainingMenuModel().items().map((i) => i.label);
+    labels.forEach((l, i) => expect(l.startsWith(`${i + 1}. `)).toBe(true));
   });
 
   test('every root row is live — no placeholder entries', () => {
@@ -69,12 +75,15 @@ describe('navigation', () => {
     const m = new TrainingMenuModel();
     m.selectItem('practice');
     m.selectItem('movement');
-    expect(m.breadcrumb).toBe('TRAINING › PRACTICE › MOVEMENT');
+    expect(m.breadcrumb).toBe('PLAY › PRACTICE › MOVEMENT');
   });
 
-  test('Free Play returns an action rather than navigating', () => {
+  test('Free Play and Review are not root rows', () => {
+    // Free play is the state the game falls into when the menu closes with
+    // nothing running; review is reached from Practice › Fix My Weaknesses.
     const m = new TrainingMenuModel();
-    expect(m.selectItem('freePlay')).toEqual({ action: 'freePlay' });
+    expect(m.selectItem('freePlay')).toBeNull();
+    expect(m.selectItem('review')).toBeNull();
     expect(m.screen).toBe(SCREENS.ROOT);
   });
 
@@ -92,12 +101,12 @@ describe('practice intents', () => {
   // The Practice screen fronts intents, not machinery: the six rows are the
   // guard that every training capability stays reachable after the legacy
   // drills were absorbed into M1 wrappers.
-  test('lists all seven intents, every one live', () => {
+  test('lists all eight intents, every one live', () => {
     const m = new TrainingMenuModel();
     m.selectItem('practice');
     expect(m.screen).toBe(SCREENS.PRACTICE);
     const ids = m.items().map((i) => i.id);
-    for (const id of ['spinPractice', 'placementPractice', 'reaction',
+    for (const id of ['tutorial', 'spinPractice', 'placementPractice', 'reaction',
       'movement', 'ladders', 'trajectoryPractice', 'weaknesses']) {
       expect(ids).toContain(id);
     }
@@ -145,33 +154,125 @@ describe('practice intents', () => {
 });
 
 describe('tutorial', () => {
-  test('leads the root menu', () => {
-    // It is the on-ramp for a first session; a returning player scans past
-    // one row in no time.
-    expect(new TrainingMenuModel().items()[0].id).toBe('tutorial');
+  test('is not a root row — it leads the Practice list instead', () => {
+    // Three root rows get the whole panel; "learn the basics" is a practice
+    // intent, so the on-ramp fronts that list.
+    const m = new TrainingMenuModel();
+    expect(m.items().map((i) => i.id)).not.toContain('tutorial');
+    m.selectItem('practice');
+    expect(m.items()[0].id).toBe('tutorial');
   });
 
   test('starts directly by drill id with no config', () => {
     // The tutorial drill supplies its own per-step configs, so like the
     // legacy drills it starts straight from the row — no sub-screen.
     const m = new TrainingMenuModel();
+    m.navigate(SCREENS.PRACTICE);
     const res = m.selectItem('tutorial');
     expect(res).toEqual({ action: 'start', drill: 'tutorial', config: null });
-    expect(m.screen).toBe(SCREENS.ROOT);
+    expect(m.screen).toBe(SCREENS.PRACTICE);
   });
 
   test('a finished tutorial says so but stays startable', () => {
     const m = new TrainingMenuModel({ settings: fakeSettings({ tutorialComplete: true }) });
+    m.navigate(SCREENS.PRACTICE);
     const row = m.items().find((i) => i.id === 'tutorial');
     expect(row.subtitle).toMatch(/Completed/);
     expect(row.available).toBe(true);
     expect(m.selectItem('tutorial')).toEqual({ action: 'start', drill: 'tutorial', config: null });
   });
 
+  test('a finished tutorial is demoted to the bottom of the Practice list', () => {
+    // The on-ramp should not be the first thing a veteran scans past forever.
+    const m = new TrainingMenuModel({ settings: fakeSettings({ tutorialComplete: true }) });
+    m.navigate(SCREENS.PRACTICE);
+    const items = m.items();
+    expect(items[items.length - 1].id).toBe('tutorial');
+    expect(items[0].id).toBe('spinPractice');
+  });
+
   test('an unfinished tutorial keeps its pitch line', () => {
     const m = new TrainingMenuModel({ settings: fakeSettings() });
+    m.navigate(SCREENS.PRACTICE);
     const row = m.items().find((i) => i.id === 'tutorial');
     expect(row.subtitle).toMatch(/Three minutes/);
+  });
+});
+
+describe('just rally', () => {
+  // The Machine Play menu's Quick Rally, as a one-tap root row: the Warmup
+  // feed, endless, through the machine-play scorer.
+  test('starts the rally directly from the root', () => {
+    const res = new TrainingMenuModel().selectItem('justRally');
+    expect(res.action).toBe('start');
+    expect(res.drill).toBe('machinePlay');
+    expect(res.options.machineMode).toBe('rally');
+  });
+
+  test('always feeds the Warmup shape on an infinite burst', () => {
+    // One tap must always mean the same thing, whatever the editor holds.
+    const m = new TrainingMenuModel();
+    m.setField('speed', 20);
+    const res = m.selectItem('justRally');
+    expect(res.config.spinType).toBe('none');
+    expect(res.config.burstCount).toBe(INFINITE);
+    expect(res.config.speed).not.toBe(20);
+  });
+});
+
+describe('end condition', () => {
+  // Survival and Score Challenge, recast from menu rows into a property of
+  // the feed being edited — so they compose with every config and preset.
+  test('defaults to the classic drill and cycles through every option', () => {
+    const m = new TrainingMenuModel();
+    expect(m.endCondition).toBe('drill');
+    const seen = [m.endCondition];
+    for (let i = 1; i < END_CONDITIONS.length; i++) seen.push(m.cycleEndCondition(1));
+    expect(seen).toEqual([...END_CONDITIONS]);
+    expect(m.cycleEndCondition(1)).toBe('drill');    // wraps
+    expect(m.cycleEndCondition(-1)).toBe(END_CONDITIONS[END_CONDITIONS.length - 1]);
+  });
+
+  test('drill mode starts the ball machine exactly as before', () => {
+    const m = new TrainingMenuModel();
+    m.cyclePreset(1);                                // Warmup
+    const res = m.startCurrent();
+    expect(res.drill).toBeUndefined();
+    expect(res.preset).toBe('Warmup');
+  });
+
+  test('survival starts the machine-play scorer over the edited config', () => {
+    const m = new TrainingMenuModel();
+    m.setField('speed', 11);
+    m.cycleEndCondition(1);                          // survival
+    const res = m.startCurrent();
+    expect(res.drill).toBe('machinePlay');
+    expect(res.options.machineMode).toBe('survival');
+    expect(res.config.speed).toBe(11);
+  });
+
+  test('race carries its target through to the challenge mode', () => {
+    const m = new TrainingMenuModel();
+    m.cycleEndCondition(1);                          // survival
+    m.cycleEndCondition(1);                          // race:10
+    m.cycleEndCondition(1);                          // race:25
+    const res = m.startCurrent();
+    expect(res.options.machineMode).toBe('challenge');
+    expect(res.options.target).toBe(25);
+  });
+
+  test('the Balls setting only decides anything in drill mode', () => {
+    // The editor greys the row off this flag; the scorer pins burst to ∞.
+    const m = new TrainingMenuModel();
+    expect(m.burstEnabled).toBe(true);
+    m.cycleEndCondition(1);
+    expect(m.burstEnabled).toBe(false);
+  });
+
+  test('labels are player-facing text, not keys', () => {
+    expect(endConditionLabel('drill')).toMatch(/balls/i);
+    expect(endConditionLabel('survival')).toMatch(/one miss/i);
+    expect(endConditionLabel('race:50')).toBe('Race to 50');
   });
 });
 
@@ -345,9 +446,12 @@ describe('M7 review screen', () => {
     });
   });
 
-  test('the review branch is enabled in the root menu', () => {
-    const review = new TrainingMenuModel().items().find((i) => i.id === 'review');
-    expect(review.available).toBe(true);
+  test('the review screen is reached from Practice, not the root', () => {
+    const m = new TrainingMenuModel();
+    expect(m.items().find((i) => i.id === 'review')).toBeUndefined();
+    m.selectItem('practice');
+    m.selectItem('weaknesses');
+    expect(m.screen).toBe(SCREENS.REVIEW);
   });
 
   test('non-actionable rows cannot be selected', () => {
@@ -545,7 +649,7 @@ describe('custom feed editing', () => {
 
 describe('formatting', () => {
   test('describeConfig produces a readable one-liner', () => {
-    const s = describeConfig(validateConfig({ speed: 9, spinType: 'top', spinMagnitude: 120 }));
+    const s = describeConfig(validateConfig({ speed: 9, spinType: 'top', spinMagnitude: 300 }));
     expect(s).toMatch(/9 m\/s/);
     expect(s).toMatch(/top/);
   });

@@ -936,3 +936,76 @@ describe('rallyManager — net touch and double hit', () => {
     rm.dispose();
   });
 });
+
+describe('strict toss (ITTF 2.6.2 — 16 cm minimum rise)', () => {
+  function makePlayerServeStub() {
+    const launch = [];
+    const low = [];
+    return {
+      arm: jest.fn(),
+      disarm: jest.fn(),
+      onLaunch: (fn) => launch.push(fn),
+      onLowToss: (fn) => low.push(fn),
+      fireLaunch: () => launch.forEach((f) => f()),
+      fireLowToss: () => low.forEach((f) => f({ vy: 1.0 })),
+    };
+  }
+
+  test('umpire ladder: first short toss warns and retakes, the second is a fault', () => {
+    const events = makeBallEvents();
+    const ps = makePlayerServeStub();
+    const rm = createRallyManager({
+      ballEvents: events,
+      server: makeStubServer(),
+      playerServe: ps,
+      config: { firstServer: 'player', strictToss: true },
+    });
+    const points = [];
+    rm.on('onPointScored', (e) => points.push(e));
+
+    // First short toss — warning only: no point, serve re-offered.
+    ps.fireLaunch();
+    ps.fireLowToss();
+    expect(points).toHaveLength(0);
+    expect(rm.getScore().aiScore).toBe(0);
+    expect(ps.disarm).toHaveBeenCalled();
+
+    // Second short toss — service fault, point to the receiver.
+    ps.fireLaunch();
+    ps.fireLowToss();
+    expect(points).toHaveLength(1);
+    expect(points[0].winner).toBe('ai');
+    expect(points[0].reason).toBe('serveFault');
+    expect(points[0].detail).toBe('lowToss');
+    expect(points[0].foul).toBe('player');
+    expect(rm.getScore().aiScore).toBe(1);
+  });
+
+  test('off by default: short tosses never cost a point', () => {
+    const events = makeBallEvents();
+    const ps = makePlayerServeStub();
+    const rm = createRallyManager({
+      ballEvents: events,
+      server: makeStubServer(),
+      playerServe: ps,
+      config: { firstServer: 'player' },
+    });
+    ps.fireLaunch();
+    ps.fireLowToss();
+    ps.fireLaunch();
+    ps.fireLowToss();
+    expect(rm.getScore().aiScore).toBe(0);
+  });
+
+  test('firstServer config: the player can win the toss and open the match serving', () => {
+    const events = makeBallEvents();
+    const rm = createRallyManager({
+      ballEvents: events,
+      server: makeStubServer(),
+      config: { firstServer: 'player' },
+    });
+    expect(rm.getScore().currentServer).toBe('player');
+    const rmDefault = createRallyManager({ ballEvents: makeBallEvents(), server: makeStubServer() });
+    expect(rmDefault.getScore().currentServer).toBe('ai');
+  });
+});

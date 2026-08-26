@@ -24,7 +24,7 @@ export const PLACEMENT_PRACTICE = {
 // about WHERE to put the return rather than how to survive it. Light
 // scatter so the incoming ball is not perfectly groove-able.
 const BASE_CONFIG = {
-  speed: 7, spinType: 'top', spinMagnitude: 90,
+  speed: 7, spinType: 'top', spinMagnitude: 225,
   placement: { kind: 'zone', zone: 5 }, depth: 'deep',
   scatterSigma: 0.10, interval: 2.8, burstCount: INFINITE,
 };

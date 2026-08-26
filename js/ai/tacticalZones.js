@@ -26,16 +26,21 @@
 // telemetry can log them meaningfully.
 export const TACTICAL_ZONES = Object.freeze([
   // Deep corners — classic setup shots. Force movement all the way back
-  // and force a diagonal recovery.
-  { name: 'deep_wide_left',       x: -0.60, z: 1.15, radius: 0.08 },
-  { name: 'deep_wide_right',      x:  0.60, z: 1.15, radius: 0.08 },
-  { name: 'deep_middle_left',     x: -0.30, z: 1.20, radius: 0.10 },
-  { name: 'deep_middle_right',    x:  0.30, z: 1.20, radius: 0.10 },
+  // and force a diagonal recovery. Centers sit ~10 cm inside the lines
+  // (table corner is x ±0.7625, z 1.37): international players attack the
+  // lines, and the old 0.60/1.15 centers left a 16-22 cm courtesy strip no
+  // real opponent grants. Zone jitter + each tier's SAFE clamp still keep
+  // the sampled target inside that tier's court (beginner's wide jitter
+  // clamps back to ±0.70, pro's runs to ±0.745).
+  { name: 'deep_wide_left',       x: -0.66, z: 1.24, radius: 0.07 },
+  { name: 'deep_wide_right',      x:  0.66, z: 1.24, radius: 0.07 },
+  { name: 'deep_middle_left',     x: -0.30, z: 1.26, radius: 0.09 },
+  { name: 'deep_middle_right',    x:  0.30, z: 1.26, radius: 0.09 },
 
   // Wide mid-court — hardest to reach from center. Reward the player who
   // camps middle by pulling them out.
-  { name: 'wide_left',            x: -0.65, z: 0.75, radius: 0.08 },
-  { name: 'wide_right',           x:  0.65, z: 0.75, radius: 0.08 },
+  { name: 'wide_left',            x: -0.70, z: 0.75, radius: 0.07 },
+  { name: 'wide_right',           x:  0.70, z: 0.75, radius: 0.07 },
 
   // Short drops — change of pace. Force a player who was expecting deep
   // to lunge forward.

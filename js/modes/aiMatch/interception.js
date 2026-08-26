@@ -45,9 +45,22 @@ const BEZIER_CONTROL_Y_LIFT_M = 0.12;
 const SPEED_VALIDATION_TOLERANCE = 1.1;
 
 // Fraction of swing phase where face starts rotating from neutral to the
-// solver's contact normal. Spec §section_2.algorithm.face_rotation:
-// "Telegraph rotation begins at the 50% mark of swing phase".
+// solver's contact normal, when the caller does NOT supply a pace-scaled
+// telegraphLeadMs. Spec §section_2.algorithm.face_rotation said "50% of
+// swing phase", but that pinned the readable backswing to a FRACTION of the
+// time budget (~20% of it) regardless of shot pace — a power shot whose
+// ball flight is at human reaction time got the same sliver of warning as a
+// push, which made top tiers hard in exactly the "impossible" way the
+// telegraph system exists to prevent. Callers now pass telegraphLeadMs
+// (TELEGRAPH_LEAD_MS_BY_POWER: 150/250/350) so the face reveal opens a
+// fixed real-time window before contact; this fraction is the legacy
+// fallback only.
 const FACE_TELEGRAPH_START_FRACTION = 0.5;
+
+// When a disguise face is supplied, this fraction of the reveal window
+// shows the DISGUISED face; the remainder is the late wrist snap to the
+// true contact face. Matches the FSM's DISGUISE_FRACTION_OF_SWING intent.
+const DISGUISE_REVEAL_FRACTION = 2 / 3;
 
 // --- Curve helpers (pure) -------------------------------------------------
 
@@ -146,6 +159,19 @@ function slerpVec3(a, b, t, out) {
 //                                            windup. Defaults to a face
 //                                            pointing XZ-toward target
 //                                            with Y = 0 (body orientation).
+//   telegraphLeadMs (optional)              ms before contact at which the
+//                                            face starts rotating toward
+//                                            the contact normal (pace-
+//                                            scaled: TELEGRAPH_LEAD_MS_BY_
+//                                            POWER). Omitted → legacy 50%-
+//                                            of-swing rule.
+//   disguiseFaceNormal (optional)           Vector3 world — Pro disguise:
+//                                            the reveal passes through THIS
+//                                            face for the first 2/3 of the
+//                                            window, then wrist-snaps to
+//                                            contactFaceNormal. The face at
+//                                            contact always matches the
+//                                            real impulse.
 // }
 //
 // Approach and strike are validated against SEPARATE caps, because they are
@@ -169,6 +195,8 @@ export function planTrajectory({
   contactPos, contactFaceNormal, contactPaddleVelocity,
   timeBudgetMs, maxPaddleSpeed, maxApproachSpeed,
   neutralFaceNormal,
+  telegraphLeadMs = null,
+  disguiseFaceNormal = null,
 }) {
   // Back-compat: callers that don't distinguish the two get the old behaviour.
   const approachCap = (typeof maxApproachSpeed === 'number' && maxApproachSpeed > 0)
@@ -212,6 +240,29 @@ export function planTrajectory({
     return d.normalize();
   })();
 
+  // Face-reveal window. With a pace-scaled lead, the reveal opens a fixed
+  // real-time span before contact (and may begin during the WINDUP on power
+  // shots, where the lead exceeds the swing phase — exactly the "read it
+  // off the backswing" the lead exists to deliver). Without one, fall back
+  // to the legacy 50%-of-swing rule.
+  const revealStartMs = (typeof telegraphLeadMs === 'number' && telegraphLeadMs > 0)
+    ? Math.max(0, timeBudgetMs - telegraphLeadMs)
+    : windupDurationMs + swingDurationMs * FACE_TELEGRAPH_START_FRACTION;
+  const revealSpanMs = Math.max(1e-6, timeBudgetMs - revealStartMs);
+
+  // Face at reveal fraction faceU ∈ [0,1]: straight to the contact normal,
+  // or through the disguise face with a late wrist snap.
+  function revealFace(faceU, out) {
+    if (!disguiseFaceNormal) {
+      return slerpVec3(neutralFace, contactFaceNormal, Math.min(1, faceU), out);
+    }
+    if (faceU < DISGUISE_REVEAL_FRACTION) {
+      return slerpVec3(neutralFace, disguiseFaceNormal, faceU / DISGUISE_REVEAL_FRACTION, out);
+    }
+    const snapU = Math.min(1, (faceU - DISGUISE_REVEAL_FRACTION) / (1 - DISGUISE_REVEAL_FRACTION));
+    return slerpVec3(disguiseFaceNormal, contactFaceNormal, snapU, out);
+  }
+
   // Build 8 keyframes evenly spaced in time.
   const keyframes = [];
   let peakSpeed = 0;
@@ -225,16 +276,19 @@ export function planTrajectory({
     if (time_ms <= windupDurationMs) {
       const u = windupDurationMs > 0 ? time_ms / windupDurationMs : 0;
       bezierAt(u, currentPos, bezMid, windupStart, position);
-      slerpVec3(currentFaceNormal, neutralFace, u, faceNormal);
+      if (time_ms >= revealStartMs) {
+        revealFace((time_ms - revealStartMs) / revealSpanMs, faceNormal);
+      } else {
+        slerpVec3(currentFaceNormal, neutralFace, u, faceNormal);
+      }
     } else {
       const u = swingDurationMs > 0
         ? (time_ms - windupDurationMs) / swingDurationMs
         : 0;
       quinticAt(u, windupStart, contactPos, quinticV1, position);
-      // Face stays neutral for first 50% of swing, then slerps to contact.
-      const faceU = Math.max(0, (u - FACE_TELEGRAPH_START_FRACTION))
-                  / (1 - FACE_TELEGRAPH_START_FRACTION);
-      slerpVec3(neutralFace, contactFaceNormal, Math.min(1, faceU), faceNormal);
+      // Face stays neutral until the reveal window opens, then rotates.
+      const faceU = Math.max(0, (time_ms - revealStartMs) / revealSpanMs);
+      revealFace(faceU, faceNormal);
     }
 
     // Track peak instantaneous speed via finite difference. Skip i=0.

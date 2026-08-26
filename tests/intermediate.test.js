@@ -248,18 +248,18 @@ describe('createIntermediateEngine.computeTarget', () => {
     const history = new ShotHistory();
     for (let i = 0; i < 200; i++) {
       const [x, z, speed, spin, conf] = engine.computeTarget(history, {});
-      expect(x).toBeGreaterThanOrEqual(-0.7);
-      expect(x).toBeLessThanOrEqual(0.7);
+      expect(x).toBeGreaterThanOrEqual(-0.72);
+      expect(x).toBeLessThanOrEqual(0.72);
       expect(z).toBeGreaterThanOrEqual(0.1);
-      expect(z).toBeLessThanOrEqual(1.3);
+      expect(z).toBeLessThanOrEqual(1.33);
       expect(speed).toBeGreaterThanOrEqual(1.5);
       expect(speed).toBeLessThanOrEqual(20.0);
-      // Spin bounds are now profile-driven too: chop floors at -25 (the
-      // measured backspin envelope) and loop tops at its base 32. Previously
-      // both ends were the ±26 rail, which pinned 31% of loops and 93% of
-      // chops to a single value.
-      expect(spin).toBeGreaterThanOrEqual(-25.0);
-      expect(spin).toBeLessThanOrEqual(32.0);
+      // Spin bounds are profile-driven (physical rps): chop floors at -62
+      // (the measured backspin envelope) and loop tops at its base 64.
+      // Previously both ends were a rail, which pinned 31% of loops and 93%
+      // of chops to a single value.
+      expect(spin).toBeGreaterThanOrEqual(-62.0);
+      expect(spin).toBeLessThanOrEqual(64.0);
       expect(conf).toBe(1.0);
     }
   });
@@ -347,10 +347,10 @@ describe('createIntermediateEngine.computeTarget', () => {
     }
     for (let i = 0; i < 100; i++) {
       const [x, z] = engine.computeTarget(history, {});
-      expect(x).toBeGreaterThanOrEqual(-0.7);
-      expect(x).toBeLessThanOrEqual(0.7);
+      expect(x).toBeGreaterThanOrEqual(-0.72);
+      expect(x).toBeLessThanOrEqual(0.72);
       expect(z).toBeGreaterThanOrEqual(0.1);
-      expect(z).toBeLessThanOrEqual(1.3);
+      expect(z).toBeLessThanOrEqual(1.33);
     }
   });
 

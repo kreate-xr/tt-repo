@@ -19,6 +19,9 @@ import { encodeGame, decodeGame, encodeEvent, decodeEvent, PacketType } from './
 import { ClockSync, PING_INTERVAL_MS } from './ClockSync.js';
 
 const ICE_TIMEOUT_MS = 30000;
+// Grace before the transient 'disconnected' connectionState is reported as a
+// real disconnect (see the connectionstatechange listener).
+const DISCONNECTED_STATE_GRACE_MS = 4000;
 
 // Congestion governor thresholds (see _updateCongestion). High-water marks
 // trip the backoff; both signals must sit below the low-water marks for
@@ -138,7 +141,25 @@ export class NetworkManager {
     this.pc.addEventListener('connectionstatechange', () => {
       const s = this.pc.connectionState;
       if (s === 'failed' || s === 'closed') {
+        clearTimeout(this._disconnectedGraceHandle);
         this._emit('disconnected', { state: s });
+      } else if (s === 'disconnected') {
+        // The TRANSIENT state — a slept headset or dropped Wi-Fi produces
+        // this first and can sit here for 10-30 s before 'failed'. Waiting
+        // for 'failed' meant a silent freeze with no feedback and no
+        // reconnect attempt for that whole window. Give it a short grace to
+        // self-heal (ICE consent flaps briefly on rate changes), then treat
+        // it as the disconnect it almost certainly is — ReconnectHandler
+        // starts working while the peer is still recoverable.
+        clearTimeout(this._disconnectedGraceHandle);
+        this._disconnectedGraceHandle = setTimeout(() => {
+          if (this._teardownStarted) return;
+          if (this.pc && this.pc.connectionState === 'disconnected') {
+            this._emit('disconnected', { state: 'disconnected' });
+          }
+        }, DISCONNECTED_STATE_GRACE_MS);
+      } else if (s === 'connected') {
+        clearTimeout(this._disconnectedGraceHandle);
       }
     });
 

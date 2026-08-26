@@ -73,7 +73,7 @@ export const TUTORIAL_STEPS = Object.freeze([
     // The BackspinPush shape at its own proven settings. One successful lift
     // is the whole lesson; Spin Reader exists for the rest.
     config: {
-      speed: 7, spinType: 'back', spinMagnitude: 110,
+      speed: 7, spinType: 'back', spinMagnitude: 275,
       placement: { kind: 'zone', zone: 2 }, depth: 'short',
       arc: 'flat', feedOrigin: 'center-far',
       scatterSigma: 0, interval: 3.0,

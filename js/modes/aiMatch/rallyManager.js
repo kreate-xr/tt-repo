@@ -63,6 +63,12 @@ const DEFAULT_CONFIG = Object.freeze({
   firstTo: 11,         // points to win a game
   deucePoint: 10,      // at 10-10 deuce, serve swaps every point
   serveRotationEvery: 2, // points between serve swaps (becomes 1 at deuce)
+  firstServer: 'ai',   // 'ai' | 'player' — the caller's serve toss
+  // ITTF 2.6.2 enforcement — the physical toss must rise ≥16 cm. Off by
+  // default (casual play coaches via HUD instead); a strict/competitive
+  // mode turns it on and gets the umpire's ladder: one warning per match,
+  // fault thereafter.
+  strictToss: false,
 });
 
 // Inter-rally delay before triggering next serve. Long enough for the
@@ -87,9 +93,10 @@ export function createRallyManager({
   // --- Match / game / rally state ----------------------------------------
   let aiScore = 0, playerScore = 0;
   let aiGames = 0, playerGames = 0;
-  // Initial server choice: spec doesn't pin, default AI. Alternates between
-  // games per ITTF rules.
-  let currentServer = 'ai';
+  // Initial server: the caller's choice ('ai' | 'player', e.g. a coin flip
+  // at match start — real matches toss for it), defaulting to the historic
+  // AI-serves-first. Alternates between games per ITTF rules.
+  let currentServer = config.firstServer === 'player' ? 'player' : 'ai';
   let pointsSinceServerSwitch = 0;
   let matchOver = false;
   let initialServerForGame = currentServer;
@@ -523,6 +530,35 @@ export function createRallyManager({
   // whiffed the toss and the serve should be re-offered.
   if (playerServe && typeof playerServe.onLaunch === 'function') {
     playerServe.onLaunch(() => { waitingForServeStrike = true; });
+  }
+
+  // Strict service rule (ITTF 2.6.2): the toss must rise at least 16 cm.
+  // playerServe measures the release velocity and reports a short toss the
+  // moment it leaves the hand — before any strike. The umpire's ladder:
+  // first offence of the match is a warning and the serve is retaken;
+  // every one after that is a fault, point to the receiver.
+  let lowTossWarned = false;
+  if (config.strictToss && playerServe && typeof playerServe.onLowToss === 'function') {
+    playerServe.onLowToss(() => {
+      if (matchOver || currentServer !== 'player') return;
+      // onLowToss fires after onLaunch, so the courtesy-ball window is open;
+      // closing it keeps the doomed toss's own ballLost from re-offering the
+      // serve a second time underneath us.
+      if (!waitingForServeStrike) return;
+      waitingForServeStrike = false;
+      if (playerServe.disarm) playerServe.disarm();
+      if (!lowTossWarned) {
+        lowTossWarned = true;
+        hudLog('[serve] WARNING — toss under the 16 cm minimum. Retake; the next short toss is a fault.');
+        scheduleBallDespawn();
+        scheduleNextServe();
+        return;
+      }
+      // The rulebook never saw a stroke (the fault happens before contact),
+      // so arm the re-entry guard finishRally checks and score it directly.
+      rallyInProgress = true;
+      finishRally('ai', 'serveFault', 'lowToss', 'player');
+    });
   }
 
   // Subscribe to ball events. ballEvents follows the shotAdapter pattern —

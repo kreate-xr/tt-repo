@@ -162,12 +162,13 @@ describe('navigation by click', () => {
 });
 
 describe('starting a drill', () => {
-  test('the tutorial row emits start with its drill id', () => {
+  test('the tutorial row (under Practice) emits start with its drill id', () => {
     const menu = new TrainingMenu();
     menu.show();
     const started = [];
     menu.on('start', (e) => started.push(e));
 
+    clickById(menu, 'item:practice');
     clickById(menu, 'item:tutorial');
 
     expect(started).toHaveLength(1);
@@ -250,15 +251,6 @@ describe('starting a drill', () => {
     // A ladder always runs a pattern; a graded sequence of one repeated
     // placement is a speed ramp, not a progression.
     expect(started[0].options.pattern).toBeTruthy();
-  });
-
-  test('Free Play emits freeplay rather than start', () => {
-    const menu = new TrainingMenu();
-    menu.show();
-    let free = 0;
-    menu.on('freeplay', () => { free++; });
-    clickById(menu, 'item:freePlay');
-    expect(free).toBe(1);
   });
 
   test('START in Custom Feed emits the edited config', () => {
@@ -369,6 +361,47 @@ describe('custom feed controls', () => {
     menu.dragAt((w.x + w.w) / menu.panel.width, 1 - (w.y + 9) / menu.panel.height,
       'slider:spinMagnitude');
     expect(menu.model.config.spinMagnitude).toBe(before);
+  });
+
+  test('the end-condition cycler steps through drill, survival and race', () => {
+    const menu = openCustom();
+    expect(menu.model.endCondition).toBe('drill');
+    clickById(menu, 'end:1');
+    expect(menu.model.endCondition).toBe('survival');
+    clickById(menu, 'end:1');
+    expect(menu.model.endCondition).toBe('race:10');
+    clickById(menu, 'end:-1');
+    clickById(menu, 'end:-1');
+    expect(menu.model.endCondition).toBe('drill');
+  });
+
+  test('START under survival emits the machine-play drill over the edited config', () => {
+    // The old Machine Play menu's Survival row, now an end condition that
+    // composes with whatever feed the editor holds.
+    const menu = openCustom();
+    const started = [];
+    menu.on('start', (e) => started.push(e));
+    clickById(menu, 'zone:3');
+    clickById(menu, 'end:1');               // survival
+    clickById(menu, 'start');
+    expect(started).toHaveLength(1);
+    expect(started[0].drill).toBe('machinePlay');
+    expect(started[0].options.machineMode).toBe('survival');
+    expect(started[0].config.placement.zone).toBe(3);
+  });
+
+  test('the Balls stepper is disabled when the end condition owns the ending', () => {
+    // Survival/Race pin the burst to infinite at start, so a live Balls
+    // control would be a lie. Disabled widgets never resolve from a
+    // hit test, which is what keeps them unclickable.
+    const menu = openCustom();
+    clickById(menu, 'end:1');               // survival — burst is meaningless
+    const w = menu.panel.get('cycle:burstCount:1');
+    expect(w.disabled).toBe(true);
+    const [u, v] = uvOf(menu, 'cycle:burstCount:1');
+    expect(menu.hitTestUV(u, v)).not.toBe('cycle:burstCount:1');
+    clickById(menu, 'end:-1');              // back to drill
+    expect(menu.panel.get('cycle:burstCount:1').disabled).toBeFalsy();
   });
 
   test('SAVE stores a preset and redraws without throwing', () => {

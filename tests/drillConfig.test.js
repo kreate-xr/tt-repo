@@ -12,7 +12,7 @@ describe('defaults match the M1 attribute table', () => {
     const c = defaultConfig();
     expect(c.speed).toBe(8);
     expect(c.spinType).toBe('top');
-    expect(c.spinMagnitude).toBe(150);
+    expect(c.spinMagnitude).toBe(375);
     expect(c.scatterSigma).toBe(0.05);
     expect(c.depth).toBe('deep');
     expect(c.arc).toBe('medium');
@@ -43,11 +43,11 @@ describe('spin clamp to the feasible envelope', () => {
     expect(validateConfig({ spinMagnitude: -50 }).spinMagnitude).toBe(0);
   });
 
-  test('the spec default of 150 rad/s survives the clamp unchanged', () => {
+  test('the default of 375 rad/s (spec 150 × 2.5 rescale) survives the clamp unchanged', () => {
     // If this ever fails, the clamp has been tightened past the documented
     // default and every out-of-the-box feed silently changed.
-    expect(validateConfig({ spinMagnitude: 150 }).spinMagnitude).toBe(150);
-    expect(SPIN_MAX_RAD_S).toBeGreaterThanOrEqual(150);
+    expect(validateConfig({ spinMagnitude: 375 }).spinMagnitude).toBe(375);
+    expect(SPIN_MAX_RAD_S).toBeGreaterThanOrEqual(375);
   });
 
   test('combo omega components clamp on both signs', () => {
@@ -57,10 +57,11 @@ describe('spin clamp to the feasible envelope', () => {
     expect(c.omegaZ).toBe(12);
   });
 
-  test('the clamp sits within the documented solver envelope (~±160 rad/s)', () => {
-    // shotTypeSelector records the solver losing backspin past ~-25 rps
-    // (≈ -157 rad/s). The cap must not exceed that materially.
-    expect(SPIN_MAX_RAD_S).toBeLessThanOrEqual(170);
+  test('the clamp sits within the documented solver envelope (~±400 rad/s)', () => {
+    // After the ×2.5 rescale to physical rad/s (MAGNUS_COEFFICIENT
+    // 0.010 → 0.004) the AI spin economy tops out near ±64 rps
+    // (≈ ±400 rad/s). The cap must not exceed that materially.
+    expect(SPIN_MAX_RAD_S).toBeLessThanOrEqual(425);
   });
 });
 

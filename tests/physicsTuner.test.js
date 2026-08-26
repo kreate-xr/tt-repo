@@ -48,7 +48,7 @@ test('panel builds, all three sections render, controls work', () => {
   const rep = PP.migrateStoredPhysics({ gravity:-12, drag:0.10, contactCap:6.5, paddleRest:0.82, tableRest:0.75 });
   expect(rep.discarded).toEqual(expect.arrayContaining(['gravity','drag','contactCap']));
   expect(P.PADDLE_E0).toBeCloseTo(0.82, 6);
-  expect(P.TABLE_EN_0).toBeCloseTo(0.90, 6);       // 0.75 clamps up into range
+  expect(P.TABLE_EN_0).toBeCloseTo(0.80, 6);       // 0.75 clamps up to the floor (now 0.80, so the certified 0.82 is reachable)
   expect(rep.clamped.some(c=>c.key==='tableRest')).toBe(true);
   P.applyPhysicsPreset('ittf');
 });

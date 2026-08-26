@@ -13,7 +13,7 @@
 // roadmap. The roadmap lives in ai-docs/tt-training-migration-plan.md — a
 // mode gets a row here when it gets an implementation, not before.
 
-import { validateConfig } from './drillConfig.js';
+import { validateConfig, INFINITE } from './drillConfig.js';
 import {
   FeedConfigModel, CUSTOM_FIELDS, BURST_STOPS, describeConfig, formatField,
 } from './feedConfigModel.js';
@@ -24,6 +24,11 @@ import {
   weaknessReport, sessionHeadline, heatmapAdvice, whyDidIMiss, FAULTS,
 } from './analysis.js';
 import { SETTING_SPECS } from '../../profile/store.js';
+// From machineModes.js, not machinePlay.js: the drill reaches the scene, and
+// this model must stay headless.
+import {
+  MACHINE_MODES, CHALLENGE_TARGETS,
+} from '../machinePlay/machineModes.js';
 
 // The config-editing half of this model now lives in feedConfigModel.js so the
 // Machine Play menu can edit a feed with the same rules. Re-exported here
@@ -73,6 +78,13 @@ export function formatSettingValue(row, value) {
 // machinery by name (patterns / random mode / ladders / four legacy drills)
 // and asked the player to know table-tennis pedagogy before their first ball.
 export const PRACTICE_ITEMS = Object.freeze([
+  // The on-ramp lives here now, not on the root: three root rows get the
+  // whole panel, and "learn the basics" IS a practice intent. Runs as a
+  // drill (drills/tutorial.js) — a scripted feed sequence, so it starts
+  // directly like the other id-started drills. Once completed, items()
+  // demotes it to the bottom of this list.
+  { id: 'tutorial', label: 'Learn the Basics', action: 'startDrill', available: true,
+    subtitle: 'Three minutes: first return to first backspin' },
   { id: 'spinPractice', label: 'Spin', action: 'startDrill', available: true,
     subtitle: 'Read top, back and side off the machine' },
   { id: 'placementPractice', label: 'Placement', action: 'startDrill', available: true,
@@ -95,23 +107,57 @@ export const PRACTICE_ITEMS = Object.freeze([
     subtitle: 'Drills picked from what you actually miss' },
 ]);
 
-// The M0 branches, every one of them live. Tutorial leads (the on-ramp),
-// Practice is the everyday path, Ball Machine is the manual/expert path.
+// The one root. The Machine Play menu used to be a second front door over
+// the same machine — Quick Rally was Ball Machine's Warmup preset on an
+// infinite burst, Free Hit was Free Play under another name, and Survival /
+// Score Challenge were end conditions promoted to modes. All of it now lives
+// here: Just Rally is the one-tap casual row, and how a custom feed ENDS is a
+// cycler on the Ball Machine editor, composing with every feed instead of
+// being pinned to one.
+//
+// Labels carry no numbers; items() numbers them so the numbers always read
+// top-to-bottom. The tutorial is not a root row — it leads the Practice list
+// (see PRACTICE_ITEMS), which keeps the root at three full-height rows.
 export const ROOT_ITEMS = Object.freeze([
-  // Runs as a drill (drills/tutorial.js) — a scripted feed sequence, so it
-  // starts directly like the other id-started drills rather than opening a
-  // sub-screen.
-  { id: 'tutorial',    label: '1. Tutorial',       action: 'startDrill', available: true,
-    subtitle: 'Three minutes: first return to first backspin' },
-  { id: 'practice',    label: '2. Practice',       screen: SCREENS.PRACTICE, available: true,
+  // The "I have ten minutes" button: the Warmup feed, endless, no fail state.
+  // Fixed rather than reading the editor's config so one tap always means the
+  // same thing; a custom endless rally is Ball Machine with Balls set to ∞.
+  { id: 'justRally',   label: 'Just Rally',     action: 'startRally', available: true,
+    subtitle: 'One tap — easy endless feed, no fail state' },
+  { id: 'practice',    label: 'Practice',       screen: SCREENS.PRACTICE, available: true,
     subtitle: 'Pick what to work on' },
   // Straight into the editor — presets ride along as a cycler on that
   // screen, so there is no hub of near-identical sub-screens to cross first.
-  { id: 'ballMachine', label: '3. Ball Machine',   screen: SCREENS.CUSTOM_FEED, available: true,
-    subtitle: 'Set the feed yourself — presets included' },
-  { id: 'review',      label: '4. Review & Stats', screen: SCREENS.REVIEW, available: true },
-  { id: 'freePlay',    label: '5. Free Play',      action: 'freePlay', available: true },
+  { id: 'ballMachine', label: 'Ball Machine',   screen: SCREENS.CUSTOM_FEED, available: true,
+    subtitle: 'Set the feed and how it ends — presets included' },
+  // No Review & Stats row: the review screen is reached from Practice › Fix
+  // My Weaknesses, where the player is already asking the question it
+  // answers. No Free Play row either: the empty table is the state the game
+  // falls into when the menu closes with nothing running (A/X from the wrist
+  // menu), not a mode to pick.
 ]);
+
+// How a Ball Machine session ends — the editor's end-condition cycler.
+// 'drill' leaves the ending to the Balls setting (the classic burst); the
+// others wrap the same feed in the machine-play scorer, which pins the burst
+// to infinite because the mode owns its own ending.
+export const END_DRILL = 'drill';
+export const END_SURVIVAL = 'survival';
+export const END_CONDITIONS = Object.freeze([
+  END_DRILL,
+  END_SURVIVAL,
+  ...CHALLENGE_TARGETS.map((n) => `race:${n}`),
+]);
+
+/** Player-facing text for an end-condition key. */
+export function endConditionLabel(key) {
+  if (key === END_DRILL) return 'Until balls run out';
+  if (key === END_SURVIVAL) return 'Survival — one miss';
+  if (typeof key === 'string' && key.startsWith('race:')) {
+    return `Race to ${key.slice(5)}`;
+  }
+  return String(key);
+}
 
 // Sentinel for "no preset — the config is whatever the player has edited".
 // First entry of the preset cycle so ‹ from the first real preset lands on it.
@@ -141,6 +187,10 @@ export class TrainingMenuModel extends FeedConfigModel {
     // entry to the screen (selectItem does this), flipped in place by the
     // screen's own Feed Order row.
     this.randomMode = false;
+    // The Ball Machine editor's end-condition cycler. Drill (Balls setting
+    // ends it) is the default; Survival / Race wrap the same feed in the
+    // machine-play scorer at start time.
+    this.endCondition = END_DRILL;
     this.message = null;
   }
 
@@ -160,21 +210,21 @@ export class TrainingMenuModel extends FeedConfigModel {
 
   get title() {
     switch (this.screen) {
-      case SCREENS.ROOT:          return 'TRAINING';
+      case SCREENS.ROOT:          return 'PLAY';
       case SCREENS.CUSTOM_FEED:   return 'BALL MACHINE';
       case SCREENS.PRACTICE:      return 'PRACTICE';
       case SCREENS.PATTERNS:      return 'MOVEMENT';
       case SCREENS.LADDERS:       return 'LEVEL UP';
       case SCREENS.REVIEW:        return 'REVIEW & STATS';
       case SCREENS.SETTINGS:      return 'SETTINGS';
-      default:                    return 'TRAINING';
+      default:                    return 'PLAY';
     }
   }
 
-  /** Breadcrumb for the header, e.g. "TRAINING › BALL MACHINE › CUSTOM FEED". */
+  /** Breadcrumb for the header, e.g. "PLAY › BALL MACHINE". */
   get breadcrumb() {
     const names = {
-      [SCREENS.ROOT]: 'TRAINING',
+      [SCREENS.ROOT]: 'PLAY',
       [SCREENS.CUSTOM_FEED]: 'BALL MACHINE',
       [SCREENS.PRACTICE]: 'PRACTICE',
       [SCREENS.PATTERNS]: 'MOVEMENT',
@@ -207,20 +257,25 @@ export class TrainingMenuModel extends FeedConfigModel {
   /** Rows for the current list screen. Config screens return []. */
   items() {
     switch (this.screen) {
-      case SCREENS.ROOT:
-        return ROOT_ITEMS.map((i) => {
-          const row = { ...i };
-          // A finished tutorial stays on the menu (it is rerunnable), but its
-          // row says so — "do the tutorial" as a standing instruction would
-          // nag a player who already has.
-          if (i.id === 'tutorial' && this.settingsApi
-              && this.settingsApi.getSetting('tutorialComplete') === true) {
-            row.subtitle = 'Completed ✓ — run it again any time';
-          }
-          return row;
-        });
-      case SCREENS.PRACTICE:
-        return PRACTICE_ITEMS.map((i) => ({ ...i }));
+      case SCREENS.ROOT: {
+        const rows = ROOT_ITEMS.map((i) => ({ ...i }));
+        rows.forEach((r, i) => { r.label = `${i + 1}. ${r.label}`; });
+        return rows;
+      }
+      case SCREENS.PRACTICE: {
+        const rows = PRACTICE_ITEMS.map((i) => ({ ...i }));
+        // A finished tutorial stays on the list (it is rerunnable) but stops
+        // leading it: the row moves to the bottom and says it is done —
+        // "learn the basics" as the first thing a veteran sees is a nag.
+        if (this.settingsApi
+            && this.settingsApi.getSetting('tutorialComplete') === true) {
+          const i = rows.findIndex((r) => r.id === 'tutorial');
+          const [t] = rows.splice(i, 1);
+          t.subtitle = 'Completed ✓ — run it again any time';
+          rows.push(t);
+        }
+        return rows;
+      }
       case SCREENS.PATTERNS:
         // The order toggle replaces the old separate "Random Mode" entry:
         // shuffled vs in-order is a property of how you run a shape, not a
@@ -401,7 +456,6 @@ export class TrainingMenuModel extends FeedConfigModel {
       this.navigate(item.screen);
       return null;
     }
-    if (item.action === 'freePlay') return { action: 'freePlay' };
     // Settings rows toggle in place — no sub-screen for a two-value choice.
     // Returns null so the host just redraws and the player stays put.
     if (item.action === 'cycleSetting') {
@@ -411,6 +465,18 @@ export class TrainingMenuModel extends FeedConfigModel {
     // Drills started by id carry no config: the tutorial and the practice
     // wrappers supply their own, and trajectory practice takes none.
     if (item.action === 'startDrill') return { action: 'start', drill: id, config: null };
+
+    // Just Rally: the Warmup feed, endless, through the machine-play scorer
+    // (which supplies the rally live line and streak counters). Always the
+    // same feed regardless of what the editor holds — one tap, one meaning.
+    if (item.action === 'startRally') {
+      return {
+        action: 'start',
+        drill: 'machinePlay',
+        config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
+        options: { machineMode: MACHINE_MODES.RALLY },
+      };
+    }
 
     // Flip the pattern screen's feed order in place — no sub-screen, no
     // navigation, the host just redraws.
@@ -563,7 +629,45 @@ export class TrainingMenuModel extends FeedConfigModel {
     return res;
   }
 
+  // --- End condition (Ball Machine screen) ----------------------------------
+  //
+  // What used to be the Machine Play menu's Survival and Score Challenge
+  // rows, recast as a property of the feed being edited. 'drill' hands the
+  // ending to the Balls setting; the others start through the machine-play
+  // scorer, which pins the burst to infinite because the mode owns its ending.
+
+  /** Whether the Balls setting currently decides anything — for the editor
+   *  to grey the row out under Survival / Race. */
+  get burstEnabled() { return this.endCondition === END_DRILL; }
+
+  /** Step the end-condition cycler. Returns the new key. */
+  cycleEndCondition(dir) {
+    let i = END_CONDITIONS.indexOf(this.endCondition);
+    if (i < 0) i = 0;
+    this.endCondition = END_CONDITIONS[
+      (i + dir + END_CONDITIONS.length) % END_CONDITIONS.length];
+    return this.endCondition;
+  }
+
+  get endConditionLabel() { return endConditionLabel(this.endCondition); }
+
+  /** The editor's START action, shaped by the end condition. */
   startCurrent() {
+    if (this.endCondition === END_SURVIVAL) {
+      return {
+        action: 'start', drill: 'machinePlay', config: this.config,
+        options: { machineMode: MACHINE_MODES.SURVIVAL },
+      };
+    }
+    if (this.endCondition.startsWith('race:')) {
+      return {
+        action: 'start', drill: 'machinePlay', config: this.config,
+        options: {
+          machineMode: MACHINE_MODES.CHALLENGE,
+          target: Number(this.endCondition.slice(5)),
+        },
+      };
+    }
     return { action: 'start', config: this.config, preset: this.selectedPreset };
   }
 }

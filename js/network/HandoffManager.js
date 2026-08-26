@@ -32,6 +32,14 @@
 import { PacketType } from './serialization.js';
 
 export const HANDOFF_ACK_TIMEOUT_MS = 300;
+// The fixed 300 ms above is the FLOOR, not the timeout: the implicit ACK
+// needs a full round trip plus a send-loop interval, so on links above
+// ~275 ms RTT a fixed 300 fired on EVERY shot — releasing authority before
+// the peer could possibly answer, and (because release clears the local
+// mini-sim) visibly freezing the hitter's own ball once per stroke. Callers
+// feed the measured RTT via setAckTimeoutMs; the ceiling stops a wild
+// first-sample RTT from disabling the fallback entirely.
+export const HANDOFF_ACK_TIMEOUT_CEILING_MS = 1200;
 export const HANDOFF_DUP_DELAYS_MS = [0, 20, 40];
 
 export class HandoffManager {
@@ -55,6 +63,19 @@ export class HandoffManager {
     // send → implicit-ACK latency of the most recent completed handoff, ms.
     // ≈ one RTT in the field; exported to telemetry as handoffAdoptMs.
     this.lastAdoptMs = null;
+    // Live fallback window — RTT-adaptive via setAckTimeoutMs.
+    this.ackTimeoutMs = HANDOFF_ACK_TIMEOUT_MS;
+  }
+
+  // Scale the ACK-timeout to the measured link. Clamped to
+  // [HANDOFF_ACK_TIMEOUT_MS, HANDOFF_ACK_TIMEOUT_CEILING_MS] so a broken RTT
+  // sample can neither hair-trigger the fallback nor disable it.
+  setAckTimeoutMs(ms) {
+    if (!Number.isFinite(ms)) return;
+    this.ackTimeoutMs = Math.min(
+      HANDOFF_ACK_TIMEOUT_CEILING_MS,
+      Math.max(HANDOFF_ACK_TIMEOUT_MS, ms),
+    );
   }
 
   nextHitId() {
@@ -110,7 +131,7 @@ export class HandoffManager {
   // Timeout fallback — call once per frame. Returns true when the pending
   // window expired and the caller must release authority.
   tick(nowMs) {
-    if (this.pending && nowMs - this.pending.sentAt > HANDOFF_ACK_TIMEOUT_MS) {
+    if (this.pending && nowMs - this.pending.sentAt > this.ackTimeoutMs) {
       this.pending = null;
       return true;
     }

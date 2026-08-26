@@ -48,28 +48,38 @@ export const SHOT_TYPES = Object.freeze({
 //   drive — fast topspin rally shot
 //   loop  — medium-fast arcing shot with heavy topspin
 //   smash — kill shot, very fast, near-flat
+// SPIN SCALE (spin-economy unification, 2026-08): all spin numbers here are
+// PHYSICAL rps — the same scale the player's brush shots produce through
+// SPIN_CAPTURE_GAIN. They were ×2.5 smaller for a long time, cancelling a
+// MAGNUS_COEFFICIENT that ran 2.5× physical (see the history note on that
+// constant); both moved together, so every arc these tables describe is
+// unchanged. The practical ceiling is ~64 rps ≈ 400 rad/s: PADDLE_SPIN_CAP
+// (420 rad/s, real rubber-grip saturation) is what the impulse model can
+// actually deliver, so requests are kept just inside it — the old top-end
+// loop (34 rps at 2.5× Magnus ≡ 85 rps real-equivalent) was super-physical
+// and compresses to the 64 ceiling rather than scaling exactly.
 export const SHOT_PROFILES = Object.freeze({
   push:          { speedMean: 3.2,  speedSigma: 0.6, speedMin: 2.2, speedMax: 4.5,
-                   spinMean:  -6,   spinSigma:  2,   spinMin: -12,  spinMax: -1 },
+                   spinMean: -15,   spinSigma:  5,   spinMin: -30,  spinMax: -3 },
   block:         { speedMean: 4.5,  speedSigma: 1.0, speedMin: 3.0, speedMax: 6.5,
-                   spinMean:   0,   spinSigma:  2,   spinMin:  -4,  spinMax:  4 },
+                   spinMean:   0,   spinSigma:  5,   spinMin: -10,  spinMax: 10 },
   slice:         { speedMean: 5.5,  speedSigma: 1.0, speedMin: 4.0, speedMax: 7.5,
-                   spinMean: -18,   spinSigma:  4,   spinMin: -28,  spinMax: -10 },
+                   spinMean: -45,   spinSigma: 10,   spinMin: -64,  spinMax: -25 },
   topspin_drive: { speedMean: 8.0,  speedSigma: 1.2, speedMin: 6.0, speedMax: 10.5,
-                   spinMean:  14,   spinSigma:  3,   spinMin:   8,  spinMax:  22 },
+                   spinMean:  35,   spinSigma:  8,   spinMin:  20,  spinMax:  55 },
   loop:          { speedMean: 6.5,  speedSigma: 1.0, speedMin: 5.0, speedMax:  8.5,
-                   spinMean:  24,   spinSigma:  4,   spinMin:  18,  spinMax:  32 },
+                   spinMean:  57,   spinSigma:  6,   spinMin:  45,  spinMax:  64 },
   smash:         { speedMean: 11.0, speedSigma: 1.3, speedMin: 9.0, speedMax: 13.5,
-                   spinMean:   3,   spinSigma:  2,   spinMin:  -2,  spinMax:   8 },
+                   spinMean:   8,   spinSigma:  5,   spinMin:  -5,  spinMax:  20 },
   // Chop — defender's answer to a loop. Slow, heavy backspin, floaty arc that
   // forces the opponent to lift into the next attack.
   //
-  // NOTE the base spin here (-32 mean, -40 min) is NOT what any tier plays:
-  // the solver cannot hold backspin past about -25 rps on the table, so every
+  // NOTE the base spin here (-55 mean, -64 min) is NOT what any tier plays:
+  // the solver cannot hold backspin past about -62 rps on the table, so every
   // tier overrides chop's spin downward in PROFILE_OVERRIDES. The base is kept
   // as the "physical archetype" the overrides are derived from.
   chop:          { speedMean: 4.5,  speedSigma: 0.8, speedMin: 3.2, speedMax:  6.0,
-                   spinMean: -32,   spinSigma:  4,   spinMin: -40,  spinMax: -22 },
+                   spinMean: -55,   spinSigma:  8,   spinMin: -64,  spinMax: -40 },
   // Drop shot — very short, dying near the net. Slow speed, mild backspin
   // (just enough to kill any bounce forward). Distinct from PUSH in that it is
   // *deliberately* short.
@@ -80,16 +90,16 @@ export const SHOT_PROFILES = Object.freeze({
   // no shot-type metadata, so placement is decided first and the stroke is
   // fitted to it. Before that bias existed, 73% of drop shots were aimed deep.
   drop_shot:     { speedMean: 2.5,  speedSigma: 0.4, speedMin: 1.8, speedMax:  3.5,
-                   spinMean:  -4,   spinSigma:  2,   spinMin:  -9,  spinMax:   0 },
+                   spinMean: -10,   spinSigma:  5,   spinMin: -22,  spinMax:   0 },
   // Lob — defensive high arc. Medium-slow with light topspin (topspin holds
   // the ball down inside the table on the descent so it doesn't sail long).
   lob:           { speedMean: 5.5,  speedSigma: 0.9, speedMin: 4.0, speedMax:  7.5,
-                   spinMean:  10,   spinSigma:  3,   spinMin:   4,  spinMax:  18 },
+                   spinMean:  25,   spinSigma:  8,   spinMin:  10,  spinMax:  45 },
   // Flip — aggressive attack over the net against a short push. Fast for a
   // short ball, moderate topspin. Requires reaching in over the table so
   // reachability may reject it in tight geometries; that's handled downstream.
   flip:          { speedMean: 7.5,  speedSigma: 1.0, speedMin: 5.5, speedMax:  9.5,
-                   spinMean:  18,   spinSigma:  4,   spinMin:  10,  spinMax:  26 },
+                   spinMean:  45,   spinSigma: 10,   spinMin:  25,  spinMax:  60 },
 });
 
 // Per-difficulty profile OVERRIDES, merged over SHOT_PROFILES at sample time.
@@ -115,10 +125,10 @@ export const SHOT_PROFILES = Object.freeze({
 //   pro          — above international; ~1.12x on attacking strokes
 //
 // Spin is overridden per tier too, for two separate reasons — but NOT to make
-// the upper tiers spinnier. MAGNUS_COEFFICIENT is ~9x physical
-// (js/physics/constants.js:41-67) against gravity only 1.22x real, so ~26 rps
-// here already bends the ball as hard as a real elite loop, and raising speed
-// increases Magnus (a = k·ω×v) at unchanged spin anyway. The reasons are:
+// the upper tiers spinnier. Spin here is physical rps under the physical
+// MAGNUS_COEFFICIENT (see the scale note above SHOT_PROFILES), and raising
+// speed increases Magnus (a = k·ω×v) at unchanged spin anyway. The reasons
+// are:
 //
 //   1. Beginner must not spin like an international player. Without an
 //      override its spin bounds sat at base and maxSpin did the shaping.
@@ -139,19 +149,19 @@ export const PROFILE_OVERRIDES = Object.freeze({
   // waiting for whoever next gives it a weight.
   beginner: {
     topspin_drive: { speedMean: 6.0, speedSigma: 0.9,  speedMin: 4.5, speedMax: 7.9,
-                     spinMean: 6.3, spinSigma: 1.4, spinMin: 3.6, spinMax: 10.0 },
+                     spinMean: 16, spinSigma: 3.5, spinMin: 9, spinMax: 25 },
     loop:          { speedMean: 5.5, speedSigma: 0.85, speedMin: 4.3, speedMax: 7.2,
-                     spinMean: 10.8, spinSigma: 1.8, spinMin: 8.0, spinMax: 14.4 },
+                     spinMean: 27, spinSigma: 4.5, spinMin: 20, spinMax: 36 },
     smash:         { speedMean: 7.9, speedSigma: 0.95, speedMin: 6.5, speedMax: 8.4,
-                     spinMean: 1.4, spinSigma: 1.0, spinMin: -1.0, spinMax: 3.6 },
+                     spinMean: 3.5, spinSigma: 2.5, spinMin: -2.5, spinMax: 9 },
     flip:          { speedMean: 4.9, speedSigma: 0.65, speedMin: 3.6, speedMax: 6.2,
-                     spinMean: 8.0, spinSigma: 1.8, spinMin: 4.5, spinMax: 11.7 },
-    slice:         { spinMean: -8.0, spinSigma: 1.8, spinMin: -12.0, spinMax: -4.5 },
-    chop:          { spinMean: -14.0, spinSigma: 1.8, spinMin: -18.0, spinMax: -10.0 },
-    push:          { spinMean: -3.0, spinSigma: 1.0, spinMin: -5.5, spinMax: -0.5 },
-    block:         { spinMean: 0, spinSigma: 1.0, spinMin: -2.0, spinMax: 2.0 },
-    lob:           { spinMean: 4.5, spinSigma: 1.4, spinMin: 1.8, spinMax: 8.0 },
-    drop_shot:     { spinMean: -1.8, spinSigma: 1.0, spinMin: -4.0, spinMax: 0 },
+                     spinMean: 20, spinSigma: 4.5, spinMin: 11, spinMax: 29 },
+    slice:         { spinMean: -20, spinSigma: 4.5, spinMin: -30, spinMax: -11 },
+    chop:          { spinMean: -35, spinSigma: 4.5, spinMin: -45, spinMax: -25 },
+    push:          { spinMean: -7.5, spinSigma: 2.5, spinMin: -14, spinMax: -1 },
+    block:         { spinMean: 0, spinSigma: 2.5, spinMin: -5, spinMax: 5 },
+    lob:           { spinMean: 11, spinSigma: 3.5, spinMin: 4.5, spinMax: 20 },
+    drop_shot:     { spinMean: -4.5, spinSigma: 2.5, spinMin: -10, spinMax: 0 },
   },
   // These sit inside a MEASURED envelope — see tests/solverEnvelope.test.js,
   // which pins it so a regression shows up as a number.
@@ -195,11 +205,12 @@ export const PROFILE_OVERRIDES = Object.freeze({
   // 17-19 m/s is the low end of a real international loop (15-25 m/s). Going
   // higher needs the physics model changed, not these numbers raised.
   //
-  // Backspin has its own measured ceiling around -25 rps: heavier backspin
+  // Backspin has its own measured ceiling around -62 rps: heavier backspin
   // floats the ball long and cannot be held on the table at any pace
-  // (-30 rps is 5-43% feasible, -40 rps ~0%). The base `chop` profile at
-  // -32 mean / -40 min sits entirely outside that, so chop and slice carry
-  // spin overrides here. Topspin has no such ceiling (+40 is 100% feasible).
+  // (measured pre-rescale as -30 rps at 2.5× Magnus ≈ -75 now, 5-43%
+  // feasible; -40 ≈ -100 now, ~0%). The base `chop` profile at -55 mean /
+  // -64 min sits partly outside that, so chop and slice carry spin
+  // overrides here. Topspin has no such ceiling inside the deliverable band.
   intermediate: {
     smash:         { speedMean: 17.0, speedSigma: 2.0, speedMin: 14.0, speedMax: 20.0 },
     topspin_drive: { speedMean: 14.0, speedSigma: 2.0, speedMin: 11.0, speedMax: 18.0 },
@@ -207,27 +218,31 @@ export const PROFILE_OVERRIDES = Object.freeze({
     flip:          { speedMean: 10.5, speedSigma: 1.4, speedMin:  8.0, speedMax: 13.5 },
     block:         { speedMean:  7.0, speedSigma: 1.5, speedMin:  4.7, speedMax: 10.1 },
     slice:         { speedMean:  7.5, speedSigma: 1.4, speedMin:  5.5, speedMax: 10.2,
-                     spinMean: -17, spinSigma: 3.5, spinMin: -24, spinMax: -10 },
+                     spinMean: -42, spinSigma: 9, spinMin: -60, spinMax: -25 },
     lob:           { speedMean:  7.0, speedSigma: 1.15, speedMin: 5.1, speedMax:  9.5 },
     chop:          { speedMean:  6.0, speedSigma: 1.07, speedMin: 4.3, speedMax:  8.0,
-                     spinMean: -21, spinSigma: 2.5, spinMin: -25, spinMax: -16 },
+                     spinMean: -52, spinSigma: 6, spinMin: -62, spinMax: -40 },
     push:          { speedMean:  4.0, speedSigma: 0.75, speedMin: 2.8, speedMax:  5.6 },
     drop_shot:     { speedMean:  3.0, speedSigma: 0.48, speedMin: 2.2, speedMax:  4.2 },
   },
   // Pro sits ~1.12x above international on attacking strokes and ~1.15x on
   // touch shots, plus slightly wider spin bounds on loop / slice / chop.
+  // Pro's loop spin presses against the 64 rps grip ceiling (see the scale
+  // note above SHOT_PROFILES) — the mean sits high with a tightened sigma
+  // rather than scaling the old distribution exactly, so the top tail stays
+  // deliverable instead of being clamp-shaped.
   pro: {
     smash:         { speedMean: 19.0, speedSigma: 2.2, speedMin: 15.7, speedMax: 22.4 },
     topspin_drive: { speedMean: 15.7, speedSigma: 2.2, speedMin: 12.3, speedMax: 20.2 },
     loop:          { speedMean: 14.0, speedSigma: 2.0, speedMin: 11.2, speedMax: 17.9,
-                     spinMean: 25, spinSigma: 4, spinMin: 18, spinMax: 34 },
+                     spinMean: 58, spinSigma: 5, spinMin: 45, spinMax: 64 },
     flip:          { speedMean: 11.8, speedSigma: 1.6, speedMin:  9.0, speedMax: 15.1 },
     block:         { speedMean:  8.1, speedSigma: 1.7, speedMin:  5.4, speedMax: 11.6 },
     slice:         { speedMean:  8.6, speedSigma: 1.6, speedMin:  6.3, speedMax: 11.7,
-                     spinMean: -18, spinSigma: 3.5, spinMin: -25, spinMax: -11 },
+                     spinMean: -45, spinSigma: 9, spinMin: -62, spinMax: -28 },
     lob:           { speedMean:  8.1, speedSigma: 1.3, speedMin:  5.9, speedMax: 10.9 },
     chop:          { speedMean:  6.9, speedSigma: 1.2, speedMin:  4.9, speedMax:  9.2,
-                     spinMean: -22, spinSigma: 2.5, spinMin: -26, spinMax: -17 },
+                     spinMean: -55, spinSigma: 6, spinMin: -64, spinMax: -42 },
     push:          { speedMean:  4.6, speedSigma: 0.86, speedMin: 3.2, speedMax:  6.4 },
     drop_shot:     { speedMean:  3.5, speedSigma: 0.55, speedMin: 2.5, speedMax:  4.8 },
   },
@@ -283,13 +298,15 @@ export function profileFor(shotType, difficulty) {
 // normal play. If you find yourself lowering a cap to slow a tier down, edit
 // PROFILE_OVERRIDES instead; that is the lesson of the collapse described
 // above, and `tests/shotTypeSelector.test.js` asserts the rails stay clear.
-// maxSpin was previously 15/26/40 and DID bind — it was shaping the spin
-// distribution exactly the way maxSpeed used to shape the speed one. Now that
-// every tier carries explicit spin overrides, these sit clear on both axes.
+// maxSpin was previously 15/26/40 (pre-rescale scale) and DID bind — it was
+// shaping the spin distribution exactly the way maxSpeed used to shape the
+// speed one. Now that every tier carries explicit spin overrides, these sit
+// clear on both axes (spin rails in physical rps, above each tier's widest
+// profile bound: beginner ±45, intermediate ±62, pro ±64).
 export const DIFFICULTY_CAPS = Object.freeze({
-  beginner:     { minSpeed: 1.5, maxSpeed:  9.0, maxSpin: 20 },
-  intermediate: { minSpeed: 1.5, maxSpeed: 22.0, maxSpin: 36 },
-  pro:          { minSpeed: 1.5, maxSpeed: 24.0, maxSpin: 38 },
+  beginner:     { minSpeed: 1.5, maxSpeed:  9.0, maxSpin: 50 },
+  intermediate: { minSpeed: 1.5, maxSpeed: 22.0, maxSpin: 66 },
+  pro:          { minSpeed: 1.5, maxSpeed: 24.0, maxSpin: 68 },
 });
 
 // Base weights per DIFFICULTY. These are the personalities:
@@ -770,21 +787,20 @@ export const SIDESPIN_TYPE_FACTOR = Object.freeze({
   smash:         0.0,
 });
 
-// Per-tier base probability and magnitude band (rps, always positive here —
-// the sign is a fair coin at sample time; left and right are equally easy).
+// Per-tier base probability and magnitude band (physical rps, always
+// positive here — the sign is a fair coin at sample time; left and right are
+// equally easy).
 //
-// Magnitudes are deliberately BELOW the topspin numbers for each tier:
-// MAGNUS_COEFFICIENT is ~9x physical (see PROFILE_OVERRIDES notes), so even
-// a few rps of vertical-axis spin produces a visible curl, and the solver
-// must cancel the lateral drift by aiming off-target (see the aim-shift
-// pass in paddleSolver.js) — the bigger the request, the bigger the aim
-// offset it has to find. These bands are inside what that pass converges on
-// reliably; raise them only against tests/paddleSolver.test.js sidespin
-// feasibility numbers.
+// Magnitudes are deliberately BELOW the topspin numbers for each tier: the
+// solver must cancel sidespin's lateral Magnus drift by aiming off-target
+// (see the aim-shift pass in paddleSolver.js) — the bigger the request, the
+// bigger the aim offset it has to find. These bands are inside what that
+// pass converges on reliably; raise them only against
+// tests/paddleSolver.test.js sidespin feasibility numbers.
 export const SIDESPIN_BY_DIFFICULTY = Object.freeze({
-  beginner:     { prob: 0.45, min: 2.0, max: 6.0 },
-  intermediate: { prob: 0.55, min: 3.0, max: 9.0 },
-  pro:          { prob: 0.60, min: 4.0, max: 11.0 },
+  beginner:     { prob: 0.45, min: 5.0,  max: 15.0 },
+  intermediate: { prob: 0.55, min: 8.0,  max: 22.0 },
+  pro:          { prob: 0.60, min: 10.0, max: 27.0 },
 });
 
 // Signed sidespin (rps) for one shot, or 0 — most shots still fly straight.
