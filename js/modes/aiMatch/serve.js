@@ -289,6 +289,12 @@ const SERVE_ARC_DEPTH_REF_VY = [-0.2, -2.2];
 // arc isn't sitting exactly on its own reachability limit.
 const SERVE_ARC_DEPTH_MARGIN_M = 0.10;
 
+// Max distance (m) the live ball may drift from the predicted toss contact
+// before the pre-solved serve launch is discarded and re-solved from the
+// real position. Within this radius the aim-shift tolerance (0.30 m) dwarfs
+// the landing shift a few cm of launch offset produces.
+const PRESOLVE_MAX_DRIFT_M = 0.05;
+
 // Flattest (most negative) arc the preference may sit at, given how deep the
 // serve needs to land. Infinity = every arc reaches this depth, so the speed
 // intent is free to choose.
@@ -360,7 +366,13 @@ export function simulateTwoBounceServe(launchPos, launchVel, launchSpin, env) {
 // { velocity, legal, landingError, sim } — `legal` false means every
 // candidate failed some requirement and `velocity` is the least-bad one
 // (physics probably over-tuned). Returns null only on degenerate geometry.
-export function solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchSpin, env) {
+//
+// Generator core: yields once after each arc candidate's binary search, so
+// the serve FSM can amortize the search across toss frames (one arc ≈ up to
+// 9 two-bounce sims ≈ a fraction of a ms) instead of paying the whole search
+// in the strike frame. The exported solveTwoBounceServe below drains it
+// synchronously — identical computation, identical results.
+function* solveTwoBounceServeSteps(launchPos, targetWorld, targetSpeed, launchSpin, env) {
   if (!env || !env.tableBox) return null;
   const netZ = env.netBox
     ? (env.netBox.min.z + env.netBox.max.z) / 2
@@ -463,8 +475,22 @@ export function solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchS
       }
     }
     if (best && best.legal && best.landingError <= SERVE_LANDING_TOLERANCE_M) break;
+    yield;
   }
   return best;
+}
+
+// Drain a solver generator to completion synchronously.
+function drainGenerator(gen) {
+  let r = gen.next();
+  while (!r.done) r = gen.next();
+  return r.value;
+}
+
+export function solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchSpin, env) {
+  return drainGenerator(
+    solveTwoBounceServeSteps(launchPos, targetWorld, targetSpeed, launchSpin, env),
+  );
 }
 
 // Sidespin wrapper around solveTwoBounceServe. The two-bounce solver aims its
@@ -476,8 +502,11 @@ export function solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchS
 // the ball back. Candidates are always scored against the REAL target, and
 // legality (own-half bounce, net clearance, receiver court) is geometric, so
 // the shift cannot trade a legal serve for an illegal one unnoticed.
-export function solveServeWithAimShift(launchPos, targetWorld, targetSpeed, launchSpin, env, maxIters = 3) {
-  let best = solveTwoBounceServe(launchPos, targetWorld, targetSpeed, launchSpin, env);
+// Generator core — same amortization contract as solveTwoBounceServeSteps:
+// yields between arc candidates (via yield*), so a full aim-shift solve can
+// be spread across toss frames by the serve FSM.
+function* serveSolveSteps(launchPos, targetWorld, targetSpeed, launchSpin, env, maxIters = 3) {
+  let best = yield* solveTwoBounceServeSteps(launchPos, targetWorld, targetSpeed, launchSpin, env);
   if (!best) return null;
   const virtual = targetWorld.clone();
   for (let i = 0; i < maxIters; i++) {
@@ -485,7 +514,7 @@ export function solveServeWithAimShift(launchPos, targetWorld, targetSpeed, laun
     if (best.legal && best.landingError <= SERVE_LANDING_TOLERANCE_M) break;
     virtual.x += targetWorld.x - best.sim.landing.x;
     virtual.z += targetWorld.z - best.sim.landing.z;
-    const next = solveTwoBounceServe(launchPos, virtual, targetSpeed, launchSpin, env);
+    const next = yield* solveTwoBounceServeSteps(launchPos, virtual, targetSpeed, launchSpin, env);
     if (!next) break;
     next.landingError = next.sim && next.sim.landing
       ? Math.hypot(next.sim.landing.x - targetWorld.x, next.sim.landing.z - targetWorld.z)
@@ -495,6 +524,12 @@ export function solveServeWithAimShift(launchPos, targetWorld, targetSpeed, laun
     if (better) best = next;
   }
   return best;
+}
+
+export function solveServeWithAimShift(launchPos, targetWorld, targetSpeed, launchSpin, env, maxIters = 3) {
+  return drainGenerator(
+    serveSolveSteps(launchPos, targetWorld, targetSpeed, launchSpin, env, maxIters),
+  );
 }
 
 // --- Toss prediction -------------------------------------------------------
@@ -987,6 +1022,14 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
   const contactTargetNormal = new THREE.Vector3();
   const backswingPos = new THREE.Vector3();
   let toss = null;              // predictTossContact result for this serve
+  // Amortized serve solve, started at toss time from the PREDICTED contact
+  // point and stepped one arc candidate per TOSS frame. Solving synchronously
+  // in strikeBall cost up to 4 aim-shift solves × 90 sims in the one frame
+  // where the AI strikes — a guaranteed hitch on every AI serve. The strike
+  // still absorbs toss drift: if the live ball ends up more than
+  // PRESOLVE_MAX_DRIFT_M from the predicted contact, strikeBall falls back
+  // to the full synchronous solve from the real position.
+  let preSolve = null;
   let collisionSuppressed = false;
 
   // The AI paddle is only conditionally collidable — tests and the headless
@@ -1132,6 +1175,25 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
       (tableSurfaceY || 0) + TOSS_CONTACT_HEIGHT_M,
     );
 
+    // Start the amortized launch solve from the predicted contact point —
+    // the toss buys a few hundred ms of frames, so by strike time the result
+    // is normally ready and strikeBall pays nothing.
+    {
+      const env = { tableBox, tableSurfaceY, ballRadius, netBox };
+      const targetPoint = targetWorldPoint();
+      const launchPos = toss.position.clone();
+      const launchSpin = computeLaunchSpin(launchPos, targetPoint);
+      preSolve = {
+        launchPos,
+        launchSpin,
+        gen: serveSolveSteps(
+          launchPos, targetPoint, serveTarget.target_speed, launchSpin, env,
+        ),
+        done: false,
+        result: null,
+      };
+    }
+
     // Contact pose: paddle face points from the contact point toward the
     // landing target, tilted slightly up so the serve arcs over the net.
     contactTargetPos.copy(toss.position);
@@ -1200,22 +1262,12 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
     );
   }
 
-  // Scripted contact. Solves from the ball's REAL position at this instant,
-  // so any drift between the predicted toss and the live one is absorbed here
-  // instead of throwing the placement off. The outgoing trajectory is a legal
-  // two-bounce serve: own half first, then over the net to the target.
-  function strikeBall() {
-    const live = !!(ballModel && ballModel.visible);
-    const launchPos = live ? ballModel.position.clone() : toss.position.clone();
-
-    const env = { tableBox, tableSurfaceY, ballRadius, netBox };
-    const targetPoint = targetWorldPoint();
-
-    // Outgoing spin: topspin/backspin about the horizontal axis perpendicular
-    // to the direction of travel (feeder.js convention — ball toward +z,
-    // topspin = +x), PLUS the archetype's sidespin about the vertical axis —
-    // the component that makes a pendulum serve curl in flight and kick off
-    // the bounce. Both are rps in the target, rad/s on the ball.
+  // Outgoing spin: topspin/backspin about the horizontal axis perpendicular
+  // to the direction of travel (feeder.js convention — ball toward +z,
+  // topspin = +x), PLUS the archetype's sidespin about the vertical axis —
+  // the component that makes a pendulum serve curl in flight and kick off
+  // the bounce. Both are rps in the target, rad/s on the ball.
+  function computeLaunchSpin(launchPos, targetPoint) {
     const dir = targetPoint.clone().sub(launchPos);
     dir.y = 0;
     if (dir.lengthSq() < 1e-6) dir.set(0, 0, 1);
@@ -1225,10 +1277,47 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
       .normalize()
       .multiplyScalar(serveTarget.target_spin * 2 * Math.PI);
     launchSpin.y += (serveTarget.target_side_spin || 0) * 2 * Math.PI;
+    return launchSpin;
+  }
 
-    const solved = solveServeWithAimShift(
-      launchPos, targetPoint, serveTarget.target_speed, launchSpin, env,
-    );
+  // Advance the amortized serve solve by one arc candidate. Called once per
+  // TOSS frame; strikeBall drains whatever remains (normally nothing).
+  function stepPreSolve() {
+    if (!preSolve || preSolve.done) return;
+    const r = preSolve.gen.next();
+    if (r.done) {
+      preSolve.done = true;
+      preSolve.result = r.value;
+    }
+  }
+
+  // Scripted contact. Uses the pre-solved launch when the live ball is where
+  // the toss prediction said it would be; on real drift (variable dt, tuner
+  // changes mid-toss) it re-solves from the ball's REAL position at this
+  // instant so the placement isn't thrown off. The outgoing trajectory is a
+  // legal two-bounce serve: own half first, then over the net to the target.
+  function strikeBall() {
+    const live = !!(ballModel && ballModel.visible);
+    const launchPos = live ? ballModel.position.clone() : toss.position.clone();
+
+    const env = { tableBox, tableSurfaceY, ballRadius, netBox };
+    const targetPoint = targetWorldPoint();
+
+    let solved = null;
+    let launchSpin = null;
+    if (preSolve && launchPos.distanceTo(preSolve.launchPos) <= PRESOLVE_MAX_DRIFT_M) {
+      while (!preSolve.done) stepPreSolve();
+      solved = preSolve.result;
+      // The solver verified its candidates with THIS spin — launch with the
+      // same vector or the Magnus curl won't match the solved trajectory.
+      launchSpin = preSolve.launchSpin;
+    }
+    if (!solved || !solved.velocity) {
+      launchSpin = computeLaunchSpin(launchPos, targetPoint);
+      solved = solveServeWithAimShift(
+        launchPos, targetPoint, serveTarget.target_speed, launchSpin, env,
+      );
+    }
     let launchVel;
     if (solved && solved.velocity) {
       launchVel = solved.velocity;
@@ -1274,6 +1363,7 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
       case SERVE_STATES.TOSS: {
         const elapsed = nowMs - stateEnteredAtMs;
         driveTossPaddle(dt, elapsed);
+        stepPreSolve();
         if (shouldStrike(elapsed)) {
           strikeBall();
           transitionTo(SERVE_STATES.SERVE_SWING);
@@ -1303,6 +1393,7 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
           transitionTo(SERVE_STATES.IDLE);
           serveTarget = null;
           toss = null;
+          preSolve = null;
           // Unconditional restore — by now the serve has travelled at least
           // 1.3m (450ms at the 3 m/s archetype floor), so the collider can
           // never re-hit its own ball, and leaving it gated would make the
@@ -1325,6 +1416,7 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
     onComplete = null;
     lastArchetypeId = null;
     toss = null;
+    preSolve = null;
     // Never leave the paddle uncollidable if we're torn down mid-toss.
     setPaddleCollision(true);
   }
