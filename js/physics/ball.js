@@ -203,6 +203,15 @@ let stationaryTime = 0;
 // DEAD_BALL_COR_SCALE damp so it settles in seconds, not tens of seconds.
 let bouncesSinceContact = 0;
 
+// Minimum impact speed (m/s) for a bounce to make sound and haptics. A ball
+// at rest on a surface re-accumulates g·dt of downward velocity every frame
+// (~0.11 m/s at 90 Hz, ~0.27 m/s under 36 Hz reprojection) and re-enters the
+// bounce branch each frame — physically harmless, but with the audio path's
+// IMPACT_GAIN_FLOOR each of those micro-impacts played at half volume, which
+// at frame rate turned a settling ball into a continuous buzz. Real hops
+// below this speed rebound under a centimetre and are inaudible anyway.
+const AUDIBLE_BOUNCE_MIN_IMPACT = 0.3;
+
 // Previous-frame ball position, used as the "pre" sample for swept paddle
 // collision. Tracking it at module scope (rather than recomputing inside the
 // tick) lets multiplayer non-owner mode work: the network drill overwrites
@@ -1004,10 +1013,12 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
         ballVelocity.y *= DEAD_BALL_COR_SCALE;
       }
       const bounceIntensity = Math.min(bounceImpact / 5, 1.0);
-      playBounceSound(bounceIntensity, ballModel.position);
-      // Light haptic so the table has felt presence — scaled below paddle hits
-      // so the player can still distinguish "I hit it" from "table caught it."
-      hapticsPulseActive(bounceIntensity * HAPTIC_BOUNCE_SCALE, HAPTIC_DURATION_MIN_MS);
+      if (bounceImpact > AUDIBLE_BOUNCE_MIN_IMPACT) {
+        playBounceSound(bounceIntensity, ballModel.position);
+        // Light haptic so the table has felt presence — scaled below paddle hits
+        // so the player can still distinguish "I hit it" from "table caught it."
+        hapticsPulseActive(bounceIntensity * HAPTIC_BOUNCE_SCALE, HAPTIC_DURATION_MIN_MS);
+      }
 
       // Squash-and-stretch on table bounce — same vertex-buffer mechanism
       // used for paddle hits, direction = world-up. Amount scales with
@@ -1123,7 +1134,9 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       const floorIntensity = Math.min(floorImpact / 5, 1.0);
       // Softer plop than table — floor is not a taut playing surface. Reuse
       // the bounce sound scaled down so we don't need a separate asset.
-      playBounceSound(floorIntensity * 0.45, ballModel.position);
+      if (floorImpact > AUDIBLE_BOUNCE_MIN_IMPACT) {
+        playBounceSound(floorIntensity * 0.45, ballModel.position);
+      }
       ballVelocity.y *= -FLOOR_RESTITUTION;
 
       // Spin coupling: mirror of the table math but with FLOOR_FRICTION.
