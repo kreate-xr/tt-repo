@@ -232,6 +232,85 @@ function makeSpatialHead(position, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// Pooled spatial heads for one-shot impacts. makeSpatialHead builds a fresh
+// HRTF PannerNode (the most expensive panner — its kernels are set up per
+// node) plus gains on EVERY bounce/hit; on a fanless XR2 that construction
+// cost lands inside the frame that plays the sound. The pool pre-builds a
+// small ring of panner+dry(+send) heads once and repositions them per shot —
+// the same pattern ensureBallRoll already uses for the rolling sound.
+//
+// Reuse hazard: re-acquiring a slot re-points its position/gains while a
+// previous shot's tail may still be sounding through it. With 8 slots and
+// impact tails well under a second, a slot's reuse interval at rally rates
+// is seconds — the collision is inaudible in practice.
+//
+// Long-lived heads (crowdAudio) must NOT use this — they keep createSpatialHead.
+const IMPACT_HEAD_POOL_SIZE = 8;
+let impactHeadPool = null;
+let impactHeadPoolIdx = 0;
+
+function buildImpactHeadPool(a) {
+  impactHeadPool = [];
+  for (let i = 0; i < IMPACT_HEAD_POOL_SIZE; i++) {
+    const panner = a.createPanner();
+    panner.panningModel = 'HRTF';
+    panner.distanceModel = 'inverse';
+    panner.refDistance = PANNER_REF_DISTANCE;
+    panner.maxDistance = PANNER_MAX_DISTANCE;
+    panner.rolloffFactor = PANNER_ROLLOFF;
+    const dry = a.createGain();
+    panner.connect(dry).connect(masterOut);
+    let send = null;
+    if (convolverIn) {
+      send = a.createGain();
+      panner.connect(send).connect(convolverIn);
+    }
+    impactHeadPool.push({ panner, dry, send });
+  }
+}
+
+// Drop-in replacement for makeSpatialHead on the one-shot impact paths.
+// Falls through to makeSpatialHead when there's no position or spatial audio
+// is off (those return a plain GainNode — no panner to pool).
+function acquireImpactHead(position, opts) {
+  if (!position || !ROOM_ACOUSTICS_ENABLED) return makeSpatialHead(position, opts);
+  const a = ensureAudioGraph();
+  if (!impactHeadPool) buildImpactHeadPool(a);
+  const slot = impactHeadPool[impactHeadPoolIdx];
+  impactHeadPoolIdx = (impactHeadPoolIdx + 1) % IMPACT_HEAD_POOL_SIZE;
+
+  const p = slot.panner;
+  if (p.positionX) {
+    p.positionX.value = position.x;
+    p.positionY.value = position.y;
+    p.positionZ.value = position.z;
+  } else if (p.setPosition) {
+    p.setPosition(position.x, position.y, position.z);
+  }
+  slot.dry.gain.value = (opts && opts.dry != null) ? opts.dry : 0.95;
+  if (slot.send) {
+    slot.send.gain.value = (opts && opts.wet != null) ? opts.wet : 0.55;
+  }
+  return p;
+}
+
+// Build every lazily-created audio asset up front. Called from the in-XR
+// loading phase (a user gesture has already happened, so the context may
+// run) — without this, the first swing/roll paid a 96k-sample noise fill
+// INSIDE a render frame, and the first impact built its HRTF panner there
+// too. Idempotent; failures are non-fatal (context blocked in odd embeds).
+export function prewarmAudio() {
+  try {
+    const a = ensureAudioGraph();  // master bus, samples fetch, hall IR, ambient bed
+    ensureWhoosh();                // 2 s noise buffer + filter chain
+    ensureBallRoll();              // 2 s noise buffer + panner chain
+    if (ROOM_ACOUSTICS_ENABLED && !impactHeadPool) buildImpactHeadPool(a);
+  } catch (err) {
+    console.warn('[audio] prewarm skipped:', err);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // AudioListener sync — WebXR camera pose drives Web Audio's spatial listener
 // so HRTF pans track head rotation. Called from the main render loop each
 // frame with renderer.xr.getCamera().
@@ -253,17 +332,20 @@ export function updateAudioListener(cameraOrObject3D) {
   _listenerUp .set(0, 1,  0).applyQuaternion(_listenerQuat);
 
   const l = a.listener;
-  const t = a.currentTime;
   if (l.positionX) {
-    l.positionX.setValueAtTime(_listenerPos.x, t);
-    l.positionY.setValueAtTime(_listenerPos.y, t);
-    l.positionZ.setValueAtTime(_listenerPos.z, t);
-    l.forwardX .setValueAtTime(_listenerFwd.x, t);
-    l.forwardY .setValueAtTime(_listenerFwd.y, t);
-    l.forwardZ .setValueAtTime(_listenerFwd.z, t);
-    l.upX      .setValueAtTime(_listenerUp .x, t);
-    l.upY      .setValueAtTime(_listenerUp .y, t);
-    l.upZ      .setValueAtTime(_listenerUp .z, t);
+    // Direct .value writes, not setValueAtTime: this runs every render frame,
+    // and nine timeline events per frame is ~810 automation events/second for
+    // the audio thread to sort and expire. Plain assignment carries no
+    // timeline cost and head-tracking needs no sample-accurate scheduling.
+    l.positionX.value = _listenerPos.x;
+    l.positionY.value = _listenerPos.y;
+    l.positionZ.value = _listenerPos.z;
+    l.forwardX.value  = _listenerFwd.x;
+    l.forwardY.value  = _listenerFwd.y;
+    l.forwardZ.value  = _listenerFwd.z;
+    l.upX.value       = _listenerUp.x;
+    l.upY.value       = _listenerUp.y;
+    l.upZ.value       = _listenerUp.z;
   } else if (l.setPosition) {
     l.setPosition   (_listenerPos.x, _listenerPos.y, _listenerPos.z);
     l.setOrientation(_listenerFwd.x, _listenerFwd.y, _listenerFwd.z,
@@ -302,7 +384,7 @@ export function playBounceSound(volume, position) {
   gain.gain.setValueAtTime(intensity, a.currentTime);
   gain.gain.exponentialRampToValueAtTime(0.001, a.currentTime + duration);
 
-  const head = makeSpatialHead(position, { dry: 0.9, wet: 0.5 });
+  const head = acquireImpactHead(position, { dry: 0.9, wet: 0.5 });
   noise.connect(bandpass).connect(gain).connect(head);
   noise.start();
   noise.stop(a.currentTime + duration);
@@ -328,7 +410,7 @@ export function playPaddleHitSound(volume, intensity, position, shape) {
 
   // Sub-bass gets less reverb than the click — real halls carry mids further,
   // but a wet low-end here would smear into a boom on hard smashes.
-  const head = makeSpatialHead(position, { dry: 0.9, wet: 0.55 });
+  const head = acquireImpactHead(position, { dry: 0.9, wet: 0.55 });
 
   // Layer 1 — rubber-on-plastic click. Existing 2200 Hz bandpass, unchanged.
   const bufferSize = a.sampleRate * 0.025;
@@ -391,7 +473,7 @@ export function playPaddleEdgeSound(volume, intensity, position, shape) {
   const decayScale = shape && shape.bodyDecayScale > 0 ? shape.bodyDecayScale : 1;
 
   // Edge clacks are the most dramatic hall echo in real play — bumped wet.
-  const head = makeSpatialHead(position, { dry: 0.85, wet: 0.75 });
+  const head = acquireImpactHead(position, { dry: 0.85, wet: 0.75 });
 
   const dur = 0.022;
   const bufSize = Math.max(1, Math.floor(a.sampleRate * dur));

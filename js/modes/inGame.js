@@ -68,7 +68,7 @@ import { createMultiplayerDrill, MULTIPLAYER } from './multiplayer/multiplayer.j
 import { createAIMatchDrill, AI_MATCH } from './aiMatch/aiMatch.js';
 import { createMachinePlayDrill, MACHINE_PLAY } from './machinePlay/machinePlay.js';
 import * as AudioContextBridge from '../network/AudioContextBridge.js';
-import { updateAudioListener } from '../scene/audio.js';
+import { updateAudioListener, prewarmAudio } from '../scene/audio.js';
 import * as haptics from '../xr/haptics.js';
 
 const DRILL_FACTORIES = {
@@ -374,6 +374,11 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   };
 
   loadPanel.setText('Loading models…');
+  // Synthesize every lazily-built audio buffer (hall IR, ambient bed, whoosh
+  // and roll noise — ~610k samples of main-thread fill) plus the pooled HRTF
+  // impact heads NOW, behind the loading panel. Left lazy, the first swing or
+  // ball roll paid that fill inside a render frame.
+  prewarmAudio();
   try {
     await loadModels(loadingScreen, statusEl);
   } catch (err) {
