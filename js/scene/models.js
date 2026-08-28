@@ -492,6 +492,77 @@ function matteTableSurface(root) {
   });
 }
 
+// ITTF law 2.1.4 mandates only that the playing surface be "uniformly dark
+// coloured and matt" — no specific hue. Same shape as BALL_COLORS so the
+// wrist menu can render a stateful swatch from `base`. 'blue' is Table.glb's
+// authored color (baseColorFactor ≈ #0D478D). Black (WTT-style) was tried
+// and cut after headset testing: it merged with the dark Focus Room surround.
+// `base` is the felt color applied to the 3D table. `swatch` is a brightened
+// display tint for the wrist-menu chip ONLY: both ITTF felt colors are dark
+// enough that the raw value reads near-black on the menu's dark panel, so
+// toggling looked like nothing happened. The chip's job is to say "blue" or
+// "green" at a glance, not to be colorimetrically faithful.
+export const TABLE_COLORS = {
+  blue:  { id: 'blue',  base: '#0d478d', swatch: '#2e7cd6' },  // tournament blue, as authored
+  green: { id: 'green', base: '#1e6b47', swatch: '#2fa36c' },  // classic club green
+};
+
+// Current color id. Read by setTableColor and by the wrist menu to render
+// its table-swatch button.
+let currentTableColorId = 'blue';
+export function getTableColorId() { return currentTableColorId; }
+
+// Live refs to the felt material(s) found at load, so the wrist menu can
+// recolor the table without re-running the hue heuristic below.
+const _tableFeltMaterials = [];
+
+// Retint the felt without touching the GLB: Table.glb's blue is a flat
+// baseColorFactor (no texture) on its own material, so swapping mat.color is
+// a lossless recolor. The white lines, frame/legs and net all live on other
+// materials and pass through untouched.
+export function setTableColor(colorId, { persist = true } = {}) {
+  if (!TABLE_COLORS[colorId]) return;
+  currentTableColorId = colorId;
+  const newColor = new THREE.Color(TABLE_COLORS[colorId].base);
+  for (const mat of _tableFeltMaterials) {
+    mat.color.copy(newColor);
+    mat.needsUpdate = true;
+  }
+  if (persist) {
+    try { localStorage.setItem('tt_table_color', colorId); } catch { /* session-only */ }
+  }
+}
+
+// Find the felt material(s) and apply the startup color. The felt is
+// identified by hue — the only strongly blue-dominant material in the model —
+// because GLB material names ('Material.001') are export artifacts that
+// renumber on re-export. Startup precedence: ?table.color= dev override
+// (headset-browser testing without a rebuild, same idea as ?paddle.*), then
+// the persisted wrist-menu choice, then the authored blue. persist:false so
+// merely loading with an override never overwrites the saved preference.
+function initTableColor(root) {
+  root.traverse((node) => {
+    if (!node.isMesh || !node.material?.color) return;
+    const c = node.material.color;
+    if (!(c.b > 0.15 && c.b > c.r * 2.5 && c.b > c.g * 2.5)) return;
+    if (!_tableFeltMaterials.includes(node.material)) {
+      _tableFeltMaterials.push(node.material);
+    }
+  });
+  logInfo(`Table felt material(s) found: ${_tableFeltMaterials.length}`);
+
+  let initial = typeof location !== 'undefined'
+    ? new URLSearchParams(location.search).get('table.color') : null;
+  if (initial && !TABLE_COLORS[initial]) {
+    logInfo(`Unknown table.color '${initial}' — expected one of:`, Object.keys(TABLE_COLORS));
+    initial = null;
+  }
+  if (!initial) {
+    try { initial = localStorage.getItem('tt_table_color'); } catch { initial = null; }
+  }
+  if (initial && TABLE_COLORS[initial]) setTableColor(initial, { persist: false });
+}
+
 // Mark table meshes as shadow receivers so the ball's real cast shadow lands
 // on the play surface (and side rails). The net is intentionally skipped —
 // its alphaTest cutout would produce speckled shadow through the grid holes.
@@ -548,6 +619,7 @@ export async function loadModels(loadingScreen, statusEl) {
     // (see below); left commented in case the built-in net is ever restored.
     // enhanceNetVisibility(tableModel);
     matteTableSurface(tableModel);
+    initTableColor(tableModel);
     applyTableShadowFlags(tableModel);
 
     const rawBox = new THREE.Box3().setFromObject(tableModel);
@@ -1012,8 +1084,8 @@ export async function loadModels(loadingScreen, statusEl) {
 
     // Derive the 'handle_grip' calibration preset from the measured geometry:
     // T_cal that puts the handle axis along grip -Z (WebXR's held-rod
-    // direction) with mid-handle at the grip origin — the controller body
-    // becomes the paddle handle. Computed per loaded asset from its authored
+    // direction) with the handle's grip point (GRIP_POINT_FRACTION) at the
+    // grip origin — the controller body becomes the paddle handle. Computed per loaded asset from its authored
     // anchors, so it stays exact across GLB re-exports and the procedural bat.
     // Registered into the shared preset table; the wizard exposes it.
     const handleGrip = deriveHandleGripPreset({

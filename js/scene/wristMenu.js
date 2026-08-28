@@ -17,12 +17,14 @@ import * as THREE from 'three';
 import { scene } from './sceneSetup.js';
 import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
 import * as haptics from '../xr/haptics.js';
-import { BALL_COLORS, getBallColorId } from './models.js';
+import { BALL_COLORS, getBallColorId, TABLE_COLORS, getTableColorId } from './models.js';
 import { getDriftFlag as getCalibrationDriftFlag } from '../xr/driftDetector.js';
 import { TUNER_ENABLED } from './hud.js';
 
 // Rotation order for the ball-color toggle. Keep in sync with BALL_COLORS.
 const BALL_COLOR_ORDER = ['orange', 'white'];
+// Rotation order for the table-color toggle. Keep in sync with TABLE_COLORS.
+const TABLE_COLOR_ORDER = ['blue', 'green'];
 
 const CANVAS_W = 1024;
 const CANVAS_H = 410;
@@ -176,24 +178,51 @@ const ICONS = {
     ctx.lineWidth = 1.5;
     ctx.stroke();
   },
-  trophy(ctx, cx, cy, s, color) {
-    // Competition-rules toggle glyph. Cup + handles + stem + base.
-    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
-    const cupW = s * 0.44, cupH = s * 0.34;
-    const topY = cy - s * 0.36;
-    // Cup: open-top rounded U.
-    ctx.beginPath();
-    ctx.moveTo(cx - cupW / 2, topY);
-    ctx.lineTo(cx - cupW / 2, topY + cupH * 0.45);
-    ctx.arc(cx, topY + cupH * 0.45, cupW / 2, Math.PI, 0, true);
-    ctx.lineTo(cx + cupW / 2, topY);
+  tableSwatch(ctx, cx, cy, s, _color) {
+    // Mini table (top view) filled in the CURRENT table color — same
+    // stateful grammar as ballSwatch: the button reports the active state,
+    // so the `color` arg is ignored on purpose. The white centre line is
+    // what makes the glyph read "table" rather than a bare color chip.
+    // Filled with the palette's `swatch` tint, not `base`: the real felt
+    // colors are too dark to distinguish on the dark panel at button size,
+    // which made the toggle look broken.
+    const palette = TABLE_COLORS[getTableColorId()] || TABLE_COLORS.blue;
+    const w = s * 0.94, h = s * 0.62;
+    roundRectPath(ctx, cx - w / 2, cy - h / 2, w, h, s * 0.08);
+    ctx.fillStyle = palette.swatch || palette.base;
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.8)';
+    ctx.lineWidth = 2;
     ctx.stroke();
-    // Handles.
-    ctx.beginPath(); ctx.arc(cx - cupW / 2 - s * 0.09, topY + s * 0.1, s * 0.1, Math.PI * 0.5, Math.PI * 1.5, false); ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx + cupW / 2 + s * 0.09, topY + s * 0.1, s * 0.1, Math.PI * 1.5, Math.PI * 0.5, false); ctx.stroke();
-    // Stem + base.
-    ctx.beginPath(); ctx.moveTo(cx, topY + cupH); ctx.lineTo(cx, cy + s * 0.2); ctx.stroke();
-    ctx.beginPath(); ctx.moveTo(cx - s * 0.18, cy + s * 0.3); ctx.lineTo(cx + s * 0.18, cy + s * 0.3); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - w / 2, cy);
+    ctx.lineTo(cx + w / 2, cy);
+    ctx.stroke();
+  },
+  trophy(ctx, cx, cy, s, color) {
+    // Competition-rules toggle glyph. Filled silhouette, not thin strokes:
+    // at dock-button size under XR minification the stroked version broke
+    // apart into a "Ψ" with floating parentheses.
+    ctx.strokeStyle = color; ctx.fillStyle = color;
+    ctx.lineWidth = 2.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    const cupW = s * 0.52;
+    const rimY = cy - s * 0.42;
+    const straight = s * 0.14;
+    // Cup: filled rim + straight sides + round bottom.
+    ctx.beginPath();
+    ctx.moveTo(cx - cupW / 2, rimY);
+    ctx.lineTo(cx + cupW / 2, rimY);
+    ctx.lineTo(cx + cupW / 2, rimY + straight);
+    ctx.arc(cx, rimY + straight, cupW / 2, 0, Math.PI);
+    ctx.closePath();
+    ctx.fill();
+    // Handles: arcs overlapping the cup sides so they read attached.
+    const hr = s * 0.12;
+    ctx.beginPath(); ctx.arc(cx - cupW / 2 - hr * 0.55, rimY + hr, hr, -Math.PI / 2, Math.PI / 2, true); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx + cupW / 2 + hr * 0.55, rimY + hr, hr, -Math.PI / 2, Math.PI / 2, false); ctx.stroke();
+    // Stem + base plate.
+    ctx.fillRect(cx - s * 0.05, cy - s * 0.06, s * 0.1, s * 0.28);
+    ctx.fillRect(cx - s * 0.19, cy + s * 0.22, s * 0.38, s * 0.11);
   },
   gear(ctx, cx, cy, s, color) {
     ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 1.6;
@@ -457,6 +486,17 @@ export class WristMenu {
       id: 'rules', kind: 'dock', icon: 'trophy',
       shape: 'rect', x: CANVAS_W - 32 - 56 - 8 - 56, y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
     });
+    // Table-color toggle (blue ↔ green — both ITTF-approved surface colors),
+    // centred below the rules/ball pair. It cannot sit beside them: a third
+    // 56px button in that row lands on the rightmost mode circle's crosshair
+    // ticks (which reach x≈822), and hanging it directly under ballColor
+    // pokes its bottom-right corner outside the capsule's rounded end.
+    // Centred under the pair clears both.
+    this.buttons.push({
+      id: 'tableColor', kind: 'dock', icon: 'tableSwatch',
+      shape: 'rect', x: CANVAS_W - 32 - 56 - (8 + 56) / 2,
+      y: CIRCLE_Y - 28 + 56 + 8, w: 56, h: 56, radius: 15,
+    });
 
     // --- Bottom exit pill ---
     const EXIT_W = 100;
@@ -663,12 +703,24 @@ export class WristMenu {
     ctx.fillStyle = hp > 0 ? COLORS.chromeHoverBg : COLORS.chromeBg;
     ctx.fill();
     ctx.restore();
-    const drawIcon = ICONS[b.icon];
     // The rules trophy is a stateful toggle: lit accent when competition
     // rules are on, muted when off — same visual grammar as the selected
-    // difficulty segment.
+    // difficulty segment. Icon tint alone was too subtle at dock size, so
+    // ON also washes the button background in the accent.
+    const rulesOn = b.id === 'rules' && this.competitionMode;
+    if (rulesOn) {
+      ctx.save();
+      roundRectPath(ctx, b.x, dy, b.w, b.h, b.radius || 14);
+      ctx.fillStyle = 'rgba(61,220,151,0.18)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(61,220,151,0.55)';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      ctx.restore();
+    }
+    const drawIcon = ICONS[b.icon];
     const iconColor = b.id === 'rules'
-      ? (this.competitionMode ? ACCENT : COLORS.chromeMuted)
+      ? (rulesOn ? ACCENT : COLORS.chromeMuted)
       : COLORS.chromeText;
     if (drawIcon) drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, iconColor);
     // Calibration drift badge (spec §C8) — small yellow dot on top-right
@@ -791,6 +843,14 @@ export class WristMenu {
       } catch { /* no storage — session-only toggle */ }
       this.emit('rules', { competition: this.competitionMode });
       this.draw();
+      return;
+    }
+    if (button.kind === 'dock' && button.id === 'tableColor') {
+      const currentId = getTableColorId();
+      const idx = TABLE_COLOR_ORDER.indexOf(currentId);
+      const nextId = TABLE_COLOR_ORDER[(idx + 1) % TABLE_COLOR_ORDER.length];
+      this.emit('tableColor', { colorId: nextId });
+      this.draw();  // refresh the swatch to the new color
       return;
     }
     if (button.kind === 'dock' && button.id === 'ballColor') {

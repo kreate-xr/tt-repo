@@ -17,7 +17,7 @@ import {
 // Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline — live in
 // beta while the GLB venues above stay tree-shaken.
 import { createFocusRoom } from '../scene/focusRoom.js';
-import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor } from '../scene/models.js';
+import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableColor } from '../scene/models.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
 // FPS HUD disabled — import kept commented for easy restore.
 import {
@@ -667,6 +667,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   wristMenu.on('tune', () => { if (TUNER_ENABLED) enterTuner(tuner); });
   wristMenu.on('calibrate', () => enterTuner(calibWizard));
   wristMenu.on('ballColor', ({ colorId }) => setBallColor(colorId));
+  wristMenu.on('tableColor', ({ colorId }) => setTableColor(colorId));
   wristMenu.on('exit', () => endSession());
 
   // Panels that are MENUS rather than transient in-play tools. They get the

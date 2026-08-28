@@ -19,9 +19,13 @@ export const ROOM = {
   WALL_COLOR: 0x14161c,
   WALL_ROUGHNESS: 0.95,
   CEILING_COLOR: 0x1e2128,
-  // Same tournament navy as arena.js recolorArenaFloor's FLOOR_COLOR so the
-  // venues share a color language.
-  FLOOR_COLOR: 0x1a3a6b,
+  // Neutral slate grey. The floor must avoid every gameplay hue: the table's
+  // navy AND club green (wrist-menu options — the surface silhouette vanishes
+  // into a matching floor), the paddle's red rubber (a Taraflex red was tried
+  // and cut for that clash), and the orange/white ball colors. Grey conflicts
+  // with none of them, and sits clearly lighter than the charcoal walls so
+  // floor and wall still separate at the skirting line.
+  FLOOR_COLOR: 0x454b55,
   FLOOR_ROUGHNESS: 0.85,
   // Lighter navy accent — wall stripe + court border band.
   ACCENT_COLOR: 0x2c4f8a,

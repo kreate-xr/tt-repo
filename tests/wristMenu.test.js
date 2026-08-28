@@ -13,6 +13,8 @@ jest.mock('../js/xr/haptics.js', () => ({ pulseActive: () => {} }));
 jest.mock('../js/scene/models.js', () => ({
   BALL_COLORS: { orange: { hex: 0xffa500 }, white: { hex: 0xffffff } },
   getBallColorId: () => 'orange',
+  TABLE_COLORS: { blue: { id: 'blue', base: '#0d478d' }, green: { id: 'green', base: '#1e6b47' } },
+  getTableColorId: () => 'blue',
 }));
 jest.mock('../js/xr/driftDetector.js', () => ({ getDriftFlag: () => false }));
 
