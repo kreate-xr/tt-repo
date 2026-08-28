@@ -531,7 +531,12 @@ function pass2Verify(contactPos, contactVel, contactSpin, paddleV, faceNormal, e
 //     predictedLanding:   {x, z} | null
 //     landingError:       number m  (distance to target; null if no bounce)
 //   }
-export function solvePaddle({
+// Generator core: yields once after every pass-2 verification rollout (the
+// expensive step — up to 800 integration steps each; worst case 17 rollouts
+// across the rescue + aim-shift + correction loops). The FSM amortizes the
+// solve across frames through this; the exported solvePaddle below drains it
+// synchronously — identical computation, identical results.
+export function* solvePaddleSteps({
   targetX, targetZ, targetSpeed, targetSpin, targetSideSpin = 0,
   contactPos, contactVel, contactSpin,
   difficulty, env,
@@ -556,6 +561,7 @@ export function solvePaddle({
 
   // Pass 2 verify.
   let verify = pass2Verify(contactPos, contactVel, contactSpin, pass1.paddleV, pass1.faceNormal, env);
+  yield;
   if (!verify.landing) {
     // Ball didn't land — no bounce in 2.4s. On a table this small that is
     // almost always a range OVERSHOOT (the ball cleared the far edge), so
@@ -571,6 +577,7 @@ export function solvePaddle({
         .addScaledVector(pass1.faceNormal, -pass1.paddleV.dot(pass1.faceNormal));
       const damped = normalVec.add(tangentVec);
       const retry = pass2Verify(contactPos, contactVel, contactSpin, damped, pass1.faceNormal, env);
+      yield;
       if (retry.landing) {
         pass1.paddleV = damped;
         pass1.paddleSpeed = damped.length();
@@ -639,6 +646,7 @@ export function solvePaddle({
       const p = pass1Analytical(contactPos, contactVel, virtualTarget, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin, env.ballRadius);
       if (!p.feasible) break;
       const vv = pass2Verify(contactPos, contactVel, contactSpin, p.paddleV, p.faceNormal, env);
+      yield;
       if (!vv.landing) break;
       const e = Math.hypot(vv.landing.x - targetWorld.x, vv.landing.z - targetWorld.z);
       if (e < baseError) {
@@ -715,6 +723,7 @@ export function solvePaddle({
     }
 
     const v = pass2Verify(contactPos, contactVel, contactSpin, corrected, base.faceNormal, env);
+    yield;
     if (!v.landing) break;
     lastLanding = v.landing;
     const err = Math.hypot(v.landing.x - targetWorld.x, v.landing.z - targetWorld.z);
@@ -736,6 +745,14 @@ export function solvePaddle({
     predictedLanding: { x: bestLanding.x, z: bestLanding.z },
     landingError: bestError,
   };
+}
+
+// Synchronous entry point — drains the generator in one go.
+export function solvePaddle(args) {
+  const gen = solvePaddleSteps(args);
+  let r = gen.next();
+  while (!r.done) r = gen.next();
+  return r.value;
 }
 
 // Convenience: return the max strike speed for a difficulty. Exposed so

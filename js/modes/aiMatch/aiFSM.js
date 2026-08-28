@@ -49,7 +49,7 @@ import {
   shouldInjectMiss, sampleMissCause, applyMissToIntent, scaleMissRateForSituation,
   shouldWasteHalfStep, wastedStepOffsetVec, WASTED_STEP_DURATION_MS,
 } from './imperfection.js';
-import { solvePaddle, maxPaddleSpeedForDifficulty } from '../../ai/paddleSolver.js';
+import { solvePaddleSteps, maxPaddleSpeedForDifficulty } from '../../ai/paddleSolver.js';
 import { STREAK_THRESHOLD, STREAK_MISS_BOOST_ADDITIVE } from '../../ai/momentum.js';
 import { checkReachability, REACHABILITY } from './reachability.js';
 import { planTrajectory, interpolateTrajectory } from './interception.js';
@@ -182,6 +182,16 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
   let readCompleteAtPerfMs = 0;
   const _misreadOffset = new THREE.Vector3();
   const _misreadTarget = new THREE.Vector3();
+
+  // Amortized paddle solve in flight (see onTargetReceived). Non-null only
+  // between the worker's target reply and finishTargetReceived.
+  let pendingSolve = null;
+  // Verification rollouts advanced per frame while flight time is plentiful
+  // (~0.3-0.6 ms of solver work per frame), and the time-to-contact below
+  // which the remaining job is drained in one go instead — waiting more
+  // frames there could eat into the swing.
+  const SOLVE_ROLLOUTS_PER_FRAME = 2;
+  const SOLVE_DRAIN_BELOW_MS = 450;
 
   function transition(next) {
     if (state === next) return;
@@ -381,6 +391,8 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     intent.target = null;
     intent.solverFeasible = false;
     intent.reachability = 'reachable';
+    // A fresh prediction obsoletes any solve still amortizing for the old one.
+    pendingSolve = null;
     transition(STATES.DECIDING);
   }
 
@@ -431,42 +443,90 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     const sideSpin = (targetPayload.length > 6 && Number.isFinite(targetPayload[6]))
       ? targetPayload[6]
       : 0;
-    let solverResult = solvePaddle({
-      targetX: targetPayload[0], targetZ: targetPayload[1],
-      targetSpeed: speed, targetSpin: spin, targetSideSpin: sideSpin,
-      contactPos: intent.predictedContact,
-      contactVel: intent.predictedContactBallVel,
-      contactSpin: intent.predictedContactBallSpin,
-      difficulty, env,
-    });
-    if (!solverResult.feasible) {
-      // Local safe-target fallback (spec §infeasibility_fallback, simplified
-      // to one in-process retry instead of a worker round-trip — Phase 1).
-      const safeResult = solvePaddle({
-        targetX: 0, targetZ: 0.7,
-        targetSpeed: 4.0, targetSpin: 0,
+    // The solve runs AMORTIZED: solvePaddleSteps yields between verification
+    // rollouts (up to 17 per solve, 34 with the safe fallback — a guaranteed
+    // frame hitch when run synchronously inside this worker-reply callback).
+    // update() steps the job a few rollouts per frame while the FSM sits in
+    // DECIDING — the same place it already waits on the worker round-trip —
+    // and drains it whole once contact gets close. finishTargetReceived
+    // carries everything downstream of the solver.
+    pendingSolve = {
+      gen: paddleSolveJob({
+        targetX: targetPayload[0], targetZ: targetPayload[1],
+        targetSpeed: speed, targetSpin: spin, targetSideSpin: sideSpin,
         contactPos: intent.predictedContact,
         contactVel: intent.predictedContactBallVel,
         contactSpin: intent.predictedContactBallSpin,
         difficulty, env,
+      }),
+      speed,
+      spin,
+    };
+    stepPendingSolve();
+  }
+
+  // First solve at the engine's target, then the safe-target fallback (spec
+  // §infeasibility_fallback, one in-process retry) when it comes back
+  // infeasible. Same sequencing as the old synchronous block.
+  function* paddleSolveJob(req) {
+    let solverResult = yield* solvePaddleSteps(req);
+    let usedSafe = false;
+    if (!solverResult.feasible) {
+      const safeResult = yield* solvePaddleSteps({
+        targetX: 0, targetZ: 0.7,
+        targetSpeed: 4.0, targetSpin: 0,
+        contactPos: req.contactPos,
+        contactVel: req.contactVel,
+        contactSpin: req.contactSpin,
+        difficulty: req.difficulty, env: req.env,
       });
       if (safeResult.feasible) {
         solverResult = safeResult;
-        // Re-point `intent` at the shot we are ACTUALLY playing. Previously
-        // only solverResult was swapped, leaving intent.target,
-        // intent.targetWorld and intent.shotType describing the abandoned
-        // aggressive shot — so the AI telegraphed a smash, sized its windup
-        // from the smash's speed (update() reads intent.target[2] for
-        // WINDUP_DEPTH_M_BY_POWER), and then played a 4 m/s centre ball. The
-        // mismatch reads as the AI flinching mid-stroke.
-        intent.target = [0, 0.7, 4.0, 0, 1.0, SHOT_TYPES.BLOCK];
-        intent.shotType = SHOT_TYPES.BLOCK;
-        intent.displayedShotType = SHOT_TYPES.BLOCK;
-        specTargetToWorld(0, 0.7, tableCenterZ(), tableSurfaceY, intent.targetWorld);
-        if (DEBUG_LOG) console.log('[AI FSM] solver fell back to safe target');
-      } else if (DEBUG_LOG) {
-        console.log('[AI FSM] solver infeasible even on safe target — honest miss');
+        usedSafe = true;
       }
+    }
+    return { solverResult, usedSafe };
+  }
+
+  // Advance the amortized paddle solve. Runs a few rollouts per frame while
+  // there's flight time to spare, and drains the whole job when the contact
+  // is close enough that waiting another frame could squeeze the swing.
+  function stepPendingSolve() {
+    if (!pendingSolve) return;
+    const remainingMs = intent.predictedContactPerfMs - performance.now();
+    const drainAll = !(remainingMs > SOLVE_DRAIN_BELOW_MS);
+    let steps = 0;
+    for (;;) {
+      const r = pendingSolve.gen.next();
+      if (r.done) {
+        const job = pendingSolve;
+        pendingSolve = null;
+        finishTargetReceived(r.value.solverResult, r.value.usedSafe, job);
+        return;
+      }
+      steps += 1;
+      if (!drainAll && steps >= SOLVE_ROLLOUTS_PER_FRAME) return;
+    }
+  }
+
+  // Everything downstream of the paddle solve: fallback re-pointing,
+  // reachability gate, imperfection dice, trajectory plan, MOVING transition.
+  function finishTargetReceived(solverResult, usedSafe, { speed, spin }) {
+    if (usedSafe) {
+      // Re-point `intent` at the shot we are ACTUALLY playing. Previously
+      // only solverResult was swapped, leaving intent.target,
+      // intent.targetWorld and intent.shotType describing the abandoned
+      // aggressive shot — so the AI telegraphed a smash, sized its windup
+      // from the smash's speed (update() reads intent.target[2] for
+      // WINDUP_DEPTH_M_BY_POWER), and then played a 4 m/s centre ball. The
+      // mismatch reads as the AI flinching mid-stroke.
+      intent.target = [0, 0.7, 4.0, 0, 1.0, SHOT_TYPES.BLOCK];
+      intent.shotType = SHOT_TYPES.BLOCK;
+      intent.displayedShotType = SHOT_TYPES.BLOCK;
+      specTargetToWorld(0, 0.7, tableCenterZ(), tableSurfaceY, intent.targetWorld);
+      if (DEBUG_LOG) console.log('[AI FSM] solver fell back to safe target');
+    } else if (!solverResult.feasible && DEBUG_LOG) {
+      console.log('[AI FSM] solver infeasible even on safe target — honest miss');
     }
     intent.solverFeasible = solverResult.feasible;
     intent.solverFaceNormal.copy(solverResult.faceNormal);
@@ -606,6 +666,10 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     if (paddle && paddle.faceCenterWorld) {
       recordAIContact(paddle.faceCenterWorld.x, paddle.faceCenterWorld.z);
     }
+    // Contact already happened — a solve still amortizing is for a swing
+    // that's over. (Normally impossible: the drain threshold resolves it
+    // well before contact.)
+    pendingSolve = null;
     transition(STATES.CONTACT);
     transition(STATES.RECOVERING);
   }
@@ -616,6 +680,8 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     // Drop any pending spin-read correction — it belongs to a rally that no
     // longer exists, and leaving it armed would fire against the next one.
     misreadCorrectionPending = false;
+    // Same for a solve still amortizing: its rally is gone.
+    pendingSolve = null;
     // And the pre-contact anticipation lean with it: the next rally opens
     // from a neutral ready position (receiving a serve with a stale lean
     // from last rally's aim point would be leaning at a ghost).
@@ -637,6 +703,9 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
 
   function update(dt) {
     const nowMs = performance.now();
+    // Advance any amortized paddle solve first — its completion drives the
+    // DECIDING → MOVING transition the state blocks below react to.
+    stepPendingSolve();
     // Style-aware base movement speed. paddle.movementMultiplier defaults
     // to 1.0 for allround; choppers get 1.25× (more ground coverage),
     // blockers get 0.90× (they stay close to the edge). Same value the
