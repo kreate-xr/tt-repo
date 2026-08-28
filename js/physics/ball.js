@@ -498,7 +498,8 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
     if (isEdgeStrike) {
       playPaddleEdgeSound(Math.min(swingSpeed / 3, 1.0), intensity, ctx.currCenter, weightShape);
     } else {
-      playPaddleHitSound(Math.min(swingSpeed / 3, 1.0), intensity, ctx.currCenter, weightShape);
+      playPaddleHitSound(Math.min(swingSpeed / 3, 1.0), intensity, ctx.currCenter, weightShape,
+        ctx.origin === 'player' ? 'self' : 'opponent');
     }
 
     // Haptic pulse — only fire on the local player's paddle. Remote / AI hits

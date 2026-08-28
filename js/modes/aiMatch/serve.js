@@ -1339,7 +1339,7 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
     // does (swing speed / 3, clamped).
     const speed = launchVel.length();
     try {
-      playPaddleHitSound(Math.min(speed / 3, 1.0), Math.min(speed / 8, 1.0), launchPos);
+      playPaddleHitSound(Math.min(speed / 3, 1.0), Math.min(speed / 8, 1.0), launchPos, undefined, 'opponent');
     } catch (_) { /* audio graph not up yet (pre-gesture) — not fatal */ }
 
     computeSwingTarget();

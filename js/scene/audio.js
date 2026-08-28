@@ -1,4 +1,7 @@
-// Synthesized sound effects via Web Audio API. No external audio files.
+// Sound effects via Web Audio API. Mostly synthesized; the ball bounce and
+// the two paddle face hits are recorded samples (public/sounds/ —
+// Ball_Bounce.wav, Paddle_Hit_Self.wav, Paddle_Hit_Opponent.wav) with the
+// synths kept as fallbacks while the samples load.
 //
 // Audio graph — one shared graph per page lifetime:
 //
@@ -51,15 +54,37 @@ const REVERB_WET_GAIN = 0.30;
 const REVERB_LP_CUTOFF = 4200;
 // Ambient bed — low-level filtered noise floor so silences between hits
 // don't sound synthetic. Tuned quiet enough to be pre-attentive; if you
-// notice it, it's too loud.
-const AMBIENT_GAIN = 0.024;
-// Distance model for spatial panners — refDistance is roughly the ball
-// radius from the head at close-quarters play, maxDistance covers the
-// full room. Rolloff 1.3 gives a subtle "away/near" cue without making
-// far bounces silent.
-const PANNER_REF_DISTANCE = 1.0;
+// notice it, it's too loud. Value is pre-compensated for MASTER_GAIN so the
+// bed's effective level stays where it was tuned (0.024 at unity master).
+const AMBIENT_GAIN = 0.008;
+// Distance model for spatial panners. refDistance 2.0 / rolloff 0.8 keeps a
+// far-table bounce (~3 m) at ~-3 dB instead of the ~-11 dB the old
+// refDistance 1.0 / rolloff 1.3 gave — enough attenuation to still read as
+// "over there" but not so much that rally sounds vanish at 100% headset
+// volume. maxDistance covers the full room.
+const PANNER_REF_DISTANCE = 2.0;
 const PANNER_MAX_DISTANCE = 20;
-const PANNER_ROLLOFF = 1.3;
+const PANNER_ROLLOFF = 0.8;
+
+// Master makeup gain. Every source in the graph is tuned conservatively
+// (intensity scaling, dry sends < 1, distance rolloff), which left the whole
+// mix ~10-15 dB under full scale. Driven hot on purpose — the limiter on the
+// master bus (see ensureAudioGraph) is what keeps this from clipping, so
+// loudness comes from limiting headroom, not from a clean-peak budget.
+const MASTER_GAIN = 3.0;
+
+// Loudness floor for impact one-shots. Physical intensity still scales the
+// sound, but a soft bounce maps to 50% gain rather than near-silence — below
+// this the Quest speakers render soft table contacts as inaudible. The
+// remaining 50% span keeps soft-vs-smash still clearly distinguishable.
+const IMPACT_GAIN_FLOOR = 0.5;
+function flooredGain(intensity) {
+  return IMPACT_GAIN_FLOOR + (1 - IMPACT_GAIN_FLOOR) * Math.min(Math.max(intensity, 0), 1);
+}
+
+// Recorded samples are peak-normalized to this level after decode so a quiet
+// take (Paddle_Hit_Opponent.wav peaks at -8 dBFS) plays as loud as a hot one.
+const SAMPLE_NORM_PEAK = 0.89; // ~-1 dBFS
 
 let audioCtx = null;
 function ctx() {
@@ -148,8 +173,24 @@ function ensureAudioGraph() {
   if (masterOut) return a;
 
   masterOut = a.createGain();
-  masterOut.gain.value = 1.0;
-  masterOut.connect(a.destination);
+  masterOut.gain.value = MASTER_GAIN;
+
+  // Brick-wall-ish limiter between master and destination. With MASTER_GAIN
+  // pushing the mix hotter, simultaneous hard smash + reverb tail can exceed
+  // full scale; fast attack keeps that from clipping while normal play stays
+  // below threshold and passes untouched.
+  const limiter = a.createDynamicsCompressor();
+  limiter.threshold.value = -6;
+  limiter.knee.value = 6;
+  limiter.ratio.value = 12;
+  limiter.attack.value = 0.002;
+  limiter.release.value = 0.15;
+  masterOut.connect(limiter).connect(a.destination);
+
+  // Kick off the sample fetches now — the graph is built on the first
+  // menu interaction, long before the first rally, so the buffers are ready
+  // by the time a ball lands.
+  ensureSamples(a);
 
   if (!ROOM_ACOUSTICS_ENABLED) return a;
 
@@ -359,10 +400,82 @@ export function updateAudioListener(cameraOrObject3D) {
 // center-listener with slight reverb tail.
 // ---------------------------------------------------------------------------
 
-// Single bandpass-filtered noise burst — bright plastic click, no bass body.
+// Recorded samples — one clean take each for the table bounce and the two
+// paddle face hits (the local player's and the opponent's, which are
+// different recordings so the far-side return reads differently from your
+// own contact). Loaded lazily (fetch + decodeAudioData, same flow as
+// crowdAudio.js); until a buffer is ready — or if its fetch fails (dev
+// server without the asset, offline) — the synthesized variants play
+// instead, so an impact is never silent.
+const SAMPLE_URLS = {
+  bounce: 'sounds/Ball_Bounce.wav',
+  paddleSelf: 'sounds/Paddle_Hit_Self.wav',
+  paddleOpponent: 'sounds/Paddle_Hit_Opponent.wav',
+};
+const sampleBuffers = {};
+let samplesLoadStarted = false;
+
+// Peak-normalize a decoded buffer in place to SAMPLE_NORM_PEAK. The takes
+// were recorded at different levels (opponent hit peaks 6 dB under the other
+// two); normalizing here means gain staging downstream can assume every
+// sample starts at the same loudness.
+function normalizeBuffer(buf) {
+  let peak = 0;
+  for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+    const data = buf.getChannelData(ch);
+    for (let i = 0; i < data.length; i++) {
+      const v = Math.abs(data[i]);
+      if (v > peak) peak = v;
+    }
+  }
+  if (peak > 0.0001) {
+    const scale = SAMPLE_NORM_PEAK / peak;
+    for (let ch = 0; ch < buf.numberOfChannels; ch++) {
+      const data = buf.getChannelData(ch);
+      for (let i = 0; i < data.length; i++) data[i] *= scale;
+    }
+  }
+  return buf;
+}
+
+function ensureSamples(a) {
+  if (samplesLoadStarted) return;
+  samplesLoadStarted = true;
+  for (const [name, url] of Object.entries(SAMPLE_URLS)) {
+    fetch(url)
+      .then((res) => {
+        if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
+        return res.arrayBuffer();
+      })
+      .then((arr) => a.decodeAudioData(arr))
+      .then((buf) => { sampleBuffers[name] = normalizeBuffer(buf); })
+      .catch(() => { /* synth fallback stays active */ });
+  }
+}
+
 export function playBounceSound(volume, position) {
   const a = ensureAudioGraph();
+  ensureSamples(a);
   const intensity = Math.min(Math.max(volume, 0), 1.0);
+
+  if (sampleBuffers.bounce) {
+    const src = a.createBufferSource();
+    src.buffer = sampleBuffers.bounce;
+    // Pitch tracks impact like the old synth's filter did (harder hit →
+    // brighter), plus a small random jitter so rapid bounces don't sound
+    // machine-gun identical.
+    src.playbackRate.value =
+      (0.94 + 0.12 * intensity) * (1 + (Math.random() - 0.5) * 0.06);
+
+    const gain = a.createGain();
+    gain.gain.value = flooredGain(intensity);
+
+    const head = acquireImpactHead(position, { dry: 0.9, wet: 0.5 });
+    src.connect(gain).connect(head);
+    src.start();
+    return;
+  }
+
   const duration = 0.04;
   const bufferSize = a.sampleRate * duration;
   const buffer = a.createBuffer(1, bufferSize, a.sampleRate);
@@ -381,7 +494,7 @@ export function playBounceSound(volume, position) {
   bandpass.Q.value = 2.5;
 
   const gain = a.createGain();
-  gain.gain.setValueAtTime(intensity, a.currentTime);
+  gain.gain.setValueAtTime(flooredGain(intensity), a.currentTime);
   gain.gain.exponentialRampToValueAtTime(0.001, a.currentTime + duration);
 
   const head = acquireImpactHead(position, { dry: 0.9, wet: 0.5 });
@@ -399,10 +512,17 @@ export function playBounceSound(volume, position) {
 // ({ bodyFreqScale, bodyDecayScale, bodyGainScale }). It moves the sub-bass
 // body only — the rubber click on top is a property of the rubber, not the
 // blade mass. Omitted → neutral, byte-identical to the pre-weight sound.
-export function playPaddleHitSound(volume, intensity, position, shape) {
+//
+// `hitter` picks which recorded sample plays: 'opponent' for the AI/remote
+// paddle, anything else (including omitted) for the local player's.
+export function playPaddleHitSound(volume, intensity, position, shape, hitter) {
   const a = ensureAudioGraph();
+  ensureSamples(a);
   const t = a.currentTime;
   const vol = Math.min(volume, 1.0);
+  // outVol drives amplitude; vol/k keep the raw physical value for pitch and
+  // timbre so a soft touch still *sounds* soft, just not inaudible.
+  const outVol = flooredGain(vol);
   const k = intensity != null ? Math.min(Math.max(intensity, 0), 1) : vol;
   const freqScale  = shape && shape.bodyFreqScale  > 0 ? shape.bodyFreqScale  : 1;
   const decayScale = shape && shape.bodyDecayScale > 0 ? shape.bodyDecayScale : 1;
@@ -411,6 +531,27 @@ export function playPaddleHitSound(volume, intensity, position, shape) {
   // Sub-bass gets less reverb than the click — real halls carry mids further,
   // but a wet low-end here would smear into a boom on hard smashes.
   const head = acquireImpactHead(position, { dry: 0.9, wet: 0.55 });
+
+  const hitBuffer = hitter === 'opponent'
+    ? sampleBuffers.paddleOpponent
+    : sampleBuffers.paddleSelf;
+  if (hitBuffer) {
+    const src = a.createBufferSource();
+    src.buffer = hitBuffer;
+    // Pitch tracks impact intensity (harder hit → slightly brighter) with a
+    // small random jitter so fast rallies don't sound machine-gun identical.
+    // Blade weight folds into the rate: a heavier bat rings lower, same cue
+    // the synth body's freqScale carries.
+    src.playbackRate.value =
+      (0.96 + 0.08 * k) * freqScale * (1 + (Math.random() - 0.5) * 0.05);
+
+    const gain = a.createGain();
+    gain.gain.value = outVol * gainScale;
+
+    src.connect(gain).connect(head);
+    src.start(t);
+    return;
+  }
 
   // Layer 1 — rubber-on-plastic click. Existing 2200 Hz bandpass, unchanged.
   const bufferSize = a.sampleRate * 0.025;
@@ -428,7 +569,7 @@ export function playPaddleHitSound(volume, intensity, position, shape) {
   filter.Q.value = 0.8;
 
   const clickGain = a.createGain();
-  clickGain.gain.setValueAtTime(vol * 0.9, t);
+  clickGain.gain.setValueAtTime(outVol * 0.9, t);
   clickGain.gain.exponentialRampToValueAtTime(0.001, t + 0.04);
 
   noiseSrc.connect(filter).connect(clickGain).connect(head);
@@ -451,7 +592,7 @@ export function playPaddleHitSound(volume, intensity, position, shape) {
   body.frequency.exponentialRampToValueAtTime(
     Math.max(40, bodyFreq * 0.7), t + bodyDecay * 0.9,
   );
-  bodyGain.gain.setValueAtTime(Math.min(1, vol * 0.58 * gainScale), t);
+  bodyGain.gain.setValueAtTime(Math.min(1, outVol * 0.58 * gainScale), t);
   bodyGain.gain.exponentialRampToValueAtTime(0.001, t + bodyDecay);
 
   body.connect(bodyGain).connect(head);
@@ -468,6 +609,7 @@ export function playPaddleEdgeSound(volume, intensity, position, shape) {
   const a = ensureAudioGraph();
   const t = a.currentTime;
   const vol = Math.min(volume, 1.0);
+  const outVol = flooredGain(vol);
   const k = intensity != null ? Math.min(Math.max(intensity, 0), 1) : vol;
   const freqScale  = shape && shape.bodyFreqScale  > 0 ? shape.bodyFreqScale  : 1;
   const decayScale = shape && shape.bodyDecayScale > 0 ? shape.bodyDecayScale : 1;
@@ -489,7 +631,7 @@ export function playPaddleEdgeSound(volume, intensity, position, shape) {
   filter.Q.value = 2.4;
 
   const clickGain = a.createGain();
-  clickGain.gain.setValueAtTime(vol * 1.05, t);
+  clickGain.gain.setValueAtTime(outVol * 1.05, t);
   clickGain.gain.exponentialRampToValueAtTime(0.001, t + dur);
 
   noiseSrc.connect(filter).connect(clickGain).connect(head);
@@ -502,7 +644,7 @@ export function playPaddleEdgeSound(volume, intensity, position, shape) {
   osc.type = 'sine';
   osc.frequency.setValueAtTime((2800 + 400 * k) * freqScale, t);
   osc.frequency.exponentialRampToValueAtTime(1800 * freqScale, t + ringDecay * 0.85);
-  oscGain.gain.setValueAtTime(vol * 0.22, t);
+  oscGain.gain.setValueAtTime(outVol * 0.22, t);
   oscGain.gain.exponentialRampToValueAtTime(0.001, t + ringDecay);
   osc.connect(oscGain).connect(head);
   osc.start(t);
@@ -721,9 +863,8 @@ export function playMenuSelectClick() {
 
 // Umpire's whistle — two short blasts, called when the local player fouls.
 //
-// Synthesized rather than sampled: public/ carries only the three crowd
-// tracks, and a rules call needs a sound that is unmistakably NOT part of
-// the rally. A real pea whistle is a strong ~2.4kHz tone plus a slightly
+// Synthesized rather than sampled: a rules call needs a sound that is
+// unmistakably NOT part of the rally. A real pea whistle is a strong ~2.4kHz tone plus a slightly
 // detuned partial, warbling as the pea rattles, over a breathy noise floor.
 // That combination is what makes it read as a whistle rather than a beep,
 // so all three parts are here.

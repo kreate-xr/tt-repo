@@ -1,0 +1,181 @@
+<!-- TEMPORARY dev-only preview for choosing the ball-bounce sample.
+     Not part of the game — safe to delete. Open at /bounce-preview.html
+
+     Plays the four candidate bounce samples in public/sounds/ through the
+     SAME playback chain audio.js uses: intensity → gain + playbackRate
+     ((0.94 + 0.12·i) ± 3% jitter), dry 0.9 to master, wet 0.5 through a
+     synthesized hall IR (RT60 1.35 s, LP 4.2 kHz, return 0.30) — so what
+     you hear here is what the headset will play.
+
+     Candidates:
+       A  bounce-a.wav  current shipped sound (bright ping, 280 ms, has
+                        recorded room tail)
+       B  bounce-b.wav  same recording, tightened: 140 ms, monotonic decay,
+                        lows restored (90 Hz HP instead of 180 Hz)
+       C  bounce-c.wav  pure synthesis from published TT acoustics: ball
+                        shell modes 5.9/8.6/11 kHz + plywood board modes
+                        160-1300 Hz. Warmer "tock".
+       D  bounce-d.wav  hybrid: real recorded attack/ping + synthesized
+                        board body. Balanced.                                -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Bounce sound preview</title>
+<style>
+  body { background:#0e1116; margin:0; font-family:system-ui,sans-serif; color:#dde;
+         display:flex; flex-direction:column; align-items:center; padding:40px 16px; }
+  h1 { font-size:18px; font-weight:600; letter-spacing:.02em; }
+  p.note { font-size:12px; color:#8ab; max-width:560px; text-align:center; line-height:1.6; }
+  .grid { display:grid; grid-template-columns:repeat(4, 1fr); gap:14px; margin:22px 0 10px; }
+  .card { background:#161b24; border:1px solid #223; border-radius:10px; padding:14px 16px;
+          width:170px; }
+  .card h2 { font-size:15px; margin:0 0 2px; }
+  .card .desc { font-size:11px; color:#9ab; line-height:1.5; min-height:56px; }
+  .card button { display:block; width:100%; margin-top:6px; padding:7px 0; border-radius:6px;
+                 border:1px solid #345; background:#1d2634; color:#cde; font-size:12px;
+                 cursor:pointer; }
+  .card button:hover { background:#26334a; }
+  .card button.hard { border-color:#467; }
+  .row { display:flex; gap:14px; align-items:center; margin-top:14px; font-size:13px; }
+  .row button { padding:8px 18px; border-radius:6px; border:1px solid #345; background:#1d2634;
+                color:#cde; cursor:pointer; font-size:13px; }
+  .row button.active { background:#2b4a2f; border-color:#4a7; }
+  #hint { margin-top:26px; font-size:11px; color:#667; line-height:1.8; text-align:center; }
+</style>
+</head>
+<body>
+<h1>Ball-bounce sample A/B</h1>
+<p class="note">Click anywhere once to unlock audio. Each button plays through the game's
+exact chain (intensity→pitch/gain mapping + the hall reverb the arena adds). "Rally" loops
+bounces at match cadence with varied intensity — judge with that, single hits lie.</p>
+
+<div class="grid" id="cards"></div>
+
+<div class="row">
+  <button id="reverb" class="active">hall reverb: ON</button>
+  <button id="rally">▶ rally loop</button>
+  <span id="rallyWith" style="font-size:12px;color:#9ab;"></span>
+</div>
+
+<div id="hint">
+  keys 1-4 = soft hit &nbsp;|&nbsp; shift+1-4 = hard hit &nbsp;|&nbsp; r = toggle rally on last-played<br>
+  files: public/sounds/bounce-[a-d].wav — tell Claude which letter wins and the rest get deleted
+</div>
+
+<script type="module">
+const CANDS = [
+  { key:'a', name:'A — current',  desc:'Shipped now. Bright real ping, long recorded room tail (280 ms).' },
+  { key:'b', name:'B — tight',    desc:'Same recording, cut to 140 ms, monotonic decay, lows restored.' },
+  { key:'c', name:'C — synth',    desc:'Pure synthesis from published TT acoustics. Warm wooden "tock".' },
+  { key:'d', name:'D — hybrid',   desc:'Real recorded ping + synthesized table-board body. Balanced.' },
+];
+
+const ctx = new AudioContext();
+const master = ctx.createGain();
+master.connect(ctx.destination);
+
+// Same hall IR the game builds (audio.js buildHallIR, RT60 1.35 s).
+function buildHallIR(rt60) {
+  const len = Math.floor(ctx.sampleRate * rt60);
+  const buf = ctx.createBuffer(2, len, ctx.sampleRate);
+  const decayRate = 6.907 / rt60;
+  for (let chn = 0; chn < 2; chn++) {
+    const data = buf.getChannelData(chn);
+    for (let i = 0; i < len; i++) {
+      const t = i / ctx.sampleRate;
+      const bt = Math.max(0, t - 0.008);
+      data[i] = (Math.random()*2-1) * (1-Math.exp(-bt/0.025)) * Math.exp(-decayRate*t);
+    }
+  }
+  return buf;
+}
+const convolver = ctx.createConvolver();
+convolver.buffer = buildHallIR(1.35);
+const lp = ctx.createBiquadFilter();
+lp.type = 'lowpass'; lp.frequency.value = 4200; lp.Q.value = 0.5;
+const wetReturn = ctx.createGain();
+wetReturn.gain.value = 0.30;
+convolver.connect(lp).connect(wetReturn).connect(master);
+
+let reverbOn = true;
+const buffers = {};
+for (const c of CANDS) {
+  fetch(`sounds/bounce-${c.key}.wav`)
+    .then(r => r.arrayBuffer()).then(a => ctx.decodeAudioData(a))
+    .then(b => { buffers[c.key] = b; })
+    .catch(e => console.warn('load failed', c.key, e));
+}
+
+// Mirrors audio.js playBounceSound sample path.
+function play(key, intensity) {
+  const buf = buffers[key];
+  if (!buf) return;
+  ctx.resume();
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.playbackRate.value = (0.94 + 0.12*intensity) * (1 + (Math.random()-0.5)*0.06);
+  const g = ctx.createGain();
+  g.gain.value = intensity;
+  const dry = ctx.createGain();
+  dry.gain.value = 0.9;
+  src.connect(g).connect(dry).connect(master);
+  if (reverbOn) {
+    const wet = ctx.createGain();
+    wet.gain.value = 0.5;
+    g.connect(wet).connect(convolver);
+  }
+  src.start();
+  lastKey = key;
+}
+
+let lastKey = 'a';
+const cardsEl = document.getElementById('cards');
+for (const c of CANDS) {
+  const el = document.createElement('div');
+  el.className = 'card';
+  el.innerHTML = `<h2>${c.name}</h2><div class="desc">${c.desc}</div>`;
+  for (const [label, i, cls] of [['soft (0.35)', 0.35, ''], ['medium (0.6)', 0.6, ''], ['hard (1.0)', 1.0, 'hard']]) {
+    const b = document.createElement('button');
+    b.textContent = label; b.className = cls;
+    b.onclick = () => play(c.key, i);
+    el.appendChild(b);
+  }
+  cardsEl.appendChild(el);
+}
+
+const reverbBtn = document.getElementById('reverb');
+reverbBtn.onclick = () => {
+  reverbOn = !reverbOn;
+  reverbBtn.textContent = `hall reverb: ${reverbOn ? 'ON' : 'OFF'}`;
+  reverbBtn.classList.toggle('active', reverbOn);
+};
+
+// Rally loop — bounce cadence of a real rally (~0.55 s between bounces),
+// intensity varied like real play so machine-gun repetition shows up.
+let rallyTimer = null;
+const rallyBtn = document.getElementById('rally');
+const rallyWith = document.getElementById('rallyWith');
+function stopRally() {
+  clearInterval(rallyTimer); rallyTimer = null;
+  rallyBtn.textContent = '▶ rally loop'; rallyWith.textContent = '';
+}
+function startRally(key) {
+  stopRally();
+  rallyBtn.textContent = '■ stop';
+  rallyWith.textContent = `playing ${key.toUpperCase()}`;
+  const tick = () => play(key, 0.4 + Math.random()*0.55);
+  tick();
+  rallyTimer = setInterval(tick, 480 + Math.random()*160);
+}
+rallyBtn.onclick = () => rallyTimer ? stopRally() : startRally(lastKey);
+
+addEventListener('keydown', (e) => {
+  const m = /^Digit([1-4])$/.exec(e.code);
+  if (m) play(CANDS[+m[1]-1].key, e.shiftKey ? 1.0 : 0.35);
+  if (e.key === 'r') rallyTimer ? stopRally() : startRally(lastKey);
+});
+addEventListener('pointerdown', () => ctx.resume(), { once:true });
+</script>
+</body>
+</html>
