@@ -177,6 +177,22 @@ const prevPaddleFaceNormal = new THREE.Vector3(0, 1, 0);
 let hadControllerPos = false;
 let hadControllerQuat = false;
 let lastHitTime = 0;
+// Reused player-paddle collision context. The vector fields are re-pointed
+// each frame in tickPhysics before use; the closures capture the module-scope
+// lastHitTime once instead of being re-allocated per frame.
+const _playerCollisionCtx = {
+  origin: 'player',
+  prevCenter: null,
+  currCenter: null,
+  prevNormal: null,
+  currNormal: null,
+  velocity: null,
+  angularVelocity: null,
+  pivot: null,
+  hitRadius: 0,
+  getLastHit: () => lastHitTime,
+  setLastHit: (t) => { lastHitTime = t; },
+};
 // -Infinity, not 0: clockTime is an arbitrary-origin clock, so a 0 sentinel
 // would swallow the first real net contact of any ball spawned within
 // NET_HIT_COOLDOWN of clock start.
@@ -776,41 +792,54 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
     // teleport-during-tracking-hiccup register as a swing at 40+ m/s.
     // AI paddles are unaffected — their pose is authoritative, not tracked.
     if (xrController && hadControllerPos && !trackingShouldSuppressContact()) {
-      tryPaddleCollision({
-        origin: 'player',
-        prevCenter: prevPaddleFaceCenter,
-        currCenter: paddleFaceCenterWorld,
-        prevNormal: prevPaddleFaceNormal,
-        currNormal: paddleFaceNormalWorld,
-        velocity: paddleVelocity,
-        angularVelocity: paddleAngularVelocity,
-        // Face-center reference for the ω×r term. paddleVelocity is the
-        // finite-diff of velFaceCenter (raw face center when opts.getRawPose
-        // is live, smoothed otherwise), so the pivot must be that SAME point
-        // (not the controller grip, and not the other pose's face center) or
-        // the wrist-rotation contribution gets double-counted.
-        pivot: velFaceCenter,
-        hitRadius: paddleHitRadius,
-        getLastHit: () => lastHitTime,
-        setLastHit: (t) => { lastHitTime = t; },
-      }, prevBallPos, dt, clockTime);
+      // Reused context object (module scope) — rebuilding the literal plus its
+      // two closures every frame violated the no-allocation rule above.
+      // Face-center reference for the ω×r term: paddleVelocity is the
+      // finite-diff of velFaceCenter (raw face center when opts.getRawPose
+      // is live, smoothed otherwise), so the pivot must be that SAME point
+      // (not the controller grip, and not the other pose's face center) or
+      // the wrist-rotation contribution gets double-counted.
+      _playerCollisionCtx.prevCenter = prevPaddleFaceCenter;
+      _playerCollisionCtx.currCenter = paddleFaceCenterWorld;
+      _playerCollisionCtx.prevNormal = prevPaddleFaceNormal;
+      _playerCollisionCtx.currNormal = paddleFaceNormalWorld;
+      _playerCollisionCtx.velocity = paddleVelocity;
+      _playerCollisionCtx.angularVelocity = paddleAngularVelocity;
+      _playerCollisionCtx.pivot = velFaceCenter;
+      _playerCollisionCtx.hitRadius = paddleHitRadius;
+      tryPaddleCollision(_playerCollisionCtx, prevBallPos, dt, clockTime);
     }
 
     // --- Paddle-ball collision (AI opponent paddles) ---
     for (const ap of aiPaddles) {
       const face = ap.getFace();
       if (ap.hadState && (!ap.isActive || ap.isActive())) {
-        tryPaddleCollision({
-          origin: ap.id,
-          prevCenter: ap.prevCenter,
-          currCenter: face.center,
-          prevNormal: ap.prevNormal,
-          currNormal: face.normal,
-          velocity: face.velocity,
-          hitRadius: ap.hitRadius,
-          getLastHit: () => ap.lastHitTime,
-          setLastHit: (t) => { ap.lastHitTime = t; },
-        }, prevBallPos, dt, clockTime);
+        // Per-paddle context built once at first contact check and reused
+        // every frame after — the old per-frame literal + closures were an
+        // allocation on the hot path.
+        let ctx = ap._collisionCtx;
+        if (!ctx) {
+          ctx = ap._collisionCtx = {
+            origin: ap.id,
+            prevCenter: null,
+            currCenter: null,
+            prevNormal: null,
+            currNormal: null,
+            velocity: null,
+            angularVelocity: null,
+            pivot: null,
+            hitRadius: 0,
+            getLastHit: () => ap.lastHitTime,
+            setLastHit: (t) => { ap.lastHitTime = t; },
+          };
+        }
+        ctx.prevCenter = ap.prevCenter;
+        ctx.currCenter = face.center;
+        ctx.prevNormal = ap.prevNormal;
+        ctx.currNormal = face.normal;
+        ctx.velocity = face.velocity;
+        ctx.hitRadius = ap.hitRadius;
+        tryPaddleCollision(ctx, prevBallPos, dt, clockTime);
       }
       ap.prevCenter.copy(face.center);
       ap.prevNormal.copy(face.normal);
@@ -827,12 +856,17 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       let tEnter = -Infinity, tExit = Infinity;
       let hitAxis = null;
       let miss = false;
-      const axes = [
-        ['x', prevBallPos.x, dirX, netBox.min.x, netBox.max.x],
-        ['y', prevBallPos.y, dirY, netBox.min.y, netBox.max.y],
-        ['z', prevBallPos.z, dirZ, netBox.min.z, netBox.max.z],
-      ];
-      for (const [axis, o, d, mn, mx] of axes) {
+      // Slab test with the axis rows selected by index — the previous
+      // array-of-rows form allocated four arrays per frame on the hot path.
+      for (let axisI = 0; axisI < 3; axisI++) {
+        let axis, o, d, mn, mx;
+        if (axisI === 0) {
+          axis = 'x'; o = prevBallPos.x; d = dirX; mn = netBox.min.x; mx = netBox.max.x;
+        } else if (axisI === 1) {
+          axis = 'y'; o = prevBallPos.y; d = dirY; mn = netBox.min.y; mx = netBox.max.y;
+        } else {
+          axis = 'z'; o = prevBallPos.z; d = dirZ; mn = netBox.min.z; mx = netBox.max.z;
+        }
         if (Math.abs(d) < 1e-9) {
           if (o < mn || o > mx) { miss = true; break; }
           continue;

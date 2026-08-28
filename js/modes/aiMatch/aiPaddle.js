@@ -92,15 +92,20 @@ export class AIPaddle {
 
     scene.add(this.group);
 
+    // Stable face object — tickPhysics calls getFace() every frame, so
+    // returning a fresh literal each call was per-frame garbage. The three
+    // vectors are mutated in place (copy/lerp), never reassigned, so the
+    // shared references stay live.
+    this._face = {
+      center: this.faceCenterWorld,
+      normal: this.faceNormalWorld,
+      velocity: this.velocityWorld,
+    };
     this.handle = registerAIPaddle({
       id: AI_PADDLE_ID,
       hitRadius: HIT_RADIUS,
       isActive: () => this._collisionEnabled,
-      getFace: () => ({
-        center: this.faceCenterWorld,
-        normal: this.faceNormalWorld,
-        velocity: this.velocityWorld,
-      }),
+      getFace: () => this._face,
     });
   }
 
@@ -172,11 +177,10 @@ export class AIPaddle {
       this.faceCenterWorld.add(_tmpClampDelta);
     }
     this.group.position.copy(this.faceCenterWorld);
-    const q = new THREE.Quaternion().setFromUnitVectors(
+    this.group.quaternion.setFromUnitVectors(
       paddleFaceNormalLocal,
       this.faceNormalWorld,
     );
-    this.group.quaternion.copy(q);
   }
 
   // Move the paddle toward (targetPosition, targetNormal) over dt seconds,
@@ -213,11 +217,10 @@ export class AIPaddle {
     }
 
     this.group.position.copy(this.faceCenterWorld);
-    const q = new THREE.Quaternion().setFromUnitVectors(
+    this.group.quaternion.setFromUnitVectors(
       paddleFaceNormalLocal,
       this.faceNormalWorld,
     );
-    this.group.quaternion.copy(q);
   }
 
   // Refresh the per-frame velocity from finite-difference. Must be called

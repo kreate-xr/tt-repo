@@ -1182,6 +1182,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // interval: correct motion, just sampled once less.
   let lastFrameTimeMs = -1;
   let physicsTimeS = 0; // monotonic sim clock for hit/net cooldowns + squash
+  // Reused per-frame options for tickPhysics — a fresh literal here was one
+  // more allocation inside the frame loop.
+  const tickPhysicsOpts = { ballOwned: true, getRawPose: null };
   renderer.setAnimationLoop((timeMs, frame) => {
     let dt = (lastFrameTimeMs >= 0 && timeMs > lastFrameTimeMs)
       ? (timeMs - lastFrameTimeMs) / 1000
@@ -1268,7 +1271,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // pose so the pseudo-haptic smoothing can't attenuate brush-stroke spin;
     // contact geometry still reads the smoothed anchor.
     const paddleNode = xr.getPaddleAnchor() || xr.getActiveController();
-    tickPhysics(dt, paddleNode, physicsTimeS, { ballOwned, getRawPose: xr.getRawPaddlePose });
+    tickPhysicsOpts.ballOwned = ballOwned;
+    tickPhysicsOpts.getRawPose = xr.getRawPaddlePose;
+    tickPhysics(dt, paddleNode, physicsTimeS, tickPhysicsOpts);
 
     // Decide where the menu lives, then run poke first (fingertip proxy) and
     // fall back to laser hover if poke didn't engage.
