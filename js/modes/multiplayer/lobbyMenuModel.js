@@ -68,9 +68,12 @@ export class LobbyMenuModel {
     this.screen = MP_SCREENS.HOSTING;
     this.message = 'Creating room…';
     this.error = null;
-    this.lobby = this.createLobby();
     this._changed();
     try {
+      // Inside the try: the factory may throw when the lazily-loaded lobby
+      // stack isn't ready yet — that lands on the friendly retryable error
+      // path instead of escaping as an unhandled rejection.
+      this.lobby = this.createLobby();
       const { code, ready } = this.lobby.createRoom();
       this.hostCode = code;
       this.message = 'Share this code — waiting for your opponent…';
@@ -117,9 +120,10 @@ export class LobbyMenuModel {
     this.screen = MP_SCREENS.CONNECTING;
     this.message = `Joining ${code}…`;
     this.error = null;
-    this.lobby = this.createLobby();
     this._changed();
     try {
+      // Same containment as startCreate: a throwing factory fails friendly.
+      this.lobby = this.createLobby();
       const nm = await this.lobby.joinRoom(code);
       if (this.session !== my) return;
       this._deliver(nm);

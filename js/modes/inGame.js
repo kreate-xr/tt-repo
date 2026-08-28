@@ -32,7 +32,18 @@ import {
 } from '../scene/wristMenu.js';
 import { TrainingMenu } from '../scene/trainingMenu.js';
 import { MultiplayerMenu } from '../scene/multiplayerMenu.js';
-import { LobbyManager } from '../lobby/LobbyManager.js';
+// LobbyManager pulls in the signaling/WebRTC stack including the Firebase
+// SDK (~1 MB of parse on the Quest CPU). Loaded in the background once the
+// XR session starts (see startInGame) so the initial page bundle — and every
+// solo/AI session that never opens multiplayer — doesn't pay for it.
+let LobbyManagerCtor = null;
+function preloadLobbyManager() {
+  if (!LobbyManagerCtor) {
+    import('../lobby/LobbyManager.js')
+      .then((m) => { LobbyManagerCtor = m.LobbyManager; })
+      .catch((err) => console.error('[multiplayer] lobby stack failed to load', err));
+  }
+}
 import * as profileStore from '../profile/store.js';
 import { PhysicsTuner } from '../scene/physicsTuner.js';
 import { CalibrationWizard } from '../scene/calibrationWizard.js';
@@ -619,7 +630,19 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // { networkManager, role, lobby } bundle the 2D start screen hands through,
   // so the drill (and session-end teardown, which reads `multiplayer`) can't
   // tell the two entry paths apart.
-  const mpMenu = new MultiplayerMenu({ createLobby: () => new LobbyManager() });
+  // The lobby stack loads in the background from session start; by the time
+  // a user has navigated wrist menu → MULTI → CREATE/JOIN it is resolved. On
+  // the (slow-network) chance it isn't, the factory throws inside the menu
+  // model's try and surfaces as its friendly retryable error.
+  preloadLobbyManager();
+  const mpMenu = new MultiplayerMenu({
+    createLobby: () => {
+      if (!LobbyManagerCtor) {
+        throw new Error('MP_STACK_LOADING: multiplayer is still loading — try again in a moment');
+      }
+      return new LobbyManagerCtor();
+    },
+  });
   scene.add(mpMenu.mesh);
   mpMenu.on('back', onTunerBack);
   mpMenu.on('connected', (mp) => {

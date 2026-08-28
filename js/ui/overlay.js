@@ -4,8 +4,14 @@
 //     connection BEFORE entering XR, then both peers click Enter MR with the
 //     live NetworkManager handed through.
 
-import { LobbyManager } from '../lobby/LobbyManager.js';
 import { friendlyLobbyError } from '../lobby/lobbyErrors.js';
+
+// LobbyManager drags in the signaling/WebRTC stack including the Firebase
+// SDK (~1 MB of parse on the Quest CPU) — lazy-loaded on the first
+// Create/Join click so solo and AI sessions never pay for it.
+function loadLobbyManager() {
+  return import('../lobby/LobbyManager.js');
+}
 import { XR_MODES, XR_MODE_STORAGE_KEY, resolveStoredMode } from './xrModes.js';
 
 export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, startDesktop }) {
@@ -154,10 +160,12 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
   async function handleCreate() {
     await resetLobby();
     const mySession = lobbySession;
-    lobby = new LobbyManager();
     setEnterMrEnabled(false, 'Waiting for opponent…');
     setMpStatus('Creating room…');
     try {
+      const { LobbyManager } = await loadLobbyManager();
+      if (lobbySession !== mySession) return; // cancelled while loading
+      lobby = new LobbyManager();
       const { code, ready } = lobby.createRoom();
       setMpStatus(`Room code: ${code} — share it with your opponent and wait here. (Click Create again for a new code.)`);
       const nm = await ready;
@@ -180,10 +188,12 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     }
     await resetLobby();
     const mySession = lobbySession;
-    lobby = new LobbyManager();
     setEnterMrEnabled(false, 'Connecting to host…');
     setMpStatus(`Joining ${code}…`);
     try {
+      const { LobbyManager } = await loadLobbyManager();
+      if (lobbySession !== mySession) return; // cancelled while loading
+      lobby = new LobbyManager();
       const nm = await lobby.joinRoom(code);
       if (lobbySession !== mySession) return; // cancelled or replaced meanwhile
       onLobbyConnected(nm, 'guest');
