@@ -44,9 +44,13 @@ const HIT_RADIUS = 0.09;
 // interception.planTrajectory. It previously governed only idle drift, while
 // reach was gated on the (much higher) strike cap — so these numbers existed
 // but changed nothing during a rally.
+// Intermediate 4.0 → 4.3 in the playability retune (2026-08-28): the tier's
+// shot pace came down ~20% (see PROFILE_OVERRIDES.intermediate), and coverage
+// went up in exchange, so it stays hard to beat — by retrieving your shots
+// and out-rallying you rather than by hitting past you. Still below pro.
 export const MOVEMENT_SPEED_MPS = {
   beginner: 1.5,
-  intermediate: 4.0,
+  intermediate: 4.3,
   pro: 4.5,
 };
 

@@ -118,11 +118,12 @@ export const SHOT_PROFILES = Object.freeze({
 // levels is how hard the ATTACKING shots come: loop, drive, smash, flip.
 //
 //   beginner     — attacking strokes damped; touch shots at base pace
-//   intermediate — international. Attacking strokes set to the top of what the
-//                  solver can actually DELIVER (smash 17, drive 14, loop 12.5),
-//                  which is the low end of a real international loop's
-//                  15-25 m/s; touch shots only modestly lifted
-//   pro          — above international; ~1.12x on attacking strokes
+//   intermediate — strong tournament player. Attacking strokes ~20% under
+//                  the deliverable ceiling (smash 13.5, drive 11, loop 10)
+//                  after the 2026-08-28 playability retune — see the note on
+//                  the intermediate block; touch shots only modestly lifted
+//   pro          — international pace; the top of the deliverable envelope
+//                  on attacking strokes
 //
 // Spin is overridden per tier too, for two separate reasons — but NOT to make
 // the upper tiers spinnier. Spin here is physical rps under the physical
@@ -211,11 +212,20 @@ export const PROFILE_OVERRIDES = Object.freeze({
   // feasible; -40 ≈ -100 now, ~0%). The base `chop` profile at -55 mean /
   // -64 min sits partly outside that, so chop and slice carry spin
   // overrides here. Topspin has no such ceiling inside the deliverable band.
+  // Playability retune (2026-08-28): the first international pass set the
+  // attacking means at the top of the deliverable envelope (smash 17, drive
+  // 14, loop 12.5) and headset feedback was unambiguous — the tier was
+  // unplayable, points ended on pace before a rally could develop. Attacking
+  // strokes came down ~20% to "strong tournament player" pace: clearly a
+  // step above CLUB, clearly below ELITE, and slow enough that a ball hit AT
+  // you is returnable. The tier's difficulty now leans on placement,
+  // consistency and footwork (see MOVEMENT_SPEED_MPS and the miss-rate
+  // table) rather than on shots the player physically cannot reach.
   intermediate: {
-    smash:         { speedMean: 17.0, speedSigma: 2.0, speedMin: 14.0, speedMax: 20.0 },
-    topspin_drive: { speedMean: 14.0, speedSigma: 2.0, speedMin: 11.0, speedMax: 18.0 },
-    loop:          { speedMean: 12.5, speedSigma: 1.8, speedMin: 10.0, speedMax: 16.0 },
-    flip:          { speedMean: 10.5, speedSigma: 1.4, speedMin:  8.0, speedMax: 13.5 },
+    smash:         { speedMean: 13.5, speedSigma: 1.6, speedMin: 11.0, speedMax: 16.0 },
+    topspin_drive: { speedMean: 11.0, speedSigma: 1.6, speedMin:  8.5, speedMax: 14.0 },
+    loop:          { speedMean: 10.0, speedSigma: 1.4, speedMin:  8.0, speedMax: 12.5 },
+    flip:          { speedMean:  9.0, speedSigma: 1.2, speedMin:  7.0, speedMax: 11.5 },
     block:         { speedMean:  7.0, speedSigma: 1.5, speedMin:  4.7, speedMax: 10.1 },
     slice:         { speedMean:  7.5, speedSigma: 1.4, speedMin:  5.5, speedMax: 10.2,
                      spinMean: -42, spinSigma: 9, spinMin: -60, spinMax: -25 },
@@ -344,19 +354,21 @@ export const BASE_TYPE_WEIGHTS = Object.freeze({
     chop:          0.0,
     flip:          0.0,
   },
-  // International: the full vocabulary is in play. Loop is the backbone of
-  // modern high-level rallies, smash is a real threat rather than a rarity,
-  // and the short game (drop, flip) and defensive tools (chop) are live
-  // options instead of near-zero curiosities. The old shape here — smash 0.7,
-  // chop 0.2, flip 0.1 — was a club player's toolkit.
+  // Intermediate: the full vocabulary is in play — loop is the backbone,
+  // the short game (drop, flip) and defensive tools (chop) are live options.
+  // Playability retune (2026-08-28, same pass as PROFILE_OVERRIDES): smash
+  // came down 1.5 → 0.8 and block up 1.5 → 1.8. At smash 1.5 the tier
+  // ended too many rallies on the first high ball; this tier should win by
+  // out-rallying the player, with the smash as a real but occasional
+  // punish. ELITE keeps the higher kill appetite.
   intermediate: {
     loop:          3.5,
     topspin_drive: 2.5,
-    smash:         1.5,
+    block:         1.8,
     slice:         1.5,
-    block:         1.5,
     chop:          1.0,
     flip:          1.0,
+    smash:         0.8,
     drop_shot:     0.8,
     push:          0.8,
     lob:           0.4,

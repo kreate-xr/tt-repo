@@ -43,9 +43,13 @@ import * as THREE from 'three';
 // beating it, not by waiting for it. 0.12 still misses visibly more than the
 // upper tiers, and hard balls still push it toward 4x via
 // scaleMissRateForSituation.
+// Intermediate 0.05 → 0.04 in the playability retune (2026-08-28): its shot
+// pace dropped ~20% (see PROFILE_OVERRIDES.intermediate), so consistency is
+// now the axis that keeps the tier hard to beat — it donates fewer free
+// points and makes you earn them through the rally instead.
 export const MISS_RATE_BY_DIFFICULTY = Object.freeze({
   beginner: 0.12,
-  intermediate: 0.05,
+  intermediate: 0.04,
   pro: 0.03,
 });
 

@@ -53,7 +53,9 @@ describe('Imperfection constants match spec', () => {
     // tier and its job is to keep the ball alive. These are BASE rates;
     // scaleMissRateForSituation is what makes them read as a real player.
     expect(MISS_RATE_BY_DIFFICULTY.beginner).toBeCloseTo(0.12, 10);
-    expect(MISS_RATE_BY_DIFFICULTY.intermediate).toBeCloseTo(0.05, 10);
+    // Intermediate 0.05 → 0.04 in the 2026-08-28 playability retune: pace
+    // came down, consistency went up — see imperfection.js.
+    expect(MISS_RATE_BY_DIFFICULTY.intermediate).toBeCloseTo(0.04, 10);
     expect(MISS_RATE_BY_DIFFICULTY.pro).toBeCloseTo(0.03, 10);
   });
 

@@ -130,26 +130,24 @@ describe('tier ordering', () => {
     expect(p).toBeGreaterThan(i);
   });
 
-  // The top tier plays at genuinely international pace. Real reference:
-  // international topspin loops run 15-25 m/s and smashes 25-30+.
-  //
-  // An earlier revision pinned these at <= 13.5 m/s on the belief that the
-  // physics model could not land a faster ball. That belief came from a
-  // measurement taken against a solver carrying a spin moment-arm unit error
-  // and a self-invalidating face tilt. With those fixed, 25 m/s is 100%
-  // feasible to short and mid targets — see tests/solverEnvelope.test.js.
-  test('intermediate attacking pace is genuinely international', () => {
-    // Bounded on BOTH sides. Too low and the tier stops being international;
-    // too high and the request exceeds what the solver can deliver (delivery
-    // saturates at 15.6-18 m/s depending on depth), so the ball silently comes
-    // out slower than the profile claims. An earlier revision asked for a
-    // 22 m/s smash and the player experienced 17.6.
+  // Playability retune (2026-08-28): the tier previously pinned its attacking
+  // means at the top of the deliverable envelope (loop >= 12, drive >= 13,
+  // smash >= 16 — "genuinely international") and headset feedback was that
+  // the tier was unplayable: points ended on pace before a rally developed.
+  // The tier now plays at "strong tournament" pace — bounded on BOTH sides:
+  // too low and it stops being a clear step above CLUB (beginner smash mean
+  // is 7.9); too high and it regresses to the unplayable pass. Its difficulty
+  // lives in placement, consistency and footwork instead.
+  test('intermediate attacking pace is challenging but returnable', () => {
     const loop = profileFor('loop', 'intermediate');
     const drive = profileFor('topspin_drive', 'intermediate');
     const smash = profileFor('smash', 'intermediate');
-    expect(loop.speedMean).toBeGreaterThanOrEqual(12);
-    expect(drive.speedMean).toBeGreaterThanOrEqual(13);
-    expect(smash.speedMean).toBeGreaterThanOrEqual(16);
+    expect(loop.speedMean).toBeGreaterThanOrEqual(9);
+    expect(loop.speedMean).toBeLessThanOrEqual(11);
+    expect(drive.speedMean).toBeGreaterThanOrEqual(10);
+    expect(drive.speedMean).toBeLessThanOrEqual(12);
+    expect(smash.speedMean).toBeGreaterThanOrEqual(12);
+    expect(smash.speedMean).toBeLessThanOrEqual(15);
     // Deliverable ceiling — see the measurement table in PROFILE_OVERRIDES.
     expect(smash.speedMax).toBeLessThanOrEqual(21);
   });
