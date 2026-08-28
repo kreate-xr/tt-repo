@@ -26,6 +26,10 @@ const BALL_COLOR_ORDER = ['orange', 'white'];
 
 const CANVAS_W = 1024;
 const CANVAS_H = 410;
+// Floor between hover-driven full repaints (each is a ~1.7 MB texture
+// re-upload). 100 ms caps laser-jitter churn at 10 uploads/s while an
+// isolated hover change still repaints on the very frame it happens.
+const HOVER_REDRAW_MIN_MS = 100;
 // Matches the scoreboard's physical width (see scoreboard.js PANEL_W_M) so
 // the two floating panels feel like part of the same UI system. Height
 // tracks the canvas aspect (1024 × 410 → 2.5:1) rather than the scoreboard's
@@ -262,6 +266,14 @@ export class WristMenu {
     this.showProgress  = 0;
     this.pressProgress = 0;
     this.pokeCursor = null;
+    // Hover-redraw throttle. Every draw() is a full-canvas repaint plus a
+    // ~1.7 MB texture re-upload with mipmap rebuild, and laser jitter between
+    // two adjacent buttons can flip setHovered every frame — so hover-driven
+    // repaints are capped at one per HOVER_REDRAW_MIN_MS, with a deferred
+    // flush in update(). Hover STATE always updates immediately; only the
+    // repaint is throttled.
+    this._lastDrawMs = -Infinity;
+    this._hoverDrawPending = false;
     // Cached drift flag — driftDetector polled once per frame in update().
     // Only trigger a redraw when it flips (avoids per-frame canvas churn).
     this._driftFlagCache = false;
@@ -340,6 +352,12 @@ export class WristMenu {
     const drift = getCalibrationDriftFlag();
     if (drift !== this._driftFlagCache) {
       this._driftFlagCache = drift;
+      dirty = true;
+    }
+
+    // Flush a hover repaint that setHovered deferred under the throttle.
+    if (this._hoverDrawPending
+        && performance.now() - this._lastDrawMs >= HOVER_REDRAW_MIN_MS) {
       dirty = true;
     }
 
@@ -450,6 +468,10 @@ export class WristMenu {
   }
 
   draw() {
+    // Any repaint satisfies a pending hover redraw and restarts the throttle
+    // window — the canvas is always painted whole.
+    this._lastDrawMs = performance.now();
+    this._hoverDrawPending = false;
     const ctx = this.ctx;
     ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
     ctx.globalAlpha = easeOutCubic(this.showProgress);
@@ -714,7 +736,11 @@ export class WristMenu {
       try { playMenuHoverTick(); } catch {}
       haptics.pulseActive(0.15, 15);
     }
-    this.draw();
+    if (performance.now() - this._lastDrawMs >= HOVER_REDRAW_MIN_MS) {
+      this.draw();
+    } else {
+      this._hoverDrawPending = true;
+    }
   }
 
   selectHovered() {

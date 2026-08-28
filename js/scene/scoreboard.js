@@ -16,6 +16,7 @@ import { scene } from './sceneSetup.js';
 import { netBox, tableBox, tableSurfaceY } from './models.js';
 import {
   LAYOUT_W, LAYOUT_H, createScoreboardState, renderScoreboardLayout,
+  CLOCK_VALUE_RECT, renderClockValue,
 } from './scoreboardLayout.js';
 
 // Bigger than the original above-net panel — it's further away now, so it
@@ -81,19 +82,65 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
   mesh.frustumCulled = false;
   scene.add(mesh);
 
+  // Clock overlay — a small quad carrying just the TOTAL TIME digits, so the
+  // once-per-second clock tick re-uploads this tiny texture instead of the
+  // full 2048×1152 board canvas (a recurring ~9.4 MB + mipmap-rebuild spike
+  // landing on one frame every second of every match).
+  const clockCanvas = document.createElement('canvas');
+  clockCanvas.width = CLOCK_VALUE_RECT.w;
+  clockCanvas.height = CLOCK_VALUE_RECT.h;
+  const clockCtx = clockCanvas.getContext('2d');
+  const clockTexture = new THREE.CanvasTexture(clockCanvas);
+  clockTexture.colorSpace = THREE.SRGBColorSpace;
+  clockTexture.generateMipmaps = false;
+  clockTexture.minFilter = THREE.LinearFilter;
+  clockTexture.magFilter = THREE.LinearFilter;
+  clockTexture.anisotropy = 4;
+  // Layout px → panel meters, honoring the wall-mount 2× upscale.
+  const pxToM = panelW / LAYOUT_W;
+  const clockGeom = new THREE.PlaneGeometry(
+    CLOCK_VALUE_RECT.w * pxToM, CLOCK_VALUE_RECT.h * pxToM,
+  );
+  const clockMat = new THREE.MeshBasicMaterial({
+    map: clockTexture,
+    transparent: true,
+    depthWrite: false,
+    side: THREE.FrontSide,
+  });
+  const clockMesh = new THREE.Mesh(clockGeom, clockMat);
+  clockMesh.position.set(
+    (CLOCK_VALUE_RECT.x + CLOCK_VALUE_RECT.w / 2 - LAYOUT_W / 2) * pxToM,
+    (LAYOUT_H / 2 - (CLOCK_VALUE_RECT.y + CLOCK_VALUE_RECT.h / 2)) * pxToM,
+    0.002, // just off the board face to avoid z-fighting
+  );
+  clockMesh.renderOrder = 6;
+  clockMesh.frustumCulled = false;
+  mesh.add(clockMesh);
+
   // Kept internally so partial patches (server change with no score change)
   // don't force the caller to remember the full state.
   const state = createScoreboardState(config);
 
   function render() {
-    renderScoreboardLayout(ctx, state);
+    renderScoreboardLayout(ctx, state, { skipClockValue: true });
     texture.needsUpdate = true;
   }
 
+  function renderClock() {
+    renderClockValue(clockCtx, state.elapsedMs);
+    clockTexture.needsUpdate = true;
+  }
+
   render();
+  renderClock();
 
   function update(patch) {
     if (patch) Object.assign(state, patch);
+    // Clock-only patch (the 1 Hz match timer): touch only the overlay.
+    if (patch && 'elapsedMs' in patch) {
+      renderClock();
+      if (Object.keys(patch).length === 1) return;
+    }
     render();
   }
 
@@ -109,6 +156,9 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
     geom.dispose();
     mat.dispose();
     texture.dispose();
+    clockGeom.dispose();
+    clockMat.dispose();
+    clockTexture.dispose();
   }
 
   return { update, setMatchOverBanner, setVisible, dispose, mesh };

@@ -4,6 +4,10 @@
 
 let liveLineEl = null;
 let summaryEl = null;
+// Last string written to the live line. setLiveLine is called every XR frame
+// by the in-game loop; without this equality gate it replaced the DOM text
+// node and dirtied style at 72–90 Hz even when nothing changed.
+let lastLiveLineText = null;
 
 export function initStatsHud() {
   if (!liveLineEl) {
@@ -43,13 +47,18 @@ export function initStatsHud() {
 }
 
 export function setLiveLine(text) {
+  if (text === lastLiveLineText) return;
   if (!liveLineEl) initStatsHud();
+  lastLiveLineText = text;
   liveLineEl.style.display = 'block';
   liveLineEl.textContent = text;
 }
 
 export function hideLiveLine() {
   if (liveLineEl) liveLineEl.style.display = 'none';
+  // Forget the cached text so the next setLiveLine always re-shows the
+  // element even if the string happens to match the pre-hide one.
+  lastLiveLineText = null;
 }
 
 /**

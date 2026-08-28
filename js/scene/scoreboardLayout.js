@@ -60,7 +60,29 @@ export function createScoreboardState(config = {}) {
   };
 }
 
-export function renderScoreboardLayout(ctx, state) {
+// Region of the TOTAL TIME value digits, in layout px. The floating panel
+// (scoreboard.js) renders the digits onto a small dedicated overlay texture
+// so the 1 Hz clock tick re-uploads ~135 KB instead of the full 2048×1152
+// canvas (~9.4 MB + mipmap rebuild — a recurring one-frame spike on Quest).
+// The rect sits inside the clock stat cell (vlines at 1024/1518) and overlaps
+// nothing but the background slab gradient, so a transparent overlay reads
+// identically to drawing on the base canvas.
+export const CLOCK_VALUE_RECT = { x: 1150, y: 912, w: 360, h: 96 };
+
+// Draw just the clock digits into a CLOCK_VALUE_RECT-sized canvas, with the
+// exact style drawStat uses for stat values on the base layout.
+export function renderClockValue(ctx, elapsedMs) {
+  ctx.clearRect(0, 0, CLOCK_VALUE_RECT.w, CLOCK_VALUE_RECT.h);
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.font = `bold 76px ${FONT}`;
+  ctx.fillStyle = '#ffffff';
+  // Same layout-space anchor drawStat uses (gx=1271 → value x = gx-115=1156,
+  // baseline y = statY+32 = 982), translated into the rect's local px.
+  ctx.fillText(formatTime(elapsedMs), 1156 - CLOCK_VALUE_RECT.x, 982 - CLOCK_VALUE_RECT.y);
+}
+
+export function renderScoreboardLayout(ctx, state, opts = {}) {
   const w = LAYOUT_W, h = LAYOUT_H;
   ctx.clearRect(0, 0, w, h);
 
@@ -188,7 +210,12 @@ export function renderScoreboardLayout(ctx, state) {
   const statY = 950;
   drawStat(ctx, 283, statY, 'crosshair', BLUE_BRIGHT, 'SHOTS HIT', String(state.shotsHit));
   drawStat(ctx, 777, statY, 'bolt', GREEN, 'TOP SPEED', String(Math.round(state.topSpeedKmh)), 'KM/H');
-  drawStat(ctx, 1271, statY, 'clock', PURPLE, 'TOTAL TIME', formatTime(state.elapsedMs));
+  // The floating panel draws the time digits on its own overlay texture
+  // (see CLOCK_VALUE_RECT above) so the per-second tick doesn't force a full
+  // canvas re-upload; label + icon still render here. Surfaces that don't
+  // mount the overlay (stadium TVs) keep drawing the value inline.
+  drawStat(ctx, 1271, statY, 'clock', PURPLE, 'TOTAL TIME',
+    opts.skipClockValue ? '' : formatTime(state.elapsedMs));
   drawStat(ctx, 1765, statY, 'star', GOLD, 'TOTAL POINTS', String(totalPoints));
   vline(ctx, 530, 890, 1010);
   vline(ctx, 1024, 890, 1010);

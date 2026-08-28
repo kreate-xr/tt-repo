@@ -546,6 +546,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   const raycaster = new THREE.Raycaster();
   const tmpQuat = new THREE.Quaternion();
   const tmpVec = new THREE.Vector3();
+  const tmpDir = new THREE.Vector3();
+  // Reused {u,v} record for the last panel hit — rebuilt-in-place each frame
+  // the laser is on a panel instead of allocating a fresh literal.
+  const panelUV = { u: 0, v: 0 };
   const tmpCamPos = new THREE.Vector3();
   const tmpCamFwd = new THREE.Vector3();
   const tmpPokePos = new THREE.Vector3();
@@ -1101,13 +1105,15 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
 
     targetRay.getWorldPosition(tmpVec);
     targetRay.getWorldQuaternion(tmpQuat);
-    const dir = new THREE.Vector3(0, 0, -1).applyQuaternion(tmpQuat).normalize();
-    raycaster.set(tmpVec, dir);
+    tmpDir.set(0, 0, -1).applyQuaternion(tmpQuat).normalize();
+    raycaster.set(tmpVec, tmpDir);
 
     const hits = raycaster.intersectObject(panel.mesh, false);
     if (hits.length && hits[0].uv) {
       const uv = hits[0].uv;
-      lastPanelUV = { u: uv.x, v: uv.y };
+      panelUV.u = uv.x;
+      panelUV.v = uv.y;
+      lastPanelUV = panelUV;
       // A live slider drag owns the ray: keep feeding it the pointer position
       // and don't let hover move to another widget mid-drag.
       if (draggingSliderId && panel.dragAt) {
