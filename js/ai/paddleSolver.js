@@ -158,6 +158,40 @@ const AIM_SHIFT_MAX_ITERS = 5;
 // trajectories that pass 2 then rejects for not landing.
 const LAUNCH_SEARCH_ITERS = 6;
 
+// Net-clearance gates. Until 2026-08 the solver had NO net awareness at all:
+// pass 1 matched landing speed only, and pass 2's rolloutToFirstBounce flew
+// straight through where the net stands. At smash pace (intermediate 11-16,
+// pro 15.7-22.4 m/s) the speed-matching bisection converges onto the flat
+// branch — essentially a straight line from contact to target — and from any
+// contact under ~0.45 m that line crosses the net plane BELOW the cord. The
+// solve verified "landed on target", the FSM committed, and the live physics
+// (which does collide with the net) stopped the ball: every intermediate/pro
+// smash off a mid-height ball went into the net.
+//
+// Both margins sit on top of env.netBox.max.y + ballRadius. The live netBox
+// is already ballRadius-inflated (models.js Minkowski sum), so the extra
+// radius double-counts by ~2 cm there — deliberately, matching the serve
+// path's convention (serve.js NET_CLEARANCE_MARGIN_M): an AI smash should
+// beat the cord cleanly, not graze it.
+//
+// PASS-2 (the gate that counts): the verified, drag+Magnus-integrated flight
+// must clear by this much or the solution is rejected.
+const NET_CLEARANCE_MARGIN_M = 0.02;
+// PASS-1 (drag-free closed form): demand extra headroom over the pass-2 gate,
+// because drag and topspin Magnus both steepen the real arc below the
+// parabola — a trajectory that clears on paper can still cross under the
+// cord in pass 2. 2.5 cm covers typical rally pace; spin-heavy shots that
+// still come up short are re-solved by the net-rescue loop below, which
+// raises this demand by the measured deficit.
+const PASS1_NET_MARGIN_M = 0.045;
+// Net-rescue budget: each iteration is one pass-1 closed form + one pass-2
+// rollout, re-solving with the clearance demand raised by the observed
+// deficit. Converges in 1-2 in practice (the deficit is measured, not
+// guessed); shots that can't clear at all exit via NET_HIT to the FSM's
+// safe-target fallback — which is what a real player does with a ball too
+// low to kill: lift it instead.
+const NET_RESCUE_MAX_ITERS = 3;
+
 // NOTE: there is deliberately no DRAG_COMPENSATION factor here any more.
 //
 // It used to be 1.10, applied to the pass-1 speed objective as
@@ -190,6 +224,7 @@ export const SOLVER_REASONS = Object.freeze({
   NO_LANDING:            'no_landing',            // pass-2 rollout never bounced in-table
   CORRECTED_SPEED_CAP:   'corrected_speed_cap',   // correction pushed past the tier cap
   LANDING_ERROR:         'landing_error',         // landed too far from target
+  NET_HIT:               'net_hit',               // verified flight crosses under the net cord
 });
 
 // Numerical helpers ---------------------------------------------------------
@@ -270,7 +305,7 @@ function rolloutToFirstBounce(startPos, startVel, startSpin, env) {
 
 // Pass-1 analytical inverse. Returns { paddleV_out, faceNormal, paddle_v_normal_mag,
 //                                       paddle_v_tangent_mag, feasible } or { feasible: false }.
-function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin = null, ballRadius = 0.02) {
+function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin = null, ballRadius = 0.02, netPlane = null) {
   // Iterate launch angle to find a velocity vector whose flight from
   // contactPos arrives at targetWorld with magnitude ≈ targetSpeed at
   // landing. Spec is intentionally loose ("interpret target_speed as
@@ -286,6 +321,21 @@ function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targe
   const horiz0 = Math.hypot(targetWorld.x - contactPos.x, targetWorld.z - contactPos.z);
   const dy0 = targetWorld.y - contactPos.y;
   const angleFloor = horiz0 > 1e-6 ? Math.atan(dy0 / horiz0) + 0.02 : -Math.PI / 4;
+
+  // Drag-free net-clearance predicate for a candidate launch velocity. The
+  // closed-form flight crosses the net plane at t = dz_net / v.z; require the
+  // ball CENTER above netPlane.minCenterY there. Trajectories that never
+  // reach the plane (t ≤ 0 — contact already past the net) pass by default
+  // and are judged by pass 2 instead.
+  function clearsNetDragFree(v, gUse) {
+    if (!netPlane) return true;
+    if (Math.abs(v.z) < 1e-6) return true;
+    const t = (netPlane.z - contactPos.z) / v.z;
+    if (t <= 0) return true;
+    const yAtNet = contactPos.y + v.y * t + 0.5 * gUse * t * t;
+    return yAtNet >= netPlane.minCenterY;
+  }
+
   // Binary search over launch angle for a given effective gravity.
   function searchLaunchAngle(gUse) {
     let lo = Math.max(-Math.PI / 3, angleFloor);
@@ -295,7 +345,15 @@ function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targe
     for (let iter = 0; iter < LAUNCH_SEARCH_ITERS; iter++) {
       const mid = (lo + hi) / 2;
       const v = ballisticVelocityForLaunchAngle(contactPos, targetWorld, mid, gUse);
-      if (v) {
+      if (v && !clearsNetDragFree(v, gUse)) {
+        // Crosses under the cord — only a higher arc can clear (clearance at
+        // the net is monotonic in launch angle for a fixed target), so steer
+        // the same direction as "too fast" and never record this candidate.
+        // The requested speed may become unreachable once the arc is forced
+        // up; the search then returns the fastest CLEARING trajectory, the
+        // same honest saturation the deliverable-envelope note describes.
+        lo = mid;
+      } else if (v) {
         // Estimate landing speed: under gravity (no drag) the landing
         // speed magnitude equals launch speed magnitude only if landing y
         // == launch y. Here landing y < launch y so landing speed >
@@ -532,8 +590,8 @@ function pass2Verify(contactPos, contactVel, contactSpin, paddleV, faceNormal, e
 //     landingError:       number m  (distance to target; null if no bounce)
 //   }
 // Generator core: yields once after every pass-2 verification rollout (the
-// expensive step — up to 800 integration steps each; worst case 17 rollouts
-// across the rescue + aim-shift + correction loops). The FSM amortizes the
+// expensive step — up to 800 integration steps each; worst case 20 rollouts
+// across the rescue + net-rescue + aim-shift + correction loops). The FSM amortizes the
 // solve across frames through this; the exported solvePaddle below drains it
 // synchronously — identical computation, identical results.
 export function* solvePaddleSteps({
@@ -545,8 +603,21 @@ export function* solvePaddleSteps({
   const targetWorld = new THREE.Vector3();
   specTargetToWorld(targetX, targetZ, env.tableCenterZ, env.tableSurfaceY, targetWorld);
 
+  // Net geometry, when the caller supplies it (env.netBox is optional — tests
+  // and headless envs without a net solve exactly as before). Pass 1 gets a
+  // minimum center height demand at the net plane; pass 2's verified flight
+  // is gated on the integrated clearance.
+  const netPlane = env.netBox ? {
+    z: (env.netBox.min.z + env.netBox.max.z) / 2,
+    minCenterY: env.netBox.max.y + env.ballRadius + PASS1_NET_MARGIN_M,
+  } : null;
+  const minNetClearance = env.ballRadius + NET_CLEARANCE_MARGIN_M;
+  const clearsNet = (landing) =>
+    landing.netClearance === null || landing.netClearance === undefined ||
+    landing.netClearance >= minNetClearance;
+
   // Pass 1.
-  const pass1 = pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin, env.ballRadius);
+  let pass1 = pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin, env.ballRadius, netPlane);
   if (!pass1.feasible) {
     return {
       feasible: false,
@@ -597,6 +668,43 @@ export function* solvePaddleSteps({
       landingError: null,
     };
   }
+
+  // Net rescue. Pass 1's clearance check is drag-free; drag and topspin
+  // Magnus both steepen the real arc, so a solution that clears on paper can
+  // still cross under the cord in the integrated flight. The deficit is
+  // MEASURED (verify.landing.netClearance), so re-solve pass 1 demanding
+  // that much extra clearance and re-verify — the angle search returns a
+  // higher arc, trading requested pace for a ball that actually gets over.
+  // If no clearing arc exists (contact too low, too close to the net), exit
+  // NET_HIT: the FSM's safe-target fallback re-solves at lift pace.
+  if (netPlane && !clearsNet(verify.landing)) {
+    let rescued = false;
+    let extra = 0;
+    for (let i = 0; i < NET_RESCUE_MAX_ITERS; i++) {
+      extra += (minNetClearance - verify.landing.netClearance) + 0.02;
+      const raised = { z: netPlane.z, minCenterY: netPlane.minCenterY + extra };
+      const p = pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin, env.ballRadius, raised);
+      if (!p.feasible) break;
+      const vv = pass2Verify(contactPos, contactVel, contactSpin, p.paddleV, p.faceNormal, env);
+      yield;
+      if (!vv.landing) break;
+      pass1 = p;
+      verify = vv;
+      if (clearsNet(vv.landing)) { rescued = true; break; }
+    }
+    if (!rescued) {
+      return {
+        feasible: false,
+        reason: SOLVER_REASONS.NET_HIT,
+        paddleV: pass1.paddleV,
+        faceNormal: pass1.faceNormal,
+        paddleSpeed: pass1.paddleSpeed,
+        predictedLanding: verify.landing ? { x: verify.landing.x, z: verify.landing.z } : null,
+        landingError: null,
+      };
+    }
+  }
+
   const errX = verify.landing.x - targetWorld.x;
   const errZ = verify.landing.z - targetWorld.z;
   const error = Math.hypot(errX, errZ);
@@ -643,13 +751,15 @@ export function* solvePaddleSteps({
     for (let i = 0; i < AIM_SHIFT_MAX_ITERS && baseError > ACCEPTABLE_LANDING_ERROR_M; i++) {
       virtualTarget.x += targetWorld.x - baseLanding.x;
       virtualTarget.z += targetWorld.z - baseLanding.z;
-      const p = pass1Analytical(contactPos, contactVel, virtualTarget, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin, env.ballRadius);
+      const p = pass1Analytical(contactPos, contactVel, virtualTarget, targetSpeed, targetSpin, targetSideSpin, maxPaddleSpeed, contactSpin, env.ballRadius, netPlane);
       if (!p.feasible) break;
       const vv = pass2Verify(contactPos, contactVel, contactSpin, p.paddleV, p.faceNormal, env);
       yield;
       if (!vv.landing) break;
       const e = Math.hypot(vv.landing.x - targetWorld.x, vv.landing.z - targetWorld.z);
-      if (e < baseError) {
+      // A closer landing that would clip the net is not an improvement —
+      // `base` must only ever hold solutions the live physics would let over.
+      if (e < baseError && clearsNet(vv.landing)) {
         base = p;
         baseLanding = vv.landing;
         baseError = e;
@@ -727,7 +837,11 @@ export function* solvePaddleSteps({
     if (!v.landing) break;
     lastLanding = v.landing;
     const err = Math.hypot(v.landing.x - targetWorld.x, v.landing.z - targetWorld.z);
-    if (err < bestError) {
+    // Netted iterates still feed lastLanding (the range ratio stays smooth in
+    // paddle speed) but never become the returned answer: a down-scale that
+    // fixes range by dropping the arc under the cord is a worse shot, not a
+    // better one.
+    if (err < bestError && clearsNet(v.landing)) {
       bestError = err;
       bestPaddleV = corrected.clone();
       bestLanding = v.landing;

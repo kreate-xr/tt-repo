@@ -32,7 +32,7 @@
 // shotAdapter rollout runs BEFORE the FSM reads its result.
 
 import * as THREE from 'three';
-import { ballModel, ballRadius, tableBox, tableSurfaceY } from '../../scene/models.js';
+import { ballModel, ballRadius, tableBox, tableSurfaceY, netBox } from '../../scene/models.js';
 import { MOVEMENT_SPEED_MPS } from './aiPaddle.js';
 import {
   faceNormalForShot, shotTypeFromTarget, disguisedShotTypeFor,
@@ -434,8 +434,13 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     // (center-table, low-medium speed, no spin). If still infeasible OR
     // unreachable, the AI plays out the swing anyway but the resulting
     // miss is honest — paddle physics produces a poor return.
+    // netBox makes the solver net-aware: without it, pass-2 verification
+    // flies straight through where the net stands and every fast flat shot
+    // (smash especially) off a mid-height contact "verified" onto a target
+    // it could never reach live. Live ES-module binding — null until the
+    // table GLB loads, populated long before the first rally decision.
     const env = {
-      tableBox, tableSurfaceY, ballRadius,
+      tableBox, tableSurfaceY, ballRadius, netBox,
       tableCenterZ: tableCenterZ(),
     };
     // Payload [6] (sidespin, rps) is emitted by all three engines; the
@@ -444,7 +449,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       ? targetPayload[6]
       : 0;
     // The solve runs AMORTIZED: solvePaddleSteps yields between verification
-    // rollouts (up to 17 per solve, 34 with the safe fallback — a guaranteed
+    // rollouts (up to 20 per solve, 40 with the safe fallback — a guaranteed
     // frame hitch when run synchronously inside this worker-reply callback).
     // update() steps the job a few rollouts per frame while the FSM sits in
     // DECIDING — the same place it already waits on the worker round-trip —

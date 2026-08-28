@@ -238,6 +238,43 @@ describe('rolloutToFirstBounce', () => {
     const s = start();
     expect(rolloutToFirstBounce(s.pos, s.vel, s.spin, env, { maxSteps: 3 })).toBeNull();
   });
+
+  test('without netBox: netClearance null, clearedNet true (back-compat)', () => {
+    const s = start();
+    const hit = rolloutToFirstBounce(s.pos, s.vel, s.spin, env);
+    expect(hit.netClearance).toBeNull();
+    expect(hit.clearedNet).toBe(true);
+  });
+
+  test('with netBox: reports interpolated clearance over the net plane', () => {
+    // Regulation cord top: 15.25 cm above the surface, net at table center.
+    const netTopY = tableSurfaceY + 0.1525;
+    const withNet = {
+      ...env,
+      netBox: {
+        min: { x: -0.9, y: tableSurfaceY, z: -0.005 },
+        max: { x:  0.9, y: netTopY,       z:  0.005 },
+      },
+    };
+    // A clearly lofted arc — apex well above the cord at the crossing.
+    const hit = rolloutToFirstBounce(
+      v3(0, 1.2, -1.3), v3(0, 2.0, 3.5), v3(0, 0, 0), withNet,
+    );
+    expect(hit).not.toBeNull();
+    expect(hit.netClearance).not.toBeNull();
+    expect(hit.clearedNet).toBe(true);
+    expect(hit.netClearance).toBeGreaterThan(0);
+
+    // A flat dart from below the cord toward the far side must report a
+    // NEGATIVE clearance — this ball would be in the net live, and this
+    // field is what lets the paddle solver see that.
+    const low = rolloutToFirstBounce(
+      v3(0, tableSurfaceY + 0.08, -0.6), v3(0, 0.2, 6.0), v3(0, 0, 0), withNet,
+    );
+    expect(low).not.toBeNull();
+    expect(low.netClearance).toBeLessThan(0);
+    expect(low.clearedNet).toBe(false);
+  });
 });
 
 describe('single source of physics', () => {

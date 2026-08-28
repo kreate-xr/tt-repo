@@ -197,7 +197,18 @@ export function isTableBounce(pos, vel, env) {
  * I commanded?"). Callers that need the post-bounce arc should run their own
  * loop over integrateFlightStep + applyTableBounce.
  *
- * @returns {{x:number, y:number, z:number, t_ms:number}|null} null when the
+ * Like rolloutToSurfacePlane, reports the ball's minimum clearance over the
+ * net plane when `env.netBox` is present (interpolated at the crossing step,
+ * same math). This is what lets the paddle solver's pass-2 verification tell
+ * a genuine landing from a trajectory that only "lands" because this rollout
+ * flies straight through where the net stands — the live physics in ball.js
+ * would have stopped it. `env.netBox` is optional; netClearance stays null
+ * and clearedNet reports true without it, so callers with no net geometry
+ * (and the landing semantics itself — deliberately un-interpolated, see the
+ * migration-plan note) are unchanged.
+ *
+ * @returns {{x:number, y:number, z:number, t_ms:number,
+ *            netClearance:number|null, clearedNet:boolean}|null} null when the
  *          ball reached the floor or the step ceiling without bouncing in-table.
  */
 export function rolloutToFirstBounce(startPos, startVel, startSpin, env, {
@@ -210,10 +221,29 @@ export function rolloutToFirstBounce(startPos, startVel, startSpin, env, {
   const vel = startVel.clone();
   const spin = startSpin.clone();
 
+  const netZ = env.netBox ? (env.netBox.min.z + env.netBox.max.z) / 2 : null;
+  const netTopY = env.netBox ? env.netBox.max.y : null;
+  let netClearance = null;
+
   for (let i = 0; i < maxSteps; i++) {
+    const prevY = pos.y;
+    const prevZ = pos.z;
     integrateFlightStep(pos, vel, spin, dt);
+    // Sample clearance at the step that straddles the net plane, interpolated
+    // so the result doesn't depend on where dt happens to land — mirrored
+    // from rolloutToSurfacePlane. Direction agnostic.
+    if (netZ !== null && ((prevZ < netZ && pos.z >= netZ) || (prevZ > netZ && pos.z <= netZ))) {
+      const span = pos.z - prevZ;
+      const frac = Math.abs(span) > 1e-9 ? (netZ - prevZ) / span : 0;
+      const yAtNet = prevY + (pos.y - prevY) * frac;
+      netClearance = yAtNet - netTopY;
+    }
     if (isTableBounce(pos, vel, env)) {
-      return { x: pos.x, y: env.tableSurfaceY, z: pos.z, t_ms: i * dt * 1000 };
+      return {
+        x: pos.x, y: env.tableSurfaceY, z: pos.z, t_ms: i * dt * 1000,
+        netClearance,
+        clearedNet: netClearance === null ? true : netClearance > 0,
+      };
     }
     if (pos.y < FLOOR_Y) return null;
   }

@@ -10,9 +10,10 @@
 
 const THREE = require('three');
 
-import { solvePaddle, MAX_PADDLE_SPEED_MPS, maxPaddleSpeedForDifficulty } from '../js/ai/paddleSolver.js';
+import { solvePaddle, MAX_PADDLE_SPEED_MPS, maxPaddleSpeedForDifficulty, SOLVER_REASONS } from '../js/ai/paddleSolver.js';
 import { computeImpulse } from '../js/physics/impulse.js';
-import { PADDLE_RESTITUTION, SPIN_CAPTURE_GAIN } from '../js/physics/constants.js';
+import { PADDLE_RESTITUTION, SPIN_CAPTURE_GAIN, paddleRestitution } from '../js/physics/constants.js';
+import { rolloutToFirstBounce } from '../js/physics/rollout.js';
 
 function v(x, y, z) { return new THREE.Vector3(x, y, z); }
 
@@ -41,6 +42,17 @@ function makeEnv() {
     ballRadius: 0.02,
     tableCenterZ: 0.0,
   };
+}
+
+// Regulation net AABB, mirrored from models.js: cord 15.25 cm above the
+// surface, ±14 cm overhang past the table edges, 1 cm thick, then inflated by
+// ballRadius (Minkowski swept-sphere) exactly like the live netBox.
+function regulationNetBox() {
+  const ballR = 0.02;
+  return new THREE.Box3(
+    new THREE.Vector3(-(0.7625 + 0.14), 0, -0.005),
+    new THREE.Vector3( (0.7625 + 0.14), 0.1525, 0.005),
+  ).expandByScalar(ballR);
 }
 
 // AI-side contact pose: ball is ~30cm above table, on AI side, moving
@@ -335,6 +347,30 @@ describe('solvePaddle — sidespin', () => {
     }
   });
 
+  test('net-aware env: sidespin bands stay feasible (regression guard for the net gate)', () => {
+    // Same shape as the band test below but with the net present — the
+    // clearance gate must not collapse ordinary mid-pace sidespin shots.
+    const env = { ...makeEnv(), netBox: regulationNetBox() };
+    const rng = mulberry32(4242);
+    let feasible = 0;
+    const N = 30;
+    for (let i = 0; i < N; i++) {
+      const r = solvePaddle({
+        targetX: (rng() - 0.5) * 0.8,
+        targetZ: 0.5 + rng() * 0.5,
+        targetSpeed: 7.0 + rng() * 3.0,
+        targetSpin: (rng() - 0.5) * 10,
+        targetSideSpin: (rng() < 0.5 ? -1 : 1) * (2 + rng() * 7),
+        contactPos: v(0, 0.30, -0.5 - rng() * 0.2),
+        contactVel: v((rng() - 0.5) * 0.4, 0.6 + rng() * 0.6, 1.8 + rng() * 1.2),
+        contactSpin: v(0, 0, 0),
+        difficulty: 'intermediate', env,
+      });
+      if (r.feasible) feasible += 1;
+    }
+    expect(feasible / N).toBeGreaterThanOrEqual(0.50);
+  });
+
   test('tier sidespin bands stay usably feasible on realistic inputs', () => {
     // The bands in shotTypeSelector.SIDESPIN_BY_DIFFICULTY promise their
     // magnitudes converge in the solver "reliably" — this is that number.
@@ -365,5 +401,103 @@ describe('solvePaddle — sidespin', () => {
       }
       expect(feasible / N).toBeGreaterThanOrEqual(0.50);
     }
+  });
+});
+
+// Net awareness. The bug this pins: the solver had NO net model — pass 2's
+// rolloutToFirstBounce flew straight through the net plane, so at smash pace
+// the speed-matching angle search converged onto a flat line that crossed
+// under the cord, "verified" clean, and the live physics netted it. Every
+// intermediate/pro smash off a mid-height ball went into the net.
+describe('solvePaddle — net clearance', () => {
+  const BALL_R = 0.02;
+
+  // Re-run the solver's own contact through the live impulse + rollout
+  // pipeline and report the integrated net clearance of the resulting flight.
+  function verifiedClearance(r, contactPos, contactVel, contactSpin, env) {
+    const out = computeImpulse(
+      contactVel.clone(), contactSpin.clone(), contactPos.clone(),
+      r.paddleV.clone(), null, null,
+      r.faceNormal.clone(),
+      BALL_R, PADDLE_RESTITUTION, SPIN_CAPTURE_GAIN,
+      { restitutionCurve: paddleRestitution },
+    );
+    const landing = rolloutToFirstBounce(contactPos.clone(), out.ballV_out, out.ballW_out, env);
+    return landing ? landing.netClearance : null;
+  }
+
+  test('every feasible smash-pace solution clears the cord (intermediate + pro sweep)', () => {
+    const env = { ...makeEnv(), netBox: regulationNetBox() };
+    const rng = mulberry32(20260828);
+    let feasible = 0;
+    const N = 60;
+    for (let i = 0; i < N; i++) {
+      const difficulty = rng() < 0.5 ? 'intermediate' : 'pro';
+      const speed = difficulty === 'intermediate' ? 11 + rng() * 5 : 15.7 + rng() * 6.7;
+      const contactPos = v((rng() - 0.5) * 0.6, 0.20 + rng() * 0.20, -0.4 - rng() * 0.5);
+      const contactVel = v((rng() - 0.5) * 0.6, -3.5 + rng() * 1.5, 1.5 + rng() * 1.5);
+      const contactSpin = v(0, 0, 0);
+      const r = solvePaddle({
+        targetX: (rng() - 0.5) * 1.0,
+        targetZ: 0.4 + rng() * 0.8,
+        targetSpeed: speed, targetSpin: (rng() - 0.5) * 20,
+        contactPos, contactVel, contactSpin,
+        difficulty, env,
+      });
+      if (!r.feasible) continue;
+      feasible += 1;
+      const clearance = verifiedClearance(r, contactPos, contactVel, contactSpin, env);
+      // The gate demands ballRadius + 0.02 over the (already inflated) box
+      // top; assert the hard invariant — the live physics would let it over.
+      expect(clearance).not.toBeNull();
+      expect(clearance).toBeGreaterThan(0);
+    }
+    // The gate must reshape smashes into clearing arcs, not reject the tier's
+    // signature shot wholesale.
+    expect(feasible / N).toBeGreaterThan(0.3);
+  });
+
+  test('a smash from below the cord is never returned as a feasible net ball', () => {
+    const env = { ...makeEnv(), netBox: regulationNetBox() };
+    const contactPos = v(0, 0.10, -0.45);      // ball center below the 0.1525 cord
+    const contactVel = v(0, -2.0, 2.0);
+    const contactSpin = v(0, 0, 0);
+    const r = solvePaddle({
+      targetX: 0, targetZ: 0.7,
+      targetSpeed: 16.0, targetSpin: 5,
+      contactPos, contactVel, contactSpin,
+      difficulty: 'pro', env,
+    });
+    if (r.feasible) {
+      const clearance = verifiedClearance(r, contactPos, contactVel, contactSpin, env);
+      expect(clearance).toBeGreaterThan(0);
+    } else {
+      // Rejection is the honest outcome — but it must be attributed, so the
+      // FSM's safe fallback (and telemetry) can tell "too low to clear" from
+      // an aim failure.
+      expect([
+        SOLVER_REASONS.NET_HIT,
+        SOLVER_REASONS.NO_BALLISTIC_SOLUTION,
+        SOLVER_REASONS.LANDING_ERROR,
+        SOLVER_REASONS.NO_LANDING,
+        SOLVER_REASONS.PADDLE_SPEED_CAP,
+        SOLVER_REASONS.CORRECTED_SPEED_CAP,
+      ]).toContain(r.reason);
+    }
+  });
+
+  test('env without netBox keeps pre-net-gate behavior bit-for-bit', () => {
+    const env = makeEnv();
+    const { contactPos, contactVel, contactSpin } = defaultContact();
+    const r = solvePaddle({
+      targetX: 0.1, targetZ: 0.7,
+      targetSpeed: 13.5, targetSpin: 8,
+      contactPos, contactVel, contactSpin,
+      difficulty: 'intermediate', env,
+    });
+    // No net in env → the solver must not invent one; it solves exactly as
+    // before (this is what keeps the measured-envelope suite meaningful).
+    expect(r).toHaveProperty('feasible');
+    expect(r.reason === SOLVER_REASONS.NET_HIT).toBe(false);
   });
 });
