@@ -106,7 +106,7 @@ export class CalibrationTuner {
       },
       {
         id: 'posZ', label: 'Pos Z (m)',
-        desc: 'Blade offset FORWARD/BACK from the grip. Bigger = longer handle.',
+        desc: 'Slides paddle along the handle: + = down (butt out), − = blade further out.',
         get: () => this.posM.z, set: (v) => this._setPos('z', v),
         step: 0.001, fmt: (v) => v.toFixed(3), min: POS_MIN, max: POS_MAX,
       },

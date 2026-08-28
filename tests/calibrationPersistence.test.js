@@ -20,9 +20,10 @@ globalThis.localStorage = new MemoryStorage();
 
 // Import AFTER shim so calibration.js's module-load-time reads see it.
 const {
-  setPreset, setRotOffset, loadForProfile,
+  setPreset, setRotOffset, setPosOffset, loadForProfile,
   getPosOffset, getRotOffset, getPresetName, getActiveProfile,
 } = require('../js/xr/calibration.js');
+const { registerDerivedPreset } = require('../js/xr/calibrationPresets.js');
 
 function resetStorage() {
   globalThis.localStorage.clear();
@@ -99,6 +100,52 @@ describe('calibration persistence (spec §C5)', () => {
     loadForProfile('corrupt-profile');
     // Should NOT throw; should be in default state (matchProfile returns default).
     expect(getPresetName()).toBe('default');
+  });
+
+  test('persisted derived preset reloads from the LIVE derivation, not the snapshot', () => {
+    // Session 1: model measured, derived preset registered, player picks it.
+    registerDerivedPreset('handle_grip', {
+      posOffset: new THREE.Vector3(0, 0, 0.042),
+      rotOffset: new THREE.Quaternion(),
+    });
+    loadForProfile('derived-profile');
+    setPreset('handle_grip');
+
+    // Session 2: the derivation changed (GRIP_POINT_FRACTION tweak, GLB
+    // re-export) — registration now yields different numbers. The stored
+    // snapshot must NOT shadow them.
+    registerDerivedPreset('handle_grip', {
+      posOffset: new THREE.Vector3(0, 0, 0.067),
+      rotOffset: new THREE.Quaternion(),
+    });
+    loadForProfile('__scramble__');
+    setPreset('default');
+    loadForProfile('derived-profile');
+    expect(getPresetName()).toBe('handle_grip');
+    expect(Math.abs(getPosOffset().z - 0.067)).toBeLessThan(1e-9);
+  });
+
+  test('hand-tweak on top of a derived preset persists as custom and survives reload', () => {
+    registerDerivedPreset('handle_grip', {
+      posOffset: new THREE.Vector3(0, 0, 0.042),
+      rotOffset: new THREE.Quaternion(),
+    });
+    loadForProfile('tweaked-profile');
+    setPreset('handle_grip');
+    setPosOffset(new THREE.Vector3(0, 0.01, 0.09));  // tuner nudge → 'custom'
+
+    registerDerivedPreset('handle_grip', {
+      posOffset: new THREE.Vector3(0, 0, 0.067),
+      rotOffset: new THREE.Quaternion(),
+    });
+    loadForProfile('__scramble__');
+    setPreset('default');
+    loadForProfile('tweaked-profile');
+    // Player's manual values win — the re-derive path only bypasses UNTOUCHED
+    // derived snapshots.
+    expect(getPresetName()).toBe('custom');
+    expect(Math.abs(getPosOffset().z - 0.09)).toBeLessThan(1e-9);
+    expect(Math.abs(getPosOffset().y - 0.01)).toBeLessThan(1e-9);
   });
 
   test('unknown profile string still tracks activeProfile', () => {

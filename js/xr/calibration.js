@@ -96,6 +96,23 @@ export function loadForProfile(profileString) {
   _activeProfile = profileString || null;
   const persisted = _readStorage(profileString);
   if (persisted) {
+    // Derived presets (e.g. 'handle_grip') are computed from the loaded
+    // asset's anchors, so the LIVE derivation is the source of truth, not the
+    // numbers snapshotted at persist time — otherwise a re-exported GLB or a
+    // derivation fix stays shadowed by localStorage forever. Safe to bypass
+    // the snapshot: any manual tweak renames the preset to 'custom', so a
+    // persisted derived name means the player never touched the values.
+    // (Attach always happens after the paddle model exists, so the derived
+    // preset is registered by the time this runs; if registration failed,
+    // PRESETS has no entry and we fall through to the snapshot.)
+    const live = PRESETS[persisted.preset];
+    if (live && live.isDerived) {
+      if (persisted.preset !== _presetName ||
+          !_equalsCurrent({ posOffset: live.posOffset, rotOffset: live.rotOffset })) {
+        setPreset(persisted.preset);
+      }
+      return;
+    }
     if (!_equalsCurrent(persisted)) {
       _posOffset.copy(persisted.posOffset);
       _rotOffset.copy(persisted.rotOffset);

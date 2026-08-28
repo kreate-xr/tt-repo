@@ -91,7 +91,7 @@ export class CalibrationWizard {
 
     this.hovered = null;
     this.buttons = [];
-    this.listeners = { back: [], accepted: [] };
+    this.listeners = { back: [], accepted: [], fineTune: [] };
 
     this.rebuildForStep();
     this.draw();
@@ -162,6 +162,15 @@ export class CalibrationWizard {
       y += btnH + gap;
       this.buttons.push({
         id: 'preset-default', label: 'Keep current defaults',
+        x: padX, y, w: btnW, h: btnH,
+      });
+      y += btnH + gap;
+      // Straight to the manual Pos/Rot stepper panel, skipping the two-sample
+      // fit. Before this button the only route to Fine-Tune was completing the
+      // wizard — a player who just wants to nudge the paddle a centimeter had
+      // to redo the whole sampling dance to reach a ± button.
+      this.buttons.push({
+        id: 'fine-tune', label: 'Fine-tune manually (Pos / Rot)',
         x: padX, y, w: btnW, h: btnH,
       });
     } else if (this.step === STEP_SAMPLE_A) {
@@ -338,6 +347,9 @@ export class CalibrationWizard {
   activate(button) {
     // Exit is universal.
     if (button.id === 'exit') { this.emit('back'); return; }
+    // Manual tuner hand-off — leaves the current T_cal untouched; the tuner
+    // seeds its steppers from whatever is live.
+    if (button.id === 'fine-tune') { this.emit('fineTune'); return; }
 
     if (this.step === STEP_PICK_PRESET) {
       const map = {

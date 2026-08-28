@@ -557,6 +557,13 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     currentTuner = calibTuner;
     calibTuner.show();
   });
+  // Direct "Fine-tune manually" from the wizard's first screen — same
+  // hand-off as 'accepted', minus the two-sample fit.
+  calibWizard.on('fineTune', () => {
+    calibWizard.hide();
+    currentTuner = calibTuner;
+    calibTuner.show();
+  });
   calibTuner.on('back', onTunerBack);
 
   const raycaster = new THREE.Raycaster();

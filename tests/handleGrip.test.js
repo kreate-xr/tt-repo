@@ -49,7 +49,7 @@ describe('deriveHandleGripPreset', () => {
     }
   });
 
-  test('mid-handle maps exactly onto the grip origin (fist centroid)', () => {
+  test('handle grip point maps exactly onto the grip origin (fist centroid)', () => {
     const geo = batAlong(new THREE.Vector3(0.3, 0.9, -0.1));
     const t = deriveHandleGripPreset(geo);
     const gripPoint = new THREE.Vector3()
@@ -60,7 +60,7 @@ describe('deriveHandleGripPreset', () => {
 
   test('blade center ends up straight ahead on -Z at handle+blade distance', () => {
     // Collinear bat → the blade center must land at (0, 0, -d) where d is its
-    // distance from the fist point. With these proportions d ≈ 13.4 cm — the
+    // distance from the fist point. With these proportions d ≈ 10.9 cm — the
     // same ballpark as the spec C1 shakehand seed's 14 cm, which is a good
     // sign the derivation and the hand-tuned preset agree about reality.
     const geo = batAlong(new THREE.Vector3(0, 1, 0));

@@ -4,8 +4,9 @@
 // WebXR gripSpace is defined for exactly this mapping: its origin sits at the
 // centroid of the user's fist, and -Z points the way a rod held in that fist
 // points. So placing the paddle so that (a) its handle axis runs along grip -Z
-// and (b) the middle of its handle sits at the grip origin makes the rendered
-// bat coincide with the physical controller the player is actually holding.
+// and (b) the grip point of its handle (GRIP_POINT_FRACTION) sits at the grip
+// origin makes the rendered bat coincide with the physical controller the
+// player is actually holding.
 //
 // Unlike the hand-tuned presets in calibrationPresets.js, this transform is
 // COMPUTED from the loaded model's authored anchors (HandleEnd + blade
@@ -28,9 +29,15 @@ import * as THREE from 'three';
 const ROD_FORWARD = new THREE.Vector3(0, 0, -1);
 
 // Where along the handle (0 = butt / HandleEnd, 1 = throat / blade bottom)
-// the fist centroid sits. Mid-handle matches a natural full grip: the butt
-// pokes out below the little finger, the index finger rides the throat.
-export const GRIP_POINT_FRACTION = 0.5;
+// the fist centroid sits. 0.5 (mid-handle) matches a natural full grip on
+// paper, but in-headset the handle butt visibly floated above the physical
+// controller's base — the Touch controller body extends further below the
+// grip-space origin than half our handle covers. 0.8 puts the butt ~6.7 cm
+// behind the fist point (on the 8.4 cm handle), lining it up with the
+// controller base. Asset-relative: a longer-handled GLB shifts
+// proportionally more. Fine per-player adjustment lives in the in-headset
+// Paddle Fine-Tune panel (Pos Z), not here.
+export const GRIP_POINT_FRACTION = 0.8;
 
 /**
  * Derive the T_cal that welds the paddle handle onto the controller.
@@ -44,7 +51,7 @@ export const GRIP_POINT_FRACTION = 0.5;
  *
  * Guarantees (see tests/handleGrip.test.js):
  *   rotOffset * headDir            = (0, 0, -1)   handle axis → grip -Z
- *   rotOffset * gripPoint + posOffset = (0, 0, 0)  mid-handle → fist centroid
+ *   rotOffset * gripPoint + posOffset = (0, 0, 0)  grip point → fist centroid
  *
  * The rotation is the SHORTEST ARC taking the handle axis onto -Z: with only
  * an axis to aim (the player's preferred face roll is unknowable from
