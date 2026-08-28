@@ -140,6 +140,51 @@ async function requestBestFrameRate(session) {
   }
 }
 
+// --- Session-switch race guard ---------------------------------------------
+// session.end() is asynchronous, and on Quest the OpenXR runtime keeps tearing
+// the old immersive session down (and reconfigures the compositor when moving
+// between passthrough and VR) for a while AFTER the browser fires 'end' and
+// the start screen reappears. A requestSession that lands inside that window
+// is rejected with the generic "Failed to request XR session" — the
+// intermittent failure players hit when switching MR ↔ VR Focus. Two guards
+// close it: wait for the previous session's 'end' before requesting, then
+// retry briefly if the runtime is still busy releasing it.
+let lastSessionEnded = null;
+
+// Resolved 'end' promise = plain microtask, so the common path pays nothing.
+// The timeout cap means a runtime that never fires 'end' can't brick the
+// Enter button — we fall through and let the retry loop below deal with it.
+function waitForPreviousSessionEnd(timeoutMs = 1500) {
+  if (!lastSessionEnded) return Promise.resolve();
+  return Promise.race([
+    lastSessionEnded,
+    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
+  ]);
+}
+
+// Delays total ~1.55 s — added to the wait above this stays inside Chromium's
+// ~5 s transient-activation window, so every retry still counts as
+// user-activated. SecurityError / NotAllowedError are never retried: the
+// activation was consumed or the user denied the prompt, and repeating the
+// call can only fail the same way. Everything else (InvalidStateError, and
+// Quest's runtime-busy rejections, which surface as NotSupportedError even
+// though isSessionSupported already said yes) is transient teardown state.
+const SESSION_RETRY_DELAYS_MS = [250, 500, 800];
+
+async function requestSessionWithRetry(sessionType, init) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await navigator.xr.requestSession(sessionType, init);
+    } catch (err) {
+      const fatal = err && (err.name === 'SecurityError' || err.name === 'NotAllowedError');
+      if (fatal || attempt >= SESSION_RETRY_DELAYS_MS.length) throw err;
+      const delay = SESSION_RETRY_DELAYS_MS[attempt];
+      console.warn(`[XR] requestSession failed (${err.name || err}) — previous session likely still releasing; retrying in ${delay} ms`);
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+
 // Billboarded in-headset progress panel, shown while the GLBs download inside
 // the live XR session (assets load AFTER requestSession — see startInGame).
 // DOM loading screens are invisible in an immersive session unless dom-overlay
@@ -222,6 +267,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
   }
 
+  // If the player just exited a session (mode switch on the start screen),
+  // make sure it has actually finished ending before asking for a new one —
+  // requesting while the old one is still active is a guaranteed
+  // InvalidStateError. Resolved instantly in the normal cold-start case.
+  await waitForPreviousSessionEnd();
+
   // requestSession MUST run while the click's transient user activation is
   // still live (~5 s in Chromium). The old flow downloaded every GLB first,
   // so on a cold cache the first click always died here with NotAllowedError
@@ -237,7 +288,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // immersive-vr sessions.
     const optionalFeatures = ['hand-tracking', 'plane-detection', 'dom-overlay'];
     if (xrMode === 'ar') optionalFeatures.push('light-estimation');
-    session = await navigator.xr.requestSession(sessionType, {
+    session = await requestSessionWithRetry(sessionType, {
       requiredFeatures: ['local-floor'],
       optionalFeatures,
       domOverlay: { root: document.body },
@@ -249,6 +300,13 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // Nothing to roll back — no scene or lighting state has been touched yet.
     return;
   }
+
+  // Arm the switch guard for THIS session before anything can end it (wrist
+  // menu, abortEntry, or the runtime itself). { once } so a stale listener
+  // never holds the resolved promise's session alive.
+  lastSessionEnded = new Promise((resolve) => {
+    session.addEventListener('end', resolve, { once: true });
+  });
 
   if (overlay) overlay.style.display = 'none';
   // Arena mode: solid dark clear + dimmed base lights; the room itself is
