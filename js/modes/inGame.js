@@ -1246,6 +1246,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // connection is torn down below via the `multiplayer` bundle instead.
     mpMenu.hide();
     mpMenu.dispose();
+    // Hide as well as remove: the beam is usually ON at session end (the Exit
+    // button is clicked with the laser aimed at it), and a stale visible=true
+    // is what made a resurrected laser render as a stuck ray.
+    laser.visible = false;
     if (laser.parent) laser.parent.remove(laser);
     // The laser is a Group (beam tube + tip disc) — dispose its children.
     laser.traverse((child) => {

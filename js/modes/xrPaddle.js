@@ -111,6 +111,15 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
   const handedness = [null, null]; // index → 'left' | 'right'
   const inputSources = [null, null]; // index → XRInputSource | null
   const attachListeners = [];
+  // renderer.xr's controller/grip objects are singletons that OUTLIVE the
+  // session, so every listener added to them below must be removed in the
+  // session-end teardown — a leaked 'connected' handler fires again in the
+  // NEXT session with this closure's stale state. That was the stuck-ray bug:
+  // an old session's handler re-ran emitAttached, whose inGame callback
+  // re-parented that session's disposed laser onto the live controller, where
+  // nothing ever hid it again.
+  const boundHandlers = [];
+  let ended = false;
 
   // Visual paddle anchor in scene root. Follows the active grip's world pose
   // with a per-frame lerp/slerp (alpha < 1 → tracking offset = pseudo-haptic
@@ -428,6 +437,7 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
   }
 
   function sweepAndAttach(reason) {
+    if (ended) return; // a pending setTimeout sweep outlived the session
     const sources = session.inputSources;
     hudLog(`sweep (${reason}): ${sources.length} source(s)`);
 
@@ -464,7 +474,7 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     grips[i] = grip;
     targetRays[i] = ctrl;
 
-    grip.addEventListener('connected', (event) => {
+    const onConnected = (event) => {
       const hand = (event.data && event.data.handedness) || 'unknown';
       handedness[i] = hand;
       inputSources[i] = event.data || null;  // stash raw XRInputSource for TrackingLossGuard
@@ -475,25 +485,33 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
       // let the off-hand's controller profile overwrite the paddle hand's
       // T_cal, and would miss every re-bind after the first connect.
       attachPaddleToGrip(grip, `grip[${i}]`, hand);
-    });
+    };
+    grip.addEventListener('connected', onConnected);
+    boundHandlers.push([grip, 'connected', onConnected]);
 
-    grip.addEventListener('disconnected', () => {
+    const onDisconnected = () => {
       hudLog(`grip[${i}] disconnected`);
       handedness[i] = null;
       inputSources[i] = null;
       detachFromGrip(grip);
       setTimeout(() => sweepAndAttach('after-disconnect'), 100);
       setTimeout(() => sweepAndAttach('after-disconnect-late'), 800);
-    });
+    };
+    grip.addEventListener('disconnected', onDisconnected);
+    boundHandlers.push([grip, 'disconnected', onDisconnected]);
 
     if (onSelect) {
-      ctrl.addEventListener('selectstart', () => onSelect(grip));
+      const onSelectStart = () => onSelect(grip);
+      ctrl.addEventListener('selectstart', onSelectStart);
+      boundHandlers.push([ctrl, 'selectstart', onSelectStart]);
     }
     // Trigger RELEASE. Needed for held interactions — dragging a slider in a
     // panel is a press-move-release gesture, and with only selectstart the
     // best a panel can do is jump-to-value on tap.
     if (onSelectEnd) {
-      ctrl.addEventListener('selectend', () => onSelectEnd(grip));
+      const onSelectRelease = () => onSelectEnd(grip);
+      ctrl.addEventListener('selectend', onSelectRelease);
+      boundHandlers.push([ctrl, 'selectend', onSelectRelease]);
     }
   }
 
@@ -511,7 +529,23 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     if (activeHandedness === preferredPaddleHand()) return;
     sweepAndAttach('hand-preference-changed');
   });
-  session.addEventListener('end', () => { unsubscribeProfile(); });
+  // Session-scoped teardown. Everything this setup attached to objects that
+  // outlive the session (renderer.xr controller/grip singletons, the shared
+  // scene, module-level handler slots) is detached here, so a later session's
+  // setupXRPaddle starts from a clean slate instead of stacking on top of
+  // this closure's dead state.
+  session.addEventListener('end', () => {
+    ended = true;  // pending sweep timeouts (disconnect/resweep retries) become no-ops
+    unsubscribeProfile();
+    for (const [obj, type, fn] of boundHandlers) obj.removeEventListener(type, fn);
+    boundHandlers.length = 0;
+    attachListeners.length = 0;
+    // The paddle mesh is shared across sessions and modes; return it to its
+    // post-load unparented state rather than leaving it inside a dead anchor.
+    if (paddleModel && paddleModel.parent === paddleAnchor) paddleAnchor.remove(paddleModel);
+    scene.remove(paddleAnchor);
+    setPaddleRecoilHandler(null);
+  });
 
   setTimeout(() => sweepAndAttach('timeout-1500ms'), 1500);
 
