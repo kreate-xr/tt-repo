@@ -17,7 +17,7 @@ import {
 // Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline — live in
 // beta while the GLB venues above stay tree-shaken.
 import { createFocusRoom } from '../scene/focusRoom.js';
-import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableColor } from '../scene/models.js';
+import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableColor, setNetXRMode } from '../scene/models.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
 // FPS HUD disabled — import kept commented for easy restore.
 import {
@@ -443,6 +443,11 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     abortEntry('Failed to load 3D models: ' + (err?.message || err));
     return;
   }
+
+  // Net compositing is session-mode-dependent (see setNetXRMode): MR keeps
+  // the alpha-to-coverage cutout that survives passthrough, VR switches to
+  // the authored smooth alpha blend, which cannot shimmer.
+  setNetXRMode(isVR ? 'vr' : 'ar');
 
   // Ball colour default is mode-dependent, and only settable here because
   // setBallColor needs the meshes loadModels just registered.

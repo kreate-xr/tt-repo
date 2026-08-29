@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { scene } from './sceneSetup.js';
+import { scene, renderer } from './sceneSetup.js';
 import { SELF_TEST } from './hud.js';
 import { detectDiscCollision } from '../physics/collisions.js';
 // compositeSpinMarkings stamps spin-legibility markings (cert dots + faint
@@ -60,7 +60,8 @@ export let paddleModel = null;
 // quaternion through the transform hierarchy.
 export let ballModel = null;
 export let tableModel = null;
-// Standalone net (models/Net.glb), parented under tableModel — see loadModels.
+// The textured net node baked into Table.glb (named 'Net') — see loadModels.
+// Was a standalone models/Net.glb until the 2026-08-29 combined export.
 export let netModel = null;
 export let tableBox = null;
 export let netBox = null;
@@ -279,13 +280,14 @@ function getNetMeshAlphaMap() {
 // mesh reads against dark rooms.
 //
 // Detection is name-first (any node/material with 'net' in the name), with a
-// geometric fallback for GLBs that don't use that naming — e.g. the current
-// TableTennis export ships one mesh with 5 materials (Material.001..005) and
-// no 'net' substring anywhere, so the name check alone matches nothing and the
-// net renders as its authored pure-black solid plane (invisible against dark
-// scene backgrounds). The fallback matches any thin (dz<3 cm) vertical
-// (dy>5 cm) wide (dx>1 m) plane centered near the table's z=0 line, which is
-// how a regulation TT net is always modelled regardless of naming.
+// geometric fallback for meshes that don't use that naming — e.g. the table
+// mesh in the combined TableTennis export ships 6 materials
+// (Material.001..006) with no 'net' substring anywhere, so its legacy net
+// primitive renders as an authored pure-black solid plane (invisible against
+// dark scene backgrounds) that only geometry can identify. The fallback
+// matches any thin (dz<3 cm) vertical (dy>5 cm) wide (dx>1 m) plane centered
+// near the table's z=0 line, which is how a regulation TT net is always
+// modelled regardless of naming.
 //
 // If the detected net's material has neither a baseColor map nor an alphaMap,
 // we install the procedural mesh grid so the visible cue "strings + holes"
@@ -293,20 +295,27 @@ function getNetMeshAlphaMap() {
 // rather than "TT net" because the eye looks for the mesh pattern.
 //
 // Detection (isNetMesh) is factored out of the material rewrite because two
-// callers now need it: enhanceNetVisibility, which restyles the standalone
-// Net.glb, and hideTableNet, which switches off the net baked into Table.glb.
-// Sharing one predicate is what guarantees the mesh we hide is exactly the mesh
-// the old code used to enhance.
+// callers need it: enhanceNetVisibility, which restyles the textured 'Net'
+// node, and hideTableNet, which switches off the legacy black net plane also
+// present in Table.glb. Sharing one predicate is what guarantees the mesh we
+// hide is exactly the mesh the old code used to enhance.
+//
+// The geometric fallback measures in WORLD space, not geometry-local: the
+// 2026-08-29 combined export puts a x0.01 scale on the 'TableTennis' node, so
+// raw accessor bounds are 100x world size and a local-space threshold test
+// silently matches nothing. Both callers run before the table is re-placed
+// (tableModel still at the origin), so world coordinates here are still the
+// asset's authored space and the |cz| < 0.05 net-line test stays valid.
+// Callers must updateMatrixWorld(true) on their root first.
+const _netMeshBox = new THREE.Box3();
 function isNetMesh(node) {
   if (!node.isMesh || !node.material) return false;
   const nodeName = (node.name || '').toLowerCase();
   const matName  = (node.material.name || '').toLowerCase();
   if (nodeName.includes('net') || matName.includes('net')) return true;
   if (!node.geometry) return false;
-  const geom = node.geometry;
-  if (!geom.boundingBox) geom.computeBoundingBox();
-  const bb = geom.boundingBox;
-  if (!bb) return false;
+  const bb = _netMeshBox.setFromObject(node);
+  if (bb.isEmpty()) return false;
   const dx = bb.max.x - bb.min.x;
   const dy = bb.max.y - bb.min.y;
   const dz = bb.max.z - bb.min.z;
@@ -314,18 +323,23 @@ function isNetMesh(node) {
   return dz < 0.03 && dy > 0.05 && dx > 1.0 && Math.abs(cz) < 0.05;
 }
 
-// Hide the net that ships baked into Table.glb, so the standalone Net.glb
-// (loaded below, authored in the SAME coordinate space) is the only net in the
-// scene. Table.glb exports one glTF mesh with five primitives, which the loader
-// splits into five sibling Meshes — the net is the one carrying Material.005, a
-// 1.80 m × 0.14 m pure-black plane at z≈0, and it is the only primitive the
-// predicate above matches (the felt, rails and white lines all fail either the
-// thin-in-z or the tall-enough test). Hidden rather than removed: the two nets
-// are near-coincident planes, so leaving it drawn would z-fight, while keeping
-// the node in the graph means restoring it is a one-line change.
+// Hide the solid-black net plane baked into Table.glb's table mesh. The
+// table asset is authored with a crude net as part of the table geometry — a
+// 1.80 m × 0.14 m pure-black untextured plane at z≈0 — which duplicates the
+// textured 'Net' node in the same file. The two are near-coincident planes:
+// drawn together they z-fight, and the black slab fills the textured net's
+// see-through holes from both sides. Hidden rather than stripped from the
+// asset: the GLB is kept exactly as delivered, and hiding survives any
+// re-export that ships the plane again. The
+// felt, rails and white lines all fail either the thin-in-z or the
+// tall-enough test. The 'Net' node itself ALSO matches the predicate (by
+// name), so the netModel subtree is skipped explicitly — netModel must be
+// assigned before this runs.
 function hideTableNet(root) {
   const hidden = [];
+  root.updateMatrixWorld(true); // isNetMesh measures world-space boxes
   root.traverse((node) => {
+    if (netModel && (node === netModel || netModel.getObjectById(node.id))) return;
     if (!isNetMesh(node)) return;
     node.visible = false;
     hidden.push(node.name || '(unnamed)');
@@ -333,106 +347,17 @@ function hideTableNet(root) {
   logInfo('Table.glb built-in net hidden:', hidden.length ? hidden : '(none matched)');
 }
 
-// Second half of removing Table.glb's net: its white top tape.
+// RETIRED: stripTableNetTape (see git history for the implementation).
 //
-// The net is NOT one primitive. Table.glb authors it across three:
-//   Material.005 — the black mesh plane and its side edging  (hideTableNet)
-//   Material.002 — the white tape band along the net's top   (this function)
-//   Material.003 — the posts and table-edge clamps           (deliberately KEPT)
-//
-// hideTableNet only catches the first. Left alone, the tape band survives as a
-// full-width white bar floating ~1 cm above Net.glb's top edge — which is
-// exactly what "there are two nets" looks like from the player's side.
-//
-// It cannot be switched off at mesh level: Material.002 also carries the
-// table's white boundary and centre lines, and the loader gives all of it one
-// Mesh. So the tape's triangles are dropped from the index buffer instead.
-//
-// The posts stay because they are real hardware and Net.glb ships none — it is
-// netting only, no tape and no posts (verified against its texture: uniform
-// mesh top to bottom). So the assembled net is Net.glb's mesh hung between
-// Table.glb's posts, which is how a real one is put together.
-//
-// Selection is deliberately narrow rather than "drop everything above the
-// felt", which would take the posts and parts of the frame with it. Per mesh,
-// the above-surface triangles are collected and dropped only if together they
-// form a band that is ALL FOUR of:
-//
-//   wide          (> 1 m across)          — spans the table, like a net does
-//   thin in Y     (< 3 cm tall)           — a tape, not the 15 cm posts
-//   thin in Z     (< 5 cm deep)           — in the net plane, not a horizontal
-//                                           shelf somewhere in the frame
-//   at the net    (within 5 cm of NetCenter.z)
-//
-// The first two alone were not enough: the table frame contains a 1.81 m wide
-// perfectly flat horizontal band above the play surface that passed both and
-// got deleted. The Z tests are what pin the match to the net line.
-const TAPE_MIN_WIDTH  = 1.0;
-const TAPE_MAX_HEIGHT = 0.03;
-const TAPE_MAX_DEPTH  = 0.05;
-const TAPE_MAX_Z_OFFSET = 0.05;
-function stripTableNetTape(root, surfaceY, netZ) {
-  const cutY = surfaceY + 0.02;   // 2 cm of clearance over the felt
-  const v = new THREE.Vector3();
-  root.updateMatrixWorld(true);
-
-  root.traverse((node) => {
-    if (!node.isMesh || !node.geometry) return;
-    // Already-hidden meshes are the net plane hideTableNet switched off —
-    // nothing to gain from editing geometry nobody draws.
-    if (!node.visible) return;
-    // Net.glb is parented under tableModel by the time this runs. It survives
-    // the band test on its own (14 cm tall, well over TAPE_MAX_HEIGHT), but skip
-    // it explicitly so a future shorter net asset can't be eaten by its own
-    // clean-up pass.
-    if (netModel && (node === netModel || netModel.getObjectById(node.id))) return;
-    const geom = node.geometry;
-    const pos = geom.getAttribute('position');
-    const idx = geom.getIndex();
-    if (!pos || !idx) return;
-
-    // Pass 1 — split triangles into above-surface and the rest, measuring the
-    // above-surface set's world bbox as we go.
-    const above = [];
-    const below = [];
-    const bMin = new THREE.Vector3(Infinity, Infinity, Infinity);
-    const bMax = new THREE.Vector3(-Infinity, -Infinity, -Infinity);
-    for (let i = 0; i < idx.count; i += 3) {
-      const tri = [idx.getX(i), idx.getX(i + 1), idx.getX(i + 2)];
-      let minY = Infinity;
-      const world = [];
-      for (const vi of tri) {
-        v.fromBufferAttribute(pos, vi).applyMatrix4(node.matrixWorld);
-        world.push(v.clone());
-        if (v.y < minY) minY = v.y;
-      }
-      if (minY > cutY) {
-        above.push(...tri);
-        for (const w of world) { bMin.min(w); bMax.max(w); }
-      } else {
-        below.push(...tri);
-      }
-    }
-    if (above.length === 0) return;
-
-    // Pass 2 — is that set a tape band, or something we must not touch?
-    const width  = bMax.x - bMin.x;
-    const height = bMax.y - bMin.y;
-    const depth  = bMax.z - bMin.z;
-    const zOff   = Math.abs((bMin.z + bMax.z) / 2 - netZ);
-    if (width < TAPE_MIN_WIDTH) return;
-    if (height > TAPE_MAX_HEIGHT) return;
-    if (depth > TAPE_MAX_DEPTH) return;
-    if (zOff > TAPE_MAX_Z_OFFSET) return;
-
-    geom.setIndex(below);
-    geom.computeBoundingBox();
-    geom.computeBoundingSphere();
-    logInfo(`Table.glb net tape stripped from '${node.name || '(unnamed)'}': ` +
-      `${above.length / 3} triangles (${width.toFixed(3)} × ${height.toFixed(3)} × ` +
-      `${depth.toFixed(3)} m band, ${zOff.toFixed(3)} m from the net line)`);
-  });
-}
+// The white tape band along the net's top (part of the Material.002 mesh,
+// which also carries the table's boundary and centre lines) used to be
+// index-buffer-stripped at load. That was correct for the standalone-Net.glb
+// era: the standalone net hung ~1 cm below the baked tape, so the tape read
+// as a second, floating net. With the net now baked into Table.glb in the
+// same authored assembly — netting quad, tape, posts — the tape sits where a
+// real net's white top tape sits, and stripping it just made the net look
+// incomplete (reported from headset 2026-08-29). The assembled net is now
+// used exactly as authored: textured mesh + white tape + posts.
 
 function enhanceNetVisibility(root) {
   const matched = [];
@@ -446,12 +371,38 @@ function enhanceNetVisibility(root) {
     if (!mat.map && !mat.alphaMap) {
       mat.alphaMap = getNetMeshAlphaMap();
     }
-    // Alpha cutout: preserves textured mesh holes without fade-out. Threshold
-    // 0.5 keeps grid strings fully opaque and clips the transparent gaps.
+    // Alpha-to-coverage cutout: preserves the textured mesh holes without
+    // blend-sorting artifacts, and — because coverage is resolved through
+    // MSAA (renderer is antialias: true, and the WebXR session framebuffer is
+    // antialiased too) — the thin strings get PARTIAL pixel coverage instead
+    // of a hard keep/discard per sample.
+    //
+    // Why not plain alphaTest? Both of its configurations fail on this map
+    // (TT_Net: binary alpha, ~24% opaque string coverage):
+    //   - alphaTest 0.5 + mipmaps: every mip below the top averages to ~0.24
+    //     alpha, under the threshold, so the whole net VANISHES beyond a
+    //     couple of metres (verified in desktop preview).
+    //   - alphaTest 0.5 + mipmaps off: visible at distance, but the strings
+    //     alias per-frame — a hard glitter/shimmer across the whole net,
+    //     reported from headset 2026-08-29 as unstable.
+    // Alpha-to-coverage keeps mipmaps ON (so distant sampling is stable and
+    // the net fades toward a semi-dense weave instead of vanishing) while
+    // MSAA dithers the string edges smooth. Max anisotropy stabilizes the
+    // long, near-grazing view down the net line. The small 0.1 alphaTest only
+    // discards fully-transparent fragments so the holes never occlude via the
+    // depth buffer — it is low enough that distant mips (~0.24) still render.
     if (mat.map || mat.alphaMap) {
       mat.transparent = false;
-      mat.alphaTest = 0.5;
+      mat.alphaToCoverage = true;
+      mat.alphaTest = 0.1;
       mat.depthWrite = true;
+      for (const tex of [mat.map, mat.alphaMap]) {
+        if (!tex) continue;
+        tex.generateMipmaps = true;
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        tex.needsUpdate = true;
+      }
     } else {
       mat.transparent = false;
       mat.opacity = 1.0;
@@ -464,6 +415,47 @@ function enhanceNetVisibility(root) {
     matched.push(node.name || '(unnamed)');
   });
   logInfo('Net visibility enhancement applied to:', matched.length ? matched : '(no meshes matched — check GLB node names)');
+}
+
+// Mode-dependent net compositing. Called by inGame.js once the session type
+// is known (assets load inside the live XR session, so this always runs after
+// enhanceNetVisibility has installed the cutout).
+//
+// 'ar' — keep the alpha-to-coverage cutout from enhanceNetVisibility. The
+//   authored alpha-BLEND net fades to near-invisible against passthrough, so
+//   MR needs the cutout; confirmed clean in headset (2026-08-29).
+// 'vr' — switch the netting back to authored smooth alpha BLEND. The cutout's
+//   per-pixel keep/discard edges are what shimmers under the VR compositor
+//   (headset report 2026-08-29: glitter in VR, rock-solid in MR, identical
+//   material — so the failure is in how VR presents hard 1-px edges, not in
+//   the material config). Blending has no threshold to alias: the mipmapped
+//   texture fades smoothly whatever the compositor does. Its one failure
+//   mode — washing out against passthrough — cannot happen in VR's opaque
+//   environments. depthWrite stays off so the semi-transparent netting never
+//   occludes the ball behind it through the holes; three.js draws transparent
+//   objects after the opaque pass, which handles the compositing order.
+//
+// Desktop preview keeps the 'ar' cutout so the MR path stays testable
+// without a headset.
+export function setNetXRMode(mode) {
+  if (!netModel) return;
+  netModel.traverse((node) => {
+    if (!node.isMesh || !node.material) return;
+    const mat = node.material;
+    if (mode === 'vr') {
+      mat.alphaToCoverage = false;
+      mat.transparent = true;
+      mat.alphaTest = 0;
+      mat.depthWrite = false;
+    } else {
+      mat.alphaToCoverage = true;
+      mat.transparent = false;
+      mat.alphaTest = 0.1;
+      mat.depthWrite = true;
+    }
+    mat.needsUpdate = true;
+  });
+  logInfo(`Net compositing set for '${mode}' session`);
 }
 
 // P16 §2.5: table roughness clamped to [0.35, 0.45]. With the P16 rig's
@@ -597,27 +589,42 @@ export async function loadModels(loadingScreen, statusEl) {
       }
     }
 
-    const [paddleGltf, tableGltf, ballGltf, netGltf] = await Promise.all([
+    const [paddleGltf, tableGltf, ballGltf] = await Promise.all([
       glbPaddle ? loader.loadAsync('models/Paddle.glb') : Promise.resolve(null),
       loader.loadAsync('models/Table.glb'),
       loader.loadAsync('models/Ball.glb'),
-      loader.loadAsync('models/Net.glb'),
     ]);
 
-    // --- Table ---
+    // --- Table (and its baked-in net) ---
     tableModel = tableGltf.scene;
     scene.add(tableModel);
 
-    // Table.glb's own net is a black solid plane — replaced by the standalone
-    // Net.glb below, so hide it here before anything else measures or restyles
-    // the table.
+    // --- Net (Table.glb node 'Net') ---
+    // The net ships baked into Table.glb as its own named node — a single
+    // textured quad hung at the net line (x -0.96..0.82, y 0.79..0.93, z=0),
+    // formerly the standalone models/Net.glb, merged into the table export
+    // 2026-08-29 so the two can never drift out of sync. Fail-loud on a
+    // missing node, same policy as the anchors below: a Table.glb without its
+    // net is a broken asset, not a runtime condition.
+    //
+    // Found FIRST because hideTableNet must skip this subtree — the node is
+    // named 'Net', so the shared isNetMesh predicate matches it just like the
+    // legacy black plane it exists to replace.
+    //
+    // enhanceNetVisibility: the GLB authors the net as alpha-BLEND, which
+    // fades to near-invisible against AR pass-through, so it is switched to a
+    // hard alphaTest cutout that keeps the strings opaque and the holes
+    // genuinely see-through. The GLB ships an RGBA mesh texture, so the
+    // procedural grid alphaMap in that function is not used here.
+    netModel = tableModel.getObjectByName('Net');
+    if (!netModel) throw new Error("Table.glb is missing its 'Net' node");
+    enhanceNetVisibility(netModel);
+
+    // Hide the solid-black duplicate net plane baked into the table mesh
+    // before anything else measures or restyles the table, so the textured
+    // node above is the only net drawn.
     hideTableNet(tableModel);
 
-    // Previous treatment — the baked-in net was kept and its material rewritten
-    // to an alpha cutout to survive AR pass-through. Net.glb ships a real
-    // mesh-with-alpha texture, so that pass now runs on the new asset instead
-    // (see below); left commented in case the built-in net is ever restored.
-    // enhanceNetVisibility(tableModel);
     matteTableSurface(tableModel);
     initTableColor(tableModel);
     applyTableShadowFlags(tableModel);
@@ -626,24 +633,6 @@ export async function loadModels(loadingScreen, statusEl) {
     const tableLength = rawBox.max.z - rawBox.min.z;
     const nearEdgeOffset = -0.3 - rawBox.max.z;
     tableModel.position.set(0, 0, nearEdgeOffset);
-
-    // --- Net (models/Net.glb) ---
-    // Authored in Table.glb's own coordinate space (its plane lands at x
-    // -0.96..0.82, y 0.79..0.93, z=0 — within a centimetre of the black plane
-    // it replaces), so it is parented under tableModel with an identity
-    // transform: no hand-tuned offset to drift out of sync when the table is
-    // re-placed. Added AFTER rawBox is measured and the table positioned, so
-    // the near-edge placement stays derived from the table alone.
-    //
-    // enhanceNetVisibility is the same pass the built-in net used to get: the
-    // GLB authors the net as alpha-BLEND, which fades to near-invisible against
-    // AR pass-through, so it is switched to a hard alphaTest cutout that keeps
-    // the strings opaque and the holes genuinely see-through. The GLB already
-    // ships an RGBA mesh texture, so the procedural grid alphaMap in that
-    // function is not used here.
-    netModel = netGltf.scene;
-    enhanceNetVisibility(netModel);
-    tableModel.add(netModel);
 
     // Derive play-surface bounds and net AABB from the named anchor empties
     // baked into Table.glb. setFromObject(tableModel) is too generous — it
@@ -661,8 +650,6 @@ export async function loadModels(loadingScreen, statusEl) {
     const edgeFar   = getAnchor('Edge_Far');
     const edgeNear  = getAnchor('Edge_Near');
     const tableCtr  = getAnchor('TableCenter');
-    // Hoisted above its original use in the net-AABB block below because
-    // stripTableNetTape needs the net line to know which band is the tape.
     const netCtr    = getAnchor('NetCenter');
 
     tableSurfaceY = tableCtr.y;
@@ -673,10 +660,9 @@ export async function loadModels(loadingScreen, statusEl) {
     logInfo('Table play-surface bounds:', tableBox.min, tableBox.max);
     logInfo('Table length:', tableLength, 'Surface Y:', tableSurfaceY);
 
-    // Finish removing Table.glb's net now that the play-surface height is
-    // known — the tape band is identified relative to it. Runs after the table
-    // is positioned so the triangle test is done in final world space.
-    stripTableNetTape(tableModel, tableSurfaceY, netCtr.z);
+    // The net's white top tape (baked into the table mesh) is kept as
+    // authored — a stripTableNetTape pass used to delete it here; see the
+    // RETIRED note below hideTableNet for why it no longer runs.
 
     // --- Ball ---
     // models/Ball.glb, authored at the real 40 mm ITTF diameter (radius

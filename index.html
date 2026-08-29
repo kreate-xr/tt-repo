@@ -7,15 +7,15 @@
   <meta name="description" content="Play table tennis in mixed reality. Realistic physics, AI opponents from club to elite level, training drills, and live multiplayer — on Meta Quest.">
   <meta name="theme-color" content="#4f46e5">
   <link rel="icon" href="/favicon.ico" sizes="48x48">
-  <!-- Warm the caches while the user reads the landing page: the four GLBs
+  <!-- Warm the caches while the user reads the landing page: the three GLBs
        (currently fetched only AFTER the XR session starts, serializing the
        whole download behind the "Loading models…" panel) and the impact
-       samples. crossorigin matters — fetch()/loaders use CORS-mode requests
+       samples. The net ships inside Table.glb since the 2026-08-29 combined
+       export. crossorigin matters — fetch()/loaders use CORS-mode requests
        and a non-CORS preload would be re-downloaded. -->
   <link rel="preload" href="/models/Table.glb" as="fetch" crossorigin>
   <link rel="preload" href="/models/Paddle.glb" as="fetch" crossorigin>
   <link rel="preload" href="/models/Ball.glb" as="fetch" crossorigin>
-  <link rel="preload" href="/models/Net.glb" as="fetch" crossorigin>
   <link rel="preload" href="/sounds/Ball_Bounce.wav" as="fetch" crossorigin>
   <link rel="preload" href="/sounds/Paddle_Hit_Self.wav" as="fetch" crossorigin>
   <link rel="preload" href="/sounds/Paddle_Hit_Opponent.wav" as="fetch" crossorigin>
