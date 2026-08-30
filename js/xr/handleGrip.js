@@ -32,12 +32,14 @@ const ROD_FORWARD = new THREE.Vector3(0, 0, -1);
 // the fist centroid sits. 0.5 (mid-handle) matches a natural full grip on
 // paper, but in-headset the handle butt visibly floated above the physical
 // controller's base — the Touch controller body extends further below the
-// grip-space origin than half our handle covers. 0.8 puts the butt ~6.7 cm
-// behind the fist point (on the 8.4 cm handle), lining it up with the
-// controller base. Asset-relative: a longer-handled GLB shifts
-// proportionally more. Fine per-player adjustment lives in the in-headset
-// Paddle Fine-Tune panel (Pos Z), not here.
-export const GRIP_POINT_FRACTION = 0.8;
+// grip-space origin than half our handle covers. 0.8 lined the butt up with
+// the controller base, but in-headset the bat still read as riding high on
+// the controller; 0.9 puts the butt ~7.6 cm behind the fist point (on the
+// 8.4 cm handle), seating the paddle slightly below the controller start.
+// Asset-relative: a longer-handled GLB shifts proportionally more. Fine
+// per-player adjustment lives in the in-headset Paddle Fine-Tune panel
+// (Pos Z), not here.
+export const GRIP_POINT_FRACTION = 0.9;
 
 /**
  * Derive the T_cal that welds the paddle handle onto the controller.
