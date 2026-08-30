@@ -32,12 +32,16 @@ const BLUE = '#3b82f6';
 const BLUE_BRIGHT = '#4d8bff';
 const RED = '#ef4444';
 const RED_BRIGHT = '#ff4d64';
-const TEXT_DIM = '#aab6d4';
+const TEXT_DIM = '#c3cde8';
 const GOLD = '#f5b83d';
 const PURPLE = '#8b5cf6';
 const GREEN = '#22c55e';
 
 const FONT = 'system-ui, sans-serif';
+
+// Stat values render both on the base canvas (drawStat) and on the floating
+// panel's clock overlay (renderClockValue) — one constant so they can't drift.
+const STAT_VALUE_FONT = `bold 84px ${FONT}`;
 
 export function createScoreboardState(config = {}) {
   return {
@@ -75,11 +79,27 @@ export function renderClockValue(ctx, elapsedMs) {
   ctx.clearRect(0, 0, CLOCK_VALUE_RECT.w, CLOCK_VALUE_RECT.h);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  ctx.font = `bold 76px ${FONT}`;
+  ctx.font = STAT_VALUE_FONT;
   ctx.fillStyle = '#ffffff';
   // Same layout-space anchor drawStat uses (gx=1271 → value x = gx-115=1156,
   // baseline y = statY+32 = 982), translated into the rect's local px.
   ctx.fillText(formatTime(elapsedMs), 1156 - CLOCK_VALUE_RECT.x, 982 - CLOCK_VALUE_RECT.y);
+}
+
+// Tension callout for the center badge, from standard 11-point win-by-2
+// scoring. A side holds game point when it leads by ≥1 at ≥10 (play stops at
+// a 2-point lead, so that lead is always exactly 1); it's match point when
+// taking this game also takes the match. Exported for tests.
+export function computeCallout(state) {
+  if (state.matchOverBanner) return null;
+  const p = state.playerScore, a = state.aiScore;
+  if (p >= 10 && p === a) return { text: 'DEUCE', color: '#ffffff' };
+  const side = p >= 10 && p > a ? 'player' : a >= 10 && a > p ? 'ai' : null;
+  if (!side) return null;
+  const gamesNeeded = Math.floor(state.bestOf / 2) + 1;
+  const games = side === 'player' ? state.playerGames : state.aiGames;
+  if (games + 1 >= gamesNeeded) return { text: 'MATCH POINT', color: GOLD };
+  return { text: 'GAME POINT', color: side === 'player' ? BLUE_BRIGHT : RED_BRIGHT };
 }
 
 export function renderScoreboardLayout(ctx, state, opts = {}) {
@@ -123,11 +143,17 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   const redCx = (1098 + 2012) / 2;
   const nameY = 215;
 
+  // Names are clamped so a long multiplayer display name can't walk the
+  // serve dot into the VS column. ~620px sit between the name anchor and the
+  // panel's inner edge; 380 leaves room for the dot + glow and a clear gap
+  // to the VS glyph even with the dot appended.
+  const NAME_MAX_W = 380;
+
   drawAvatar(ctx, blueCx - 250, nameY, '#1d5cff');
   ctx.font = `bold 60px ${FONT}`;
   ctx.fillStyle = '#ffffff';
   ctx.textAlign = 'left';
-  const blueName = state.playerName;
+  const blueName = ellipsize(ctx, state.playerName, NAME_MAX_W);
   ctx.fillText(blueName, blueCx - 165, nameY);
   if (state.currentServer === 'player') {
     const nw = ctx.measureText(blueName).width;
@@ -136,7 +162,7 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
 
   drawAvatar(ctx, redCx + 250, nameY, '#e11d3c');
   ctx.textAlign = 'right';
-  const redName = state.aiName;
+  const redName = ellipsize(ctx, state.aiName, NAME_MAX_W);
   ctx.fillText(redName, redCx + 165, nameY);
   if (state.currentServer === 'ai') {
     const nw = ctx.measureText(redName).width;
@@ -163,15 +189,53 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   ctx.fillStyle = vsGrad;
   ctx.fillText('VS', cx, 240);
 
-  roundRect(ctx, cx - 140, 340, 280, 72, 16);
+  // The badge shows "BEST OF n" normally, but flips to a tension callout —
+  // DEUCE / GAME POINT / MATCH POINT — whenever one is live. The static
+  // best-of info is the least valuable thing on the board at those moments.
+  const callout = computeCallout(state);
+  const badgeText = callout ? callout.text : `BEST OF ${state.bestOf}`;
+  ctx.font = `bold 40px ${FONT}`;
+  // Width from measured text + 3px/char tracking; floor at the classic 280.
+  const badgeW = Math.max(
+    280, ctx.measureText(badgeText).width + 3 * badgeText.length + 84,
+  );
+  roundRect(ctx, cx - badgeW / 2, 340, badgeW, 76, 16);
   ctx.fillStyle = '#141c33';
   ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.14)';
-  ctx.lineWidth = 2;
+  ctx.strokeStyle = callout ? callout.color : 'rgba(255,255,255,0.14)';
+  ctx.lineWidth = callout ? 4 : 2;
+  if (callout) {
+    ctx.shadowColor = callout.color;
+    ctx.shadowBlur = 20;
+  }
   ctx.stroke();
-  ctx.font = `bold 36px ${FONT}`;
-  ctx.fillStyle = '#dbe2f4';
-  withLetterSpacing(ctx, '3px', () => ctx.fillText(`BEST OF ${state.bestOf}`, cx, 377));
+  clearShadow(ctx);
+  ctx.fillStyle = callout ? callout.color : '#dbe2f4';
+  withLetterSpacing(ctx, '3px', () => ctx.fillText(badgeText, cx, 380));
+
+  // Games-won tally under the badge — the headline "how far into the match
+  // are we" number the history row only implies. Pointless in a single-game
+  // match (always 0 - 0), so best-of-1 skips it.
+  if (state.bestOf > 1) {
+    ctx.font = `bold 80px ${FONT}`;
+    const pG = String(state.playerGames);
+    const aG = String(state.aiGames);
+    const dash = '  -  ';
+    const pw = ctx.measureText(pG).width;
+    const dw = ctx.measureText(dash).width;
+    let gxx = cx - (pw + dw + ctx.measureText(aG).width) / 2;
+    ctx.textAlign = 'left';
+    ctx.fillStyle = BLUE_BRIGHT;
+    ctx.fillText(pG, gxx, 512); gxx += pw;
+    ctx.fillStyle = '#7f8aa8';
+    ctx.fillText(dash, gxx, 512); gxx += dw;
+    ctx.fillStyle = RED_BRIGHT;
+    ctx.fillText(aG, gxx, 512);
+    ctx.textAlign = 'center';
+    ctx.font = `bold 30px ${FONT}`;
+    ctx.fillStyle = TEXT_DIM;
+    withLetterSpacing(ctx, '3px', () => ctx.fillText('GAMES', cx, 566));
+  }
 
   // --- Games history row ------------------------------------------------------
   // Only games that exist are shown: every finished game plus the one in
@@ -189,7 +253,7 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
     const gx = startX + colW * (i + 0.5);
     if (i > 0) vline(ctx, startX + colW * i, 625, 745);
 
-    ctx.font = `bold 34px ${FONT}`;
+    ctx.font = `bold 38px ${FONT}`;
     ctx.fillStyle = TEXT_DIM;
     withLetterSpacing(ctx, '3px', () => ctx.fillText(`GAME ${i + 1}`, gx, 645));
 
@@ -197,7 +261,9 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
     if (finished) {
       drawGameScore(ctx, gx, 715, finished.playerScore, finished.aiScore, 1.0);
     } else {
-      drawGameScore(ctx, gx, 715, state.playerScore, state.aiScore, 0.5);
+      // 0.65 (was 0.5) — the live game still reads as "in progress" but the
+      // digits stay legible at panel distance.
+      drawGameScore(ctx, gx, 715, state.playerScore, state.aiScore, 0.65);
     }
   }
 
@@ -276,8 +342,16 @@ function withLetterSpacing(ctx, spacing, draw) {
   if (had) ctx.letterSpacing = prev;
 }
 
+// Truncate text with an ellipsis so it fits maxW at the current ctx.font.
+function ellipsize(ctx, text, maxW) {
+  if (ctx.measureText(text).width <= maxW) return text;
+  let t = String(text);
+  while (t.length > 1 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+  return t + '…';
+}
+
 function hline(ctx, x0, x1, y) {
-  ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.13)';
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(x0, y);
@@ -286,7 +360,7 @@ function hline(ctx, x0, x1, y) {
 }
 
 function vline(ctx, x, y0, y1) {
-  ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(x, y0);
@@ -367,7 +441,7 @@ function drawServeDot(ctx, x, y, color) {
 
 // One "11 - 8" cell of the games row: player score blue, dash gray, AI red.
 function drawGameScore(ctx, cx, y, p, a, alpha) {
-  ctx.font = `bold 58px ${FONT}`;
+  ctx.font = `bold 66px ${FONT}`;
   const pStr = String(p), aStr = String(a), dash = ' - ';
   const pw = ctx.measureText(pStr).width;
   const dw = ctx.measureText(dash).width;
@@ -391,15 +465,15 @@ function drawGameScore(ctx, cx, y, p, a, alpha) {
 function drawStat(ctx, gx, gy, icon, color, label, value, unit) {
   drawStatIcon(ctx, icon, gx - 190, gy, color);
   ctx.textAlign = 'left';
-  ctx.font = `bold 36px ${FONT}`;
+  ctx.font = `bold 40px ${FONT}`;
   ctx.fillStyle = TEXT_DIM;
   withLetterSpacing(ctx, '2px', () => ctx.fillText(label, gx - 115, gy - 36));
-  ctx.font = `bold 76px ${FONT}`;
+  ctx.font = STAT_VALUE_FONT;
   ctx.fillStyle = '#ffffff';
   ctx.fillText(value, gx - 115, gy + 32);
   if (unit) {
     const vw = ctx.measureText(value).width;
-    ctx.font = `bold 34px ${FONT}`;
+    ctx.font = `bold 36px ${FONT}`;
     ctx.fillStyle = TEXT_DIM;
     ctx.fillText(unit, gx - 115 + vw + 14, gy + 44);
   }

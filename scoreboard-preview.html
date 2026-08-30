@@ -15,6 +15,10 @@
   <canvas id="fresh" width="2048" height="1152"></canvas>
   <p>Mid-match (game 3 live, player serving)</p>
   <canvas id="mid" width="2048" height="1152"></canvas>
+  <p>Match point (player 10-8, games 2-1) — gold badge</p>
+  <canvas id="matchpoint" width="2048" height="1152"></canvas>
+  <p>Deuce at 10-10, long opponent name (ellipsized)</p>
+  <canvas id="deuce" width="2048" height="1152"></canvas>
   <p>Match over</p>
   <canvas id="over" width="2048" height="1152"></canvas>
 <script type="module">
@@ -38,6 +42,30 @@
     shotsHit: 64, topSpeedKmh: 52.7, elapsedMs: 9 * 60000 + 42000,
   });
   renderScoreboardLayout(document.getElementById('mid').getContext('2d'), mid);
+
+  const matchPoint = createScoreboardState({ bestOf: 5 });
+  Object.assign(matchPoint, {
+    playerScore: 10, aiScore: 8, playerGames: 2, aiGames: 1,
+    currentServer: 'ai',
+    gameHistory: [
+      { playerScore: 11, aiScore: 8 },
+      { playerScore: 9, aiScore: 11 },
+      { playerScore: 11, aiScore: 7 },
+    ],
+    shotsHit: 88, topSpeedKmh: 58.9, elapsedMs: 12 * 60000 + 18000,
+  });
+  renderScoreboardLayout(document.getElementById('matchpoint').getContext('2d'), matchPoint);
+
+  const deuce = createScoreboardState({
+    bestOf: 5, playerName: 'YOU', aiName: 'UNREASONABLYLONGOPPONENTNAME',
+  });
+  Object.assign(deuce, {
+    playerScore: 10, aiScore: 10, playerGames: 0, aiGames: 1,
+    currentServer: 'ai',
+    gameHistory: [{ playerScore: 9, aiScore: 11 }],
+    shotsHit: 47, topSpeedKmh: 44.1, elapsedMs: 6 * 60000 + 3000,
+  });
+  renderScoreboardLayout(document.getElementById('deuce').getContext('2d'), deuce);
 
   const over = createScoreboardState({ bestOf: 5 });
   Object.assign(over, {
