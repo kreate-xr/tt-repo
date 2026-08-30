@@ -428,6 +428,16 @@ export let PADDLE_ROT_SMOOTHING = 0.65;
 // clipping is the milder lie. AI/remote paddles are unbounded (no hand).
 export const PADDLE_TABLE_PUSH_MAX = 0.01;
 
+// Ceiling on the pitch-about-the-grip rescue that resolves what the bounded
+// translation above can't (js/physics/paddleTableClamp.js:
+// resolvePaddleTableTilt). The hand is a fixed point of the rotation, so this
+// spends a different currency than PADDLE_TABLE_PUSH_MAX — orientation
+// disagreement between the physical controller and the rendered bat, not
+// distance. π/2 lets the blade lie fully flat on the felt (what a real bat
+// does pressed into a table by a loosening grip); past that the pose is
+// unreachable without detaching and the blade clips honestly.
+export const PADDLE_TABLE_TILT_MAX = Math.PI / 2;
+
 // Squash-and-stretch on paddle contact — purely visual, does not affect physics.
 // Ball briefly compresses to (1+amount, 1-amount, 1+amount) and recovers linearly.
 // Disabled by default: players read the per-bounce vertex deformation as the

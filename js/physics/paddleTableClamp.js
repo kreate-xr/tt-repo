@@ -11,6 +11,12 @@
 // plus the face center against it. Each penetrating sample picks its shortest
 // exit axis; per-axis pushes are aggregated so a paddle straddling a corner
 // gets lifted onto the top AND pushed off the side in one delta.
+//
+// Two stages for the PLAYER's paddle (see resolvePaddleTableTilt below):
+// a translation bounded by the 1 cm contact-visual agreement budget absorbs
+// grazes, then any remaining top-surface penetration is resolved by pitching
+// the bat up about the hand — a rotation whose fixed point is the grip, so
+// deep dips ride up onto the felt instead of either clipping or detaching.
 
 import * as THREE from 'three';
 
@@ -19,6 +25,17 @@ const _tmpV = new THREE.Vector3();
 const _tmpSample = new THREE.Vector3();
 const _worldUp = new THREE.Vector3(0, 1, 0);
 const _worldRight = new THREE.Vector3(1, 0, 0);
+
+// Rim basis: two unit vectors perpendicular to faceNormal, spanning the
+// face plane, written into _tmpU/_tmpV. Prefer u ⟂ worldUp so the "θ=0" rim
+// sample sits at the paddle's near-horizontal edge — makes the sampling
+// stable when the blade is tilted at typical playing angles.
+function computeRimBasis(faceNormal) {
+  _tmpU.crossVectors(faceNormal, _worldUp);
+  if (_tmpU.lengthSq() < 1e-6) _tmpU.crossVectors(faceNormal, _worldRight);
+  _tmpU.normalize();
+  _tmpV.crossVectors(faceNormal, _tmpU).normalize();
+}
 
 // 8 evenly-spaced rim samples. More would be more accurate at very shallow
 // tilts, but 8 catches every real clipping case in play and keeps the per-
@@ -72,14 +89,7 @@ export function resolvePaddleTablePenetration(
   const zmax = tableBox.max.z;
   const yTop = tableBox.max.y + halfThickness + 0.005;
 
-  // Rim basis: two unit vectors perpendicular to faceNormal, spanning the
-  // face plane. Prefer u ⟂ worldUp so the "θ=0" rim sample sits at the
-  // paddle's near-horizontal edge — makes the sampling stable when the
-  // blade is tilted at typical playing angles.
-  _tmpU.crossVectors(faceNormal, _worldUp);
-  if (_tmpU.lengthSq() < 1e-6) _tmpU.crossVectors(faceNormal, _worldRight);
-  _tmpU.normalize();
-  _tmpV.crossVectors(faceNormal, _tmpU).normalize();
+  computeRimBasis(faceNormal);
 
   // Per-axis aggregated pushes. Y only goes positive (semi-infinite volume
   // has no bottom to push down through); X and Z can go either direction
@@ -159,4 +169,141 @@ export function resolvePaddleTablePenetration(
     }
   }
   return out;
+}
+
+const _tiltFace = new THREE.Vector3();
+const _tiltNormal = new THREE.Vector3();
+const _tiltAxis = new THREE.Vector3();
+const _tiltStepQ = new THREE.Quaternion();
+
+// Residual penetration below this is invisible (0.5 mm) — stop iterating.
+const _TILT_EPS = 5e-4;
+// Linearized steps undershoot as the blade rotates; a handful of refinement
+// passes converges to sub-mm for every reachable pose.
+const _TILT_MAX_ITERS = 10;
+// Per-step ceiling so one linearized step never overshoots wildly when the
+// deepest sample sits close to the pivot (tiny lift rate → huge d/ρ).
+const _TILT_MAX_STEP = 0.3;
+
+/**
+ * Resolve REMAINING top-surface penetration by pitching the paddle up about
+ * the grip point, instead of translating it off the hand.
+ *
+ * Runs AFTER the bounded translation of resolvePaddleTablePenetration: the
+ * 1 cm budget silently absorbs grazes with zero rotation, and this solver
+ * handles what's left of a deeper dip. The pivot is the hand, so the hand is
+ * a fixed point of the rotation — same invariant as the impact recoil
+ * (xr/paddleRecoil.js): nothing ever translates out of the grip. Visually the
+ * blade rides up onto the felt the way a real bat pivots in a loosening grip
+ * when pressed into the table.
+ *
+ * The rotation axis is FIXED for the whole solve: the horizontal axis
+ * perpendicular to the pivot→faceCenter direction (a pure "pitch up about
+ * the wrist"). A per-sample axis would jump direction as the deepest rim
+ * sample flips between neighbors frame to frame; a fixed axis makes the
+ * output a continuous function of the input pose, so the clamp can't jitter.
+ *
+ * Scope: only samples whose SHORTEST exit is the top are lifted — same
+ * per-sample axis policy as the translation clamp. A hand driven fully under
+ * the table (shortest exit sideways) or past `maxTilt` still renders inside
+ * the table; that stays the honest render for an unreachable pose.
+ *
+ * Physics note: ball.js finite-differences paddle velocity from the RAW pose
+ * (getRawPaddlePose bypasses this clamp), so the clamp rotation changes where
+ * the blade collides but can never inject phantom swing/spin into an impact.
+ *
+ * @param {THREE.Vector3} pivot world-space grip/hand position (read only)
+ * @param {THREE.Vector3} faceCenter world-space face center AFTER the
+ *   translation clamp's delta (read only)
+ * @param {THREE.Vector3} faceNormal world-space face normal, unit (read only)
+ * @param {number} hitRadius paddle disc radius (m)
+ * @param {number} halfThickness paddle blade half-thickness (m)
+ * @param {THREE.Box3|null} tableBox world-space play-surface bounds
+ * @param {THREE.Quaternion} outQuat receiver — identity when no tilt applies
+ * @param {number} [maxTilt=π/2] ceiling on the total pitch (rad)
+ * @returns {number} total applied angle in radians (0 = no tilt)
+ */
+export function resolvePaddleTableTilt(
+  pivot, faceCenter, faceNormal, hitRadius, halfThickness, tableBox,
+  outQuat, maxTilt = Math.PI / 2,
+) {
+  outQuat.identity();
+  if (!tableBox) return 0;
+
+  const xmin = tableBox.min.x;
+  const xmax = tableBox.max.x;
+  const zmin = tableBox.min.z;
+  const zmax = tableBox.max.z;
+  const yTop = tableBox.max.y + halfThickness + 0.005;
+
+  // Pitch axis = (pivot→face) × up, i.e. horizontal and perpendicular to the
+  // bat's horizontal direction. +angle about it lifts everything horizontally
+  // forward of the pivot; the whole blade is forward of the hand, so the
+  // whole disc rises. Degenerate when the bat hangs exactly straight down
+  // from the fist — no pitch can lift it, and no real stroke gets there.
+  _tiltAxis.set(
+    -(faceCenter.z - pivot.z),
+    0,
+    faceCenter.x - pivot.x,
+  );
+  const hFace = _tiltAxis.length();
+  if (hFace < 1e-3) return 0;
+  _tiltAxis.multiplyScalar(1 / hFace);
+
+  _tiltFace.copy(faceCenter);
+  _tiltNormal.copy(faceNormal);
+
+  let total = 0;
+  for (let iter = 0; iter < _TILT_MAX_ITERS && total < maxTilt; iter++) {
+    computeRimBasis(_tiltNormal);
+
+    // Deepest top-exit sample and its lift rate ρ = d(sample.y)/dθ. For the
+    // fixed axis above, ρ reduces to the sample's horizontal offset from the
+    // pivot projected onto the bat's horizontal direction (see the (a×r).y
+    // identity in tests/paddleTableClamp.test.js).
+    let worstDepth = 0;
+    let worstRho = 0;
+    const N = _RIM_N + 1;
+    for (let i = 0; i < N; i++) {
+      if (i === 0) {
+        _tmpSample.copy(_tiltFace);
+      } else {
+        const j = i - 1;
+        _tmpSample.copy(_tiltFace)
+          .addScaledVector(_tmpU, _RIM_COS[j] * hitRadius)
+          .addScaledVector(_tmpV, _RIM_SIN[j] * hitRadius);
+      }
+
+      if (_tmpSample.y >= yTop) continue;
+      if (_tmpSample.x < xmin || _tmpSample.x > xmax) continue;
+      if (_tmpSample.z < zmin || _tmpSample.z > zmax) continue;
+
+      const dTop = yTop - _tmpSample.y;
+      // Top must be the shortest exit — side-exit penetration is not this
+      // solver's business (matches the translation clamp's axis choice).
+      if (_tmpSample.x - xmin < dTop || xmax - _tmpSample.x < dTop) continue;
+      if (_tmpSample.z - zmin < dTop || zmax - _tmpSample.z < dTop) continue;
+
+      if (dTop > worstDepth) {
+        worstDepth = dTop;
+        worstRho = _tiltAxis.z * (_tmpSample.x - pivot.x)
+                 - _tiltAxis.x * (_tmpSample.z - pivot.z);
+      }
+    }
+
+    if (worstDepth <= _TILT_EPS) break;
+    // The deepest sample sits at/behind the pivot's vertical plane — pitching
+    // can't lift it. Leave the residual as a clip rather than spinning.
+    if (worstRho <= 1e-4) break;
+
+    const step = Math.min(worstDepth / worstRho, _TILT_MAX_STEP, maxTilt - total);
+    _tiltStepQ.setFromAxisAngle(_tiltAxis, step);
+    _tiltFace.sub(pivot).applyQuaternion(_tiltStepQ).add(pivot);
+    _tiltNormal.applyQuaternion(_tiltStepQ);
+    total += step;
+  }
+
+  if (total <= 0) return 0;
+  outQuat.setFromAxisAngle(_tiltAxis, total);
+  return total;
 }

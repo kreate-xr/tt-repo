@@ -21,9 +21,11 @@ import { hudLog } from '../scene/hud.js';
 import { resetPaddleTracking, setPaddleRecoilHandler } from '../physics/ball.js';
 import {
   PADDLE_POS_SMOOTHING, PADDLE_ROT_SMOOTHING, WEIGHTY_BALL_ENABLED,
-  PADDLE_TABLE_PUSH_MAX,
+  PADDLE_TABLE_PUSH_MAX, PADDLE_TABLE_TILT_MAX,
 } from '../physics/constants.js';
-import { resolvePaddleTablePenetration } from '../physics/paddleTableClamp.js';
+import {
+  resolvePaddleTablePenetration, resolvePaddleTableTilt,
+} from '../physics/paddleTableClamp.js';
 import * as haptics from '../xr/haptics.js';
 import {
   composeCalibratedPose,
@@ -136,6 +138,8 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
   const tmpFaceCenter = new THREE.Vector3();
   const tmpFaceNormal = new THREE.Vector3();
   const tmpDelta = new THREE.Vector3();
+  const tmpTiltQuat = new THREE.Quaternion();
+  const tmpTiltRel = new THREE.Vector3();
   // Persistent smoothed grip pose (BEFORE calibration). The pseudo-haptic
   // smoothing lerps this toward the raw grip pose each frame; T_cal is then
   // composed on top to produce paddleAnchor's world pose. Storing the raw
@@ -402,6 +406,25 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
         tableBox, tmpDelta, PADDLE_TABLE_PUSH_MAX,
       );
       paddleAnchor.position.add(tmpDelta);
+
+      // Whatever the bounded translation couldn't absorb is resolved by
+      // pitching the bat up about the hand (fixed point: the grip — same
+      // invariant as the impact recoil above), so a deep dip rides up onto
+      // the felt instead of clipping. ball.js measures paddle velocity from
+      // the RAW pose, so this rotation can't inject phantom swing/spin; the
+      // contact geometry it changes is exactly what the player sees.
+      tmpFaceCenter.add(tmpDelta);
+      const tiltAngle = resolvePaddleTableTilt(
+        smoothedGripPos, tmpFaceCenter, tmpFaceNormal,
+        paddleHitRadius, paddleHalfThickness,
+        tableBox, tmpTiltQuat, PADDLE_TABLE_TILT_MAX,
+      );
+      if (tiltAngle > 0) {
+        paddleAnchor.quaternion.premultiply(tmpTiltQuat);
+        tmpTiltRel.subVectors(paddleAnchor.position, smoothedGripPos)
+          .applyQuaternion(tmpTiltQuat);
+        paddleAnchor.position.copy(smoothedGripPos).add(tmpTiltRel);
+      }
     }
   }
 

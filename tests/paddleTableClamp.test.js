@@ -6,7 +6,9 @@
 
 const THREE = require('three');
 
-import { resolvePaddleTablePenetration } from '../js/physics/paddleTableClamp.js';
+import {
+  resolvePaddleTablePenetration, resolvePaddleTableTilt,
+} from '../js/physics/paddleTableClamp.js';
 
 function v(x, y, z) { return new THREE.Vector3(x, y, z); }
 
@@ -168,5 +170,162 @@ describe('resolvePaddleTablePenetration — output vector reuse', () => {
     expect(out.x).toBe(0);
     expect(out.y).toBe(0);
     expect(out.z).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePaddleTableTilt — the pitch-about-the-grip rescue that runs after the
+// bounded translation. The identity it relies on: for a rotation about the
+// horizontal axis a = (r_fc × up)/|r_fc × up| through the pivot, a point at
+// offset r from the pivot rises at rate (a × r).y = (r_h · r_fc,h)/|r_fc,h|
+// per radian — the sample's horizontal offset projected onto the bat's
+// horizontal direction. Positive for the whole blade in any real grip.
+// ---------------------------------------------------------------------------
+
+const YTOP = 1.0 + HT + 0.005; // felt top + blade half-thickness + margin
+
+function applyAboutPivot(pivot, q, p) {
+  return p.clone().sub(pivot).applyQuaternion(q).add(pivot);
+}
+
+// Same sampling scheme as the solver: face center + 8 rim points.
+function discSamples(faceCenter, normal, radius) {
+  const up = v(0, 1, 0);
+  const u = new THREE.Vector3().crossVectors(normal, up);
+  if (u.lengthSq() < 1e-6) u.crossVectors(normal, v(1, 0, 0));
+  u.normalize();
+  const w = new THREE.Vector3().crossVectors(normal, u).normalize();
+  const pts = [faceCenter.clone()];
+  for (let i = 0; i < 8; i++) {
+    const th = (i / 8) * Math.PI * 2;
+    pts.push(faceCenter.clone()
+      .addScaledVector(u, Math.cos(th) * radius)
+      .addScaledVector(w, Math.sin(th) * radius));
+  }
+  return pts;
+}
+
+describe('resolvePaddleTableTilt — no-op cases', () => {
+  test('paddle above the felt returns 0 and identity', () => {
+    const q = new THREE.Quaternion(9, 9, 9, 9);
+    const a = resolvePaddleTableTilt(
+      v(0, 1.4, 0.5), v(0, 1.2, 0.3), v(0, 1, 0), R, HT, refTableBox(), q,
+    );
+    expect(a).toBe(0);
+    expect(q.w).toBe(1);
+    expect(q.x).toBe(0);
+  });
+
+  test('null tableBox returns 0', () => {
+    const q = new THREE.Quaternion();
+    expect(resolvePaddleTableTilt(
+      v(0, 1, 0), v(0, 0.5, 0), v(0, 1, 0), R, HT, null, q,
+    )).toBe(0);
+  });
+
+  test('side-exit penetration is not this solver\'s business', () => {
+    // Face center deep in the table body but hugging the +X edge: every
+    // penetrating sample's shortest exit is sideways. The translation clamp
+    // owns that case; the tilt must not fire.
+    const q = new THREE.Quaternion();
+    const a = resolvePaddleTableTilt(
+      v(0.7, 1.3, 0.2), v(0.7, 0.5, 0), v(0, 1, 0), R, HT, refTableBox(), q,
+    );
+    expect(a).toBe(0);
+  });
+
+  test('bat hanging exactly straight down from the fist is degenerate — no tilt', () => {
+    // Pivot directly above the face center: the pitch axis is undefined and
+    // no pitch about the hand can lift the blade.
+    const q = new THREE.Quaternion();
+    const a = resolvePaddleTableTilt(
+      v(0, 1.3, 0.5), v(0, 0.95, 0.5), v(0, 0, 1), R, HT, refTableBox(), q,
+    );
+    expect(a).toBe(0);
+  });
+});
+
+describe('resolvePaddleTableTilt — deep dip rides up onto the felt', () => {
+  // Hand 8.5 cm above the felt over the table, horizontal blade 6.5 cm below
+  // yTop and 20 cm forward of the hand — well past the 1 cm translation
+  // budget, the case that used to render as a clip.
+  const pivot = v(0, 1.10, 0.5);
+  const fc = v(0, 0.95, 0.3);
+  const n = v(0, 1, 0);
+
+  test('resolves the whole disc above the felt', () => {
+    const q = new THREE.Quaternion();
+    const a = resolvePaddleTableTilt(pivot, fc, n, R, HT, refTableBox(), q);
+    expect(a).toBeGreaterThan(0);
+
+    const fc2 = applyAboutPivot(pivot, q, fc);
+    expect(fc2.y).toBeGreaterThanOrEqual(YTOP - 1e-3);
+
+    const n2 = n.clone().applyQuaternion(q);
+    for (const s of discSamples(fc2, n2, R)) {
+      // Solver tolerance is 0.5 mm on its own sample phases; allow a hair
+      // more here since this rim basis can sample at different phases.
+      expect(s.y).toBeGreaterThanOrEqual(YTOP - 3e-3);
+    }
+  });
+
+  test('the hand is a fixed point of the rotation', () => {
+    const q = new THREE.Quaternion();
+    resolvePaddleTableTilt(pivot, fc, n, R, HT, refTableBox(), q);
+    const p2 = applyAboutPivot(pivot, q, pivot);
+    expect(p2.distanceTo(pivot)).toBeLessThan(1e-12);
+  });
+
+  test('rotation axis is horizontal — a pure pitch, no yaw/roll about vertical', () => {
+    const q = new THREE.Quaternion();
+    const a = resolvePaddleTableTilt(pivot, fc, n, R, HT, refTableBox(), q);
+    const s = Math.sqrt(1 - q.w * q.w);
+    expect(s).toBeGreaterThan(0); // a > 0 so the quat is a real rotation
+    expect(Math.abs(q.y / s)).toBeLessThan(1e-9);
+    expect(a).toBeLessThanOrEqual(Math.PI / 2 + 1e-9);
+  });
+
+  test('inputs are not mutated', () => {
+    const q = new THREE.Quaternion();
+    const fcCopy = fc.clone();
+    const nCopy = n.clone();
+    const pvCopy = pivot.clone();
+    resolvePaddleTableTilt(pivot, fc, n, R, HT, refTableBox(), q);
+    expect(fc.equals(fcCopy)).toBe(true);
+    expect(n.equals(nCopy)).toBe(true);
+    expect(pivot.equals(pvCopy)).toBe(true);
+  });
+});
+
+describe('resolvePaddleTableTilt — maxTilt cap', () => {
+  test('an unreachable pose stops at the cap instead of spinning', () => {
+    // Same deep dip, but a deliberately tiny budget: the solver must return
+    // exactly the cap, and the quat must carry that angle.
+    const q = new THREE.Quaternion();
+    const a = resolvePaddleTableTilt(
+      v(0, 1.10, 0.5), v(0, 0.95, 0.3), v(0, 1, 0), R, HT, refTableBox(), q, 0.1,
+    );
+    expect(a).toBeCloseTo(0.1, 9);
+    const angle = 2 * Math.acos(Math.min(1, Math.abs(q.w)));
+    expect(angle).toBeCloseTo(0.1, 6);
+  });
+});
+
+describe('resolvePaddleTableTilt — pipeline with the bounded translation', () => {
+  test('a graze the translation fully absorbs produces zero tilt', () => {
+    // 3 mm dip: translation (1 cm budget) resolves it entirely, so by the
+    // time the tilt solver sees the pose there is nothing left to rotate —
+    // small contacts keep the exact in-headset-validated behavior.
+    const fc = v(0, 1.012, 0);
+    const n = v(0, 1, 0);
+    const delta = v(0, 0, 0);
+    resolvePaddleTablePenetration(fc, n, R, HT, refTableBox(), delta, 0.01);
+    const fcAfter = fc.clone().add(delta);
+    const q = new THREE.Quaternion();
+    const a = resolvePaddleTableTilt(
+      v(0, 1.15, 0.2), fcAfter, n, R, HT, refTableBox(), q,
+    );
+    expect(a).toBe(0);
+    expect(q.w).toBe(1);
   });
 });
