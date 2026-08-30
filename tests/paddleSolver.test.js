@@ -447,8 +447,9 @@ describe('solvePaddle — net clearance', () => {
       if (!r.feasible) continue;
       feasible += 1;
       const clearance = verifiedClearance(r, contactPos, contactVel, contactSpin, env);
-      // The gate demands ballRadius + 0.02 over the (already inflated) box
-      // top; assert the hard invariant — the live physics would let it over.
+      // The gate demands a 1 cm physical bottom-to-cord gap (netClearance is
+      // measured over the already ballRadius-inflated box top, so it IS that
+      // gap); assert the hard invariant — the live physics would let it over.
       expect(clearance).not.toBeNull();
       expect(clearance).toBeGreaterThan(0);
     }
@@ -484,6 +485,56 @@ describe('solvePaddle — net clearance', () => {
         SOLVER_REASONS.CORRECTED_SPEED_CAP,
       ]).toContain(r.reason);
     }
+  });
+
+  // The 2026-08-30 "AI lost its intelligence" regression. The net gate
+  // correctly rejects full-pace spin requests that cannot clear the cord from
+  // a given contact (pre-gate they "verified" and then netted live) — but the
+  // FSM used to route every rejection straight to the centre-table zero-spin
+  // safe block, erasing placement/spin identity on ~15% of intermediate/pro
+  // rally shots. aiFSM's soften ladder now retries the SAME target at
+  // (0.80 speed, 0.6 spin) then (0.62, 0.3) before the block. This pins the
+  // physics that makes the ladder worth having: most full-pace rejections ARE
+  // executable at soften pace on the same target.
+  test('soften ladder: most full-pace rejections solve at reduced pace/spin on the same target', () => {
+    const env = { ...makeEnv(), netBox: regulationNetBox() };
+    const rng = mulberry32(20260830);
+    const N = 40;
+    let fullOK = 0;
+    let laddered = 0;
+    let dumb = 0;
+    for (let i = 0; i < N; i++) {
+      // Low-to-mid contacts at loop pace with heavy physical-rps spin — the
+      // band the regression concentrated in.
+      const contactPos = v((rng() - 0.5) * 0.8, 0.12 + rng() * 0.25, -0.9 - rng() * 0.6);
+      const contactVel = v((rng() - 0.5) * 1.0, -1.0 + rng() * 2.0, 3.0 + rng() * 4.0);
+      const contactSpin = v((rng() - 0.5) * 250, (rng() - 0.5) * 100, 0);
+      const args = {
+        targetX: (rng() - 0.5) * 1.2,
+        targetZ: 0.3 + rng() * 0.9,
+        targetSpeed: 9 + rng() * 6,
+        targetSpin: 35 + rng() * 25,
+        contactPos, contactVel, contactSpin,
+        difficulty: 'pro', env,
+      };
+      const full = solvePaddle(args);
+      if (full.feasible) { fullOK += 1; continue; }
+      let rescued = false;
+      for (const [sv, pv] of [[0.80, 0.6], [0.62, 0.3]]) {
+        const r = solvePaddle({
+          ...args,
+          targetSpeed: Math.max(3.0, args.targetSpeed * sv),
+          targetSpin: args.targetSpin * pv,
+        });
+        if (r.feasible) { rescued = true; break; }
+      }
+      if (rescued) laddered += 1; else dumb += 1;
+    }
+    // The ladder must actually fire on this band…
+    expect(laddered).toBeGreaterThan(0);
+    // …and tactical intent (full-pace OR softened same-target) must dominate:
+    // the safe block is the exception again, not the identity of the tier.
+    expect((fullOK + laddered) / N).toBeGreaterThanOrEqual(0.8);
   });
 
   test('env without netBox keeps pre-net-gate behavior bit-for-bit', () => {

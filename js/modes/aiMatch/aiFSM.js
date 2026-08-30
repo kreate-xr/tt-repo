@@ -52,7 +52,7 @@ import {
 import { solvePaddleSteps, maxPaddleSpeedForDifficulty } from '../../ai/paddleSolver.js';
 import { STREAK_THRESHOLD, STREAK_MISS_BOOST_ADDITIVE } from '../../ai/momentum.js';
 import { checkReachability, REACHABILITY } from './reachability.js';
-import { planTrajectory, interpolateTrajectory } from './interception.js';
+import { planTrajectory, interpolateTrajectory, clampPlannedPosAboveTable } from './interception.js';
 import { recordAIContact, idleSettleOffset, anticipationLeanX } from './readyPosition.js';
 
 export const STATES = Object.freeze({
@@ -190,7 +190,10 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
   // (~0.3-0.6 ms of solver work per frame), and the time-to-contact below
   // which the remaining job is drained in one go instead — waiting more
   // frames there could eat into the swing.
-  const SOLVE_ROLLOUTS_PER_FRAME = 2;
+  // 3 (was 2): the soften ladder can chain up to 4 solves on a ball whose
+  // full-pace request is infeasible; 3/frame keeps even that worst case ahead
+  // of the drain threshold on a normal flight without measurable frame cost.
+  const SOLVE_ROLLOUTS_PER_FRAME = 3;
   const SOLVE_DRAIN_BELOW_MS = 450;
 
   function transition(next) {
@@ -249,6 +252,10 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       maxApproachSpeed: footworkSpeed(),
       telegraphLeadMs: speed > 0 ? telegraphLeadMsForSpeed(speed) : null,
       disguiseFaceNormal: disguiseFace,
+      // Keeps the windup anchor and keyframes above the felt — an upward
+      // (loop) swing direction otherwise plans the backswing under the table.
+      tableBox,
+      tableSurfaceY,
     });
     if (!plan || !plan.keyframes || plan.keyframes.length === 0) return false;
     intent.trajectory = plan.keyframes;
@@ -449,8 +456,9 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       ? targetPayload[6]
       : 0;
     // The solve runs AMORTIZED: solvePaddleSteps yields between verification
-    // rollouts (up to 20 per solve, 40 with the safe fallback — a guaranteed
-    // frame hitch when run synchronously inside this worker-reply callback).
+    // rollouts (up to 20 per solve; the soften ladder + safe fallback can
+    // chain up to 4 solves on a hard ball — a guaranteed frame hitch when
+    // run synchronously inside this worker-reply callback).
     // update() steps the job a few rollouts per frame while the FSM sits in
     // DECIDING — the same place it already waits on the worker round-trip —
     // and drains it whole once contact gets close. finishTargetReceived
@@ -470,12 +478,47 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     stepPendingSolve();
   }
 
-  // First solve at the engine's target, then the safe-target fallback (spec
-  // §infeasibility_fallback, one in-process retry) when it comes back
-  // infeasible. Same sequencing as the old synchronous block.
+  // First solve at the engine's target. On infeasible, degrade the way a
+  // real player does before abandoning the point of the shot: keep the SAME
+  // tactical target (the zone pick, the wrong-footing, the weakness exploit)
+  // and soften pace + spin — the lifted, controlled version of the same
+  // stroke. Only when even that can't clear/land does the centre-table safe
+  // block (spec §infeasibility_fallback) fire.
+  //
+  // This ladder is what keeps the net-aware solver from LOOKING like a
+  // lobotomy: the gate correctly rejects full-pace spin shots that cannot
+  // clear the cord from a given contact (pre-gate they "verified" and then
+  // netted live), but routing every rejection straight to the 4 m/s
+  // zero-spin centre block erased the tiers' placement identity — measured
+  // 2026-08-30 at ~15% of all intermediate/pro rally shots, concentrated in
+  // exactly the high-spin/high-pace shots that read as intelligence.
+  const SOFTEN_LADDER = [
+    { speedScale: 0.80, spinScale: 0.6 },
+    { speedScale: 0.62, spinScale: 0.3 },
+  ];
+  // Floor for softened pace: above a drop-shot touch, below the safe block's
+  // 4.0 — softening below this reads as a fluffed swing, not a controlled one.
+  const SOFTEN_MIN_SPEED = 3.0;
+
   function* paddleSolveJob(req) {
     let solverResult = yield* solvePaddleSteps(req);
     let usedSafe = false;
+    let softened = null;
+    if (!solverResult.feasible) {
+      for (const rung of SOFTEN_LADDER) {
+        const speed = Math.max(SOFTEN_MIN_SPEED, req.targetSpeed * rung.speedScale);
+        const spin = req.targetSpin * rung.spinScale;
+        const sideSpin = (req.targetSideSpin || 0) * rung.spinScale;
+        const r = yield* solvePaddleSteps({
+          ...req, targetSpeed: speed, targetSpin: spin, targetSideSpin: sideSpin,
+        });
+        if (r.feasible) {
+          solverResult = r;
+          softened = { speed, spin, sideSpin };
+          break;
+        }
+      }
+    }
     if (!solverResult.feasible) {
       const safeResult = yield* solvePaddleSteps({
         targetX: 0, targetZ: 0.7,
@@ -490,7 +533,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
         usedSafe = true;
       }
     }
-    return { solverResult, usedSafe };
+    return { solverResult, usedSafe, softened };
   }
 
   // Advance the amortized paddle solve. Runs a few rollouts per frame while
@@ -506,7 +549,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       if (r.done) {
         const job = pendingSolve;
         pendingSolve = null;
-        finishTargetReceived(r.value.solverResult, r.value.usedSafe, job);
+        finishTargetReceived(r.value.solverResult, r.value.usedSafe, r.value.softened, job);
         return;
       }
       steps += 1;
@@ -516,7 +559,20 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
 
   // Everything downstream of the paddle solve: fallback re-pointing,
   // reachability gate, imperfection dice, trajectory plan, MOVING transition.
-  function finishTargetReceived(solverResult, usedSafe, { speed, spin }) {
+  function finishTargetReceived(solverResult, usedSafe, softened, { speed, spin }) {
+    if (softened && !usedSafe) {
+      // Re-point intent at the pace/spin actually being played so the windup
+      // sizing (update() reads intent.target[2]) and telegraph match the
+      // softened stroke instead of the abandoned full-pace request. Target
+      // and shot type stay — it is the same shot, played with control.
+      speed = softened.speed;
+      spin = softened.spin;
+      intent.target = intent.target.slice();
+      intent.target[2] = softened.speed;
+      intent.target[3] = softened.spin;
+      if (intent.target.length > 6) intent.target[6] = softened.sideSpin;
+      if (DEBUG_LOG) console.log(`[AI FSM] solver softened to speed=${softened.speed.toFixed(2)} spin=${softened.spin.toFixed(2)} (same target)`);
+    }
     if (usedSafe) {
       // Re-point `intent` at the shot we are ACTUALLY playing. Previously
       // only solverResult was swapped, leaving intent.target,
@@ -897,8 +953,11 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
         let swingTarget;
         if (elapsed < strikeStartMs) {
           // Windup: retreat to (interception - swingDir * windupDepth).
+          // Clamped above the felt for the same reason as the planned path:
+          // an upward swingDir puts this anchor under the table.
           swingTarget = _swingPosTmp.copy(correctedInterception)
                                     .addScaledVector(swingDir, -windupDepth);
+          clampPlannedPosAboveTable(swingTarget, tableBox, tableSurfaceY);
         } else {
           // Strike: drive PAST interception to (interception + swingDir *
           // followThrough). Paddle reaches interception when it has

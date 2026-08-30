@@ -274,3 +274,82 @@ describe('planTrajectory — telegraphLeadMs face reveal', () => {
     expect(last.faceNormal.z).toBeCloseTo(contactFace.z, 4);
   });
 });
+
+// The 2026-08-30 "paddle vanishes under the table" bug. Two causes, both
+// pinned here:
+//   1. The windup pull-back distance was contactSpeed × swingDur/2, UNCAPPED —
+//      a 15 m/s loop with a 240 ms swing phase asked for a ~1.8 m backswing.
+//   2. A topspin loop's swing direction points steeply upward, so the anchor
+//      lands far BELOW the contact — under the tabletop, where the AIPaddle's
+//      slab-penetration clamp never fires (fully beneath the slab is "clear").
+// planTrajectory now caps the pull-back at a human backswing and, when given
+// table geometry, keeps the anchor and every keyframe above the felt while
+// inside the table footprint.
+describe('planTrajectory — stays above the table on upward strikes', () => {
+  const tableSurfaceY = 0.78;
+  const tableBox = new THREE.Box3(
+    v(-0.83, tableSurfaceY - 0.02, -1.37),
+    v(0.68, tableSurfaceY + 0.005, 1.37),
+  );
+
+  // Elite topspin loop off a mid-height ball taken over the AI side of the
+  // table: swing direction mostly upward at real racket-head speed.
+  function loopArgs() {
+    return {
+      currentPos: v(0.3, 1.05, -1.9),
+      currentFaceNormal: v(0, 0, 1),
+      contactPos: v(0.1, 0.92, -1.1),
+      contactFaceNormal: v(0, -0.1, 0.99).normalize(),
+      contactPaddleVelocity: v(2.0, 10.0, 4.0), // ~11 m/s, steeply upward
+      timeBudgetMs: 600,
+      maxPaddleSpeed: 18.0,
+      tableBox, tableSurfaceY,
+    };
+  }
+
+  test('no keyframe over the table dips below the felt', () => {
+    const r = planTrajectory(loopArgs());
+    for (const k of r.keyframes) {
+      const overTable =
+        k.position.x >= tableBox.min.x && k.position.x <= tableBox.max.x &&
+        k.position.z >= tableBox.min.z && k.position.z <= tableBox.max.z;
+      if (overTable) {
+        expect(k.position.y).toBeGreaterThanOrEqual(tableSurfaceY);
+      }
+    }
+    // The clamp must not disturb the contact itself (it is above the felt).
+    const last = r.keyframes[r.keyframes.length - 1];
+    expect(last.position.y).toBeCloseTo(0.92, 6);
+  });
+
+  test('windup pull-back is capped at a human backswing', () => {
+    const args = loopArgs();
+    const r = planTrajectory(args);
+    // windupStart is the pre-clamp capped anchor only in direction; measure
+    // the actual planned pull-back from the emitted keyframes instead: no
+    // keyframe may sit further than the cap from the contact.
+    const CAP_M = 0.85;
+    for (const k of r.keyframes.slice(3)) { // swing-adjacent frames
+      expect(k.position.distanceTo(args.contactPos)).toBeLessThanOrEqual(CAP_M + 0.15);
+    }
+  });
+
+  test('omitting table geometry changes nothing for legal swings', () => {
+    // A flat drive whose windup never nears the table must plan identically
+    // with and without the table param (the clamp is a no-op there).
+    const base = {
+      currentPos: v(0, 0.95, -1.8),
+      currentFaceNormal: v(0, 0, 1),
+      contactPos: v(0.2, 1.0, -1.3),
+      contactFaceNormal: v(0, 0.1, 0.99).normalize(),
+      contactPaddleVelocity: v(0.5, 1.0, 6.0),
+      timeBudgetMs: 500,
+      maxPaddleSpeed: 15.0,
+    };
+    const a = planTrajectory({ ...base });
+    const b = planTrajectory({ ...base, tableBox, tableSurfaceY });
+    for (let i = 0; i < a.keyframes.length; i++) {
+      expect(a.keyframes[i].position.distanceTo(b.keyframes[i].position)).toBeLessThan(1e-9);
+    }
+  });
+});

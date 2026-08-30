@@ -41,6 +41,41 @@ export const SWING_FRACTION  = 0.4;
 // raised 10-15cm. Midpoint of 12cm splits the spec range.
 const BEZIER_CONTROL_Y_LIFT_M = 0.12;
 
+// Cap on the windup pull-back. The anchor is placed contactSpeed × swingDur/2
+// behind the contact along the swing direction, which is UNCAPPED in speed —
+// an 15 m/s topspin loop with a 240 ms swing phase asked for a 1.8 m
+// backswing, and because a loop's swing direction points steeply upward the
+// anchor landed a metre BELOW the contact: under the table, invisible to the
+// player. 0.85 m matches WINDUP_DEPTH_M_BY_POWER.power (telegraph.js) — the
+// biggest backswing a human plays.
+const WINDUP_DISTANCE_MAX_M = 0.85;
+
+// Minimum height of any planned paddle position above the tabletop while
+// horizontally inside the table's footprint. The AIPaddle clamp
+// (resolvePaddleTablePenetration) only resolves penetration of the thin
+// tabletop slab — a pose commanded fully BENEATH the slab is "clear" by that
+// test and the paddle vanishes under the table. The plan is the right place
+// to stop that: clamp the windup anchor and every emitted keyframe.
+// Footprint is expanded by the blade radius so a paddle poking in from the
+// side edge still counts as visually "over the table".
+const TABLE_CLEARANCE_M = 0.04;
+const FOOTPRINT_MARGIN_M = 0.10;
+
+// Clamp a planned paddle position to stay above the tabletop while over the
+// table. Exported: aiFSM's heuristic windup-strike fallback drives the paddle
+// with the same under-the-contact geometry and needs the same guard.
+export function clampPlannedPosAboveTable(pos, tableBox, tableSurfaceY) {
+  if (!tableBox) return pos;
+  if (pos.x >= tableBox.min.x - FOOTPRINT_MARGIN_M &&
+      pos.x <= tableBox.max.x + FOOTPRINT_MARGIN_M &&
+      pos.z >= tableBox.min.z - FOOTPRINT_MARGIN_M &&
+      pos.z <= tableBox.max.z + FOOTPRINT_MARGIN_M) {
+    const minY = tableSurfaceY + TABLE_CLEARANCE_M;
+    if (pos.y < minY) pos.y = minY;
+  }
+  return pos;
+}
+
 // Spec §section_2.algorithm.speed_validation: peak ≤ cap × 1.1.
 const SPEED_VALIDATION_TOLERANCE = 1.1;
 
@@ -197,6 +232,12 @@ export function planTrajectory({
   neutralFaceNormal,
   telegraphLeadMs = null,
   disguiseFaceNormal = null,
+  // Optional table geometry — when present, the windup anchor and every
+  // keyframe are kept above the tabletop while inside its footprint (see
+  // clampPlannedPosAboveTable). Omittable so headless tests without a table
+  // plan exactly as before.
+  tableBox = null,
+  tableSurfaceY = 0,
 }) {
   // Back-compat: callers that don't distinguish the two get the old behaviour.
   const approachCap = (typeof maxApproachSpeed === 'number' && maxApproachSpeed > 0)
@@ -216,10 +257,18 @@ export function planTrajectory({
   } else {
     swingDir.set(0, 0, 1);
   }
-  const windupDistance = contactSpeed * swingDurationS * 0.5;
+  const windupDistance = Math.min(
+    contactSpeed * swingDurationS * 0.5,
+    WINDUP_DISTANCE_MAX_M,
+  );
   const windupStart = new THREE.Vector3()
     .copy(contactPos)
     .addScaledVector(swingDir, -windupDistance);
+  // Keep the backswing anchor above the felt — an upward swing direction
+  // (topspin loop) otherwise digs it under the table. Clamping the ANCHOR
+  // (not just the emitted keyframes) keeps the quintic itself sane instead
+  // of kinking a low curve back up at sample time.
+  clampPlannedPosAboveTable(windupStart, tableBox, tableSurfaceY);
 
   // Bezier control point: midpoint of (currentPos, windupStart) raised +Y.
   const bezMid = new THREE.Vector3()
@@ -290,6 +339,12 @@ export function planTrajectory({
       const faceU = Math.max(0, (time_ms - revealStartMs) / revealSpanMs);
       revealFace(faceU, faceNormal);
     }
+
+    // The quintic's terminal-velocity constraint can pull the mid-arc below
+    // BOTH endpoints on an upward strike, so the anchor clamp alone isn't
+    // enough — every emitted keyframe holds the invariant. The FSM lerps
+    // between keyframes, so a clamped keyframe set means a clamped path.
+    clampPlannedPosAboveTable(position, tableBox, tableSurfaceY);
 
     // Track peak instantaneous speed via finite difference. Skip i=0.
     // A segment belongs to the approach phase if it ENDS inside the windup

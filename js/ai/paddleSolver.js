@@ -168,21 +168,28 @@ const LAUNCH_SEARCH_ITERS = 6;
 // (which does collide with the net) stopped the ball: every intermediate/pro
 // smash off a mid-height ball went into the net.
 //
-// Both margins sit on top of env.netBox.max.y + ballRadius. The live netBox
-// is already ballRadius-inflated (models.js Minkowski sum), so the extra
-// radius double-counts by ~2 cm there — deliberately, matching the serve
-// path's convention (serve.js NET_CLEARANCE_MARGIN_M): an AI smash should
-// beat the cord cleanly, not graze it.
+// Margin bookkeeping: the live netBox.max.y is already ballRadius-inflated
+// (models.js Minkowski sum), so rollout's netClearance = centerY − netBox.max.y
+// IS the physical gap between the ball's BOTTOM and the cord top. Both gates
+// therefore demand a plain physical gap on top of netBox.max.y — no extra
+// radius term.
+//
+// These margins originally added env.ballRadius again ("beat the cord
+// cleanly", serve.js convention). That stacked to a 4 cm bottom-gap demand at
+// pass 2 and 8.5 cm at pass 1 — which outlaws the cord-skimming drives and
+// loops elite play is made of, and every such engine request collapsed to the
+// FSM's zero-spin centre-block fallback (measured 2026-08-30: ~15% of all
+// intermediate/pro rally shots, concentrated in the high-spin/high-pace ones).
 //
 // PASS-2 (the gate that counts): the verified, drag+Magnus-integrated flight
-// must clear by this much or the solution is rejected.
-const NET_CLEARANCE_MARGIN_M = 0.02;
+// must clear by this much or the solution is rejected. 1 cm covers the
+// rollout's interpolation error across the net slab at smash pace.
+const NET_CLEARANCE_MARGIN_M = 0.01;
 // PASS-1 (drag-free closed form): demand extra headroom over the pass-2 gate,
 // because drag and topspin Magnus both steepen the real arc below the
 // parabola — a trajectory that clears on paper can still cross under the
-// cord in pass 2. 2.5 cm covers typical rally pace; spin-heavy shots that
-// still come up short are re-solved by the net-rescue loop below, which
-// raises this demand by the measured deficit.
+// cord in pass 2. Spin-heavy shots that still come up short are re-solved by
+// the net-rescue loop below, which raises this demand by the measured deficit.
 const PASS1_NET_MARGIN_M = 0.045;
 // Net-rescue budget: each iteration is one pass-1 closed form + one pass-2
 // rollout, re-solving with the clearance demand raised by the observed
@@ -609,9 +616,9 @@ export function* solvePaddleSteps({
   // is gated on the integrated clearance.
   const netPlane = env.netBox ? {
     z: (env.netBox.min.z + env.netBox.max.z) / 2,
-    minCenterY: env.netBox.max.y + env.ballRadius + PASS1_NET_MARGIN_M,
+    minCenterY: env.netBox.max.y + PASS1_NET_MARGIN_M,
   } : null;
-  const minNetClearance = env.ballRadius + NET_CLEARANCE_MARGIN_M;
+  const minNetClearance = NET_CLEARANCE_MARGIN_M;
   const clearsNet = (landing) =>
     landing.netClearance === null || landing.netClearance === undefined ||
     landing.netClearance >= minNetClearance;
