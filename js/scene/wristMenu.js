@@ -3,11 +3,17 @@
 // inGame.js's updateMenuPlacement.
 //
 // Composition (left → right):
-//   - Left dock: single utility icon (Tune Physics).
+//   - Left dock: how the game plays — Calibrate Paddle, Competition Rules.
 //   - Center row: three large circular mode tiles (Play / AI / Multi),
 //     each with a coloured crosshair ring, icon, main label + subtitle.
+//   - Right dock: how it looks — Table Color, Ball Color.
 //   - Top pill: difficulty segmented control.
+//   - Below the tiles: hover caption naming the dock button under the cursor.
 //   - Bottom pill: Exit.
+//
+// The two docks are deliberately the same size (2 × 56px each, sharing the
+// mode row's centreline) — a lone button on one side against a cluster on the
+// other reads as a layout that ran out of room.
 //
 // Input paths: laser raycast, plus off-hand poke via inGame.js's
 // updatePokeInput. Both flow through hitTestUV, which supports circles
@@ -64,17 +70,40 @@ const COLORS = {
 };
 
 const FONT_FAMILY    = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-const FONT_MODE_MAIN = `700 28px ${FONT_FAMILY}`;
-const FONT_MODE_SUB  = `600 13px ${FONT_FAMILY}`;
 const FONT_PILL      = `600 17px ${FONT_FAMILY}`;
 const FONT_EXIT      = `600 14px ${FONT_FAMILY}`;
 const FONT_CAPTION   = `600 18px ${FONT_FAMILY}`;
 
+// Mode-tile typography. Sizes are the *intended* ones; the real size is
+// resolved at draw time by _modeTextFit() against the circle's interior, so
+// these are a ceiling rather than a promise.
+const MODE_LABEL_PX = 28;
+const MODE_LABEL_LS = 1;
+const MODE_SUB_PX   = 12;
+const MODE_SUB_LS   = 1;
+// Text baselines measured from the circle centre, and the clearance kept
+// between the widest glyph and the coloured ring.
+const MODE_ICON_DY  = -30;
+const MODE_ICON_S   = 62;
+const MODE_LABEL_DY = 20;
+const MODE_SUB_DY   = 40;
+const MODE_TEXT_INSET = 12;
+// Floor for shrink-to-fit. Below this the text is unreadable at XR
+// minification, so overflowing is the lesser evil and the caller gets a
+// too-wide line it can see in the preview rather than an invisible one.
+const MIN_FIT_PX = 9;
+
+// Half-width of a circle of radius r at vertical offset dy from its centre.
+// A label inside a circle is bounded by the chord at its *lowest* glyph, not
+// by the diameter — which is why "RALLY · DRILLS" (115px, drawn where the
+// chord is 110px) used to be painted straight across the PLAY tile's ring.
+const chordHalf = (r, dy) => Math.sqrt(Math.max(0, r * r - dy * dy));
+
 // Hover captions for the dock buttons. The mode circles carry their own
-// label + subtitle; the five dock buttons are icon-only and had no way to
-// say what they do. A 56px tile has no room for text inside, and a label
-// under the trophy would land on the table-color button sitting below it —
-// so the panel names whichever dock button the laser is on instead.
+// label + subtitle; the dock buttons are icon-only and had no way to say what
+// they do. A 56px tile has no room for text inside and no room for a label
+// beneath it either — so the panel names whichever dock button the laser is
+// on, on a shared line under the mode row.
 //
 // The trophy is why this exists: "competition rules" is not a guessable
 // meaning for a cup glyph, and unlike the two color swatches (whose icons
@@ -90,10 +119,10 @@ const DOCK_CAPTIONS = {
 };
 
 // Caption baseline. The band between the mode circles' crosshair ticks
-// (which reach y = CIRCLE_Y + r + 14 = 318) and the top of the exit pill
-// (y = CANVAS_H - 34 - 22 = 354) is the only full-width gap in the layout;
-// 336 centres an 18px line in it without crowding either.
-const CAPTION_Y = 336;
+// (which reach y = CIRCLE_Y + r + 14 = 310) and the top of the exit pill
+// (y = CANVAS_H - EXIT_H - 20 = 356) is the only full-width gap in the
+// layout; 332 centres an 18px line in it with ~13px clear on either side.
+const CAPTION_Y = 332;
 
 // The drill picker that used to live here is gone. Every drill — the ball
 // machine and the four legacy ones — is now reached through the TRAINING
@@ -163,11 +192,15 @@ const ICONS = {
     }
   },
   multiplayer(ctx, cx, cy, s, color) {
+    // Heads + shoulders, drawn so the ink is centred on (cx, cy). It used to
+    // hang low — heads at -0.10s but shoulders down at +0.40s — which pushed
+    // the glyph's visual centre a third of the way down the tile and left the
+    // shoulder arcs touching the MULTI label beneath.
     ctx.strokeStyle = color; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(cx - s * 0.22, cy - s * 0.1, s * 0.13, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx + s * 0.22, cy - s * 0.1, s * 0.13, 0, Math.PI * 2); ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx - s * 0.22, cy + s * 0.4, s * 0.22, Math.PI, 2 * Math.PI); ctx.stroke();
-    ctx.beginPath(); ctx.arc(cx + s * 0.22, cy + s * 0.4, s * 0.22, Math.PI, 2 * Math.PI); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx - s * 0.22, cy - s * 0.24, s * 0.13, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx + s * 0.22, cy - s * 0.24, s * 0.13, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx - s * 0.22, cy + s * 0.30, s * 0.22, Math.PI, 2 * Math.PI); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx + s * 0.22, cy + s * 0.30, s * 0.22, Math.PI, 2 * Math.PI); ctx.stroke();
   },
   aiMatch(ctx, cx, cy, s, color) {
     ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = 2;
@@ -180,15 +213,28 @@ const ICONS = {
     ctx.beginPath(); ctx.arc(cx, cy - s * 0.38, s * 0.05, 0, Math.PI * 2); ctx.fill();
   },
   paddle(ctx, cx, cy, s, color) {
-    ctx.strokeStyle = color; ctx.lineWidth = 2.5;
+    // Calibrate-Paddle glyph. The previous version — a *stroked* circle with
+    // a thin diagonal stick — is the exact construction of a magnifying-glass
+    // icon, and that is what everyone read it as: a search button on a menu
+    // with nothing to search. The fix is the same one the trophy needed:
+    // fill the blade instead of outlining it (an outline is what makes a lens
+    // read as a lens) and give the handle a bat's stubby proportions rather
+    // than a stick's.
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(-Math.PI / 5);
+    ctx.fillStyle = color;
+    ctx.lineJoin = 'round';
+    // Blade: slightly taller than wide, sitting above the grip.
     ctx.beginPath();
-    ctx.arc(cx - s * 0.06, cy - s * 0.08, s * 0.32, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.moveTo(cx + s * 0.14, cy + s * 0.16);
-    ctx.lineTo(cx + s * 0.38, cy + s * 0.42);
-    ctx.stroke();
+    ctx.ellipse(0, -s * 0.16, s * 0.30, s * 0.30, 0, 0, Math.PI * 2);
+    ctx.fill();
+    // Handle: overlaps the blade so the two read as one solid object, and
+    // runs long enough to be a grip. A stub here just made the blade look
+    // like a balloon — the handle is the whole silhouette cue.
+    roundRectPath(ctx, -s * 0.08, s * 0.06, s * 0.16, s * 0.40, s * 0.06);
+    ctx.fill();
+    ctx.restore();
   },
   ballSwatch(ctx, cx, cy, s, _color) {
     // Filled disc in the CURRENT ball color so the dock button visually
@@ -332,6 +378,11 @@ export class WristMenu {
     // Cached drift flag — driftDetector polled once per frame in update().
     // Only trigger a redraw when it flips (avoids per-frame canvas churn).
     this._driftFlagCache = false;
+    // Resolved mode-tile font sizes, filled in on the first draw. Neither the
+    // labels nor the circle geometry can change at runtime, so measuring once
+    // is enough — and draw() runs on every hover tick, where re-measuring six
+    // strings would be pure waste.
+    this._modeFitCache = null;
 
     // Chrome regions computed by layoutButtons(). Drawn as background before
     // the interactive buttons so segment / arrow highlights layer on top.
@@ -447,7 +498,7 @@ export class WristMenu {
     // With the picker's half of the row freed, the control takes the width
     // it always needed: at 300px each segment was 100px, which clipped
     // "INTERNATIONAL" at any legible font size.
-    const TOP_Y = 36;
+    const TOP_Y = 30;
     const TOP_H = 54;
     const diffW  = 520;
     const rowX = (CANVAS_W - diffW) / 2;
@@ -471,7 +522,10 @@ export class WristMenu {
     const CIRCLE_GAP = 56;
     const CIRCLE_ROW_W = MODES.length * (CIRCLE_R * 2) + (MODES.length - 1) * CIRCLE_GAP;
     const circleRowX = (CANVAS_W - CIRCLE_ROW_W) / 2;
-    const CIRCLE_Y = 224;
+    // 216, not 224: the row sat low enough that the crosshair ticks (which
+    // reach CIRCLE_Y + 94) crowded the hover-caption line below them. Moving
+    // it up 8px spends slack from the roomier gap under the difficulty pill.
+    const CIRCLE_Y = 216;
 
     for (let i = 0; i < MODES.length; i++) {
       const cx = circleRowX + CIRCLE_R + i * (CIRCLE_R * 2 + CIRCLE_GAP);
@@ -481,55 +535,68 @@ export class WristMenu {
       });
     }
 
-    // --- Left dock: Calibrate Paddle, plus Tune Physics in dev sessions
-    // (?tuner / ?selftest — see TUNER_ENABLED). Calibrate takes the first
-    // slot when the tuner is absent so the dock never shows a gap.
+    // --- Docks: a pair of 56px buttons on each side, sharing the mode row's
+    // centreline. The two sides used to be one button on the left against
+    // three on the right arranged in an L (two across, one hanging below
+    // centred), which read as an unfinished layout rather than a deliberate
+    // one — the eye has nothing to pair the lone left button with.
+    //
+    // The split is by what the button changes, so each side is one idea:
+    //   left  — how the game plays (calibrate the bat, competition rules)
+    //   right — how the table looks (table colour, ball colour)
+    const DOCK = 56;
+    const DOCK_GAP = 8;
+    const DOCK_Y = CIRCLE_Y - DOCK / 2;
+    const DOCK_MARGIN = 32;
+    // Outer edges clear the mode row's crosshair ticks (which span
+    // x ≈ 202…822) by 50px on both sides.
+    const leftX  = DOCK_MARGIN;
+    const rightX = CANVAS_W - DOCK_MARGIN - DOCK;
+
+    this.buttons.push({
+      id: 'calibrate', kind: 'dock', icon: 'paddle',
+      shape: 'rect', x: leftX, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
+    });
+    // Competition-rules toggle: trophy lit in the accent colour when ON.
+    // Enables the strict ITTF serve-toss rule + certified table physics for
+    // the AI match (see aiMatch competition wiring).
+    this.buttons.push({
+      id: 'rules', kind: 'dock', icon: 'trophy',
+      shape: 'rect', x: leftX + DOCK + DOCK_GAP, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
+    });
+    // Both swatch icons render in the CURRENT colour, so each button reports
+    // its own state and needs no label. Clicks cycle the *_COLOR_ORDER lists
+    // (orange ↔ white ball, blue ↔ green table — all ITTF legal).
+    this.buttons.push({
+      id: 'tableColor', kind: 'dock', icon: 'tableSwatch',
+      shape: 'rect', x: rightX - DOCK - DOCK_GAP, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
+    });
+    this.buttons.push({
+      id: 'ballColor', kind: 'dock', icon: 'ballSwatch',
+      shape: 'rect', x: rightX, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
+    });
+
+    // Tune Physics exists only in dev sessions (?tuner / ?selftest — see
+    // TUNER_ENABLED), so it gets the odd slot rather than displacing a
+    // shipping button: centred under the left pair, where it mirrors nothing
+    // and costs the production layout nothing. It cannot go beside them —
+    // a third button in that row reaches the PLAY tile's ticks — nor flush
+    // under `calibrate`, whose bottom-left corner would clip the capsule's
+    // rounded end at x = 32.
     if (this.showTune) {
       this.buttons.push({
         id: 'tune', kind: 'dock', icon: 'gear',
-        shape: 'rect', x: 32, y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
+        shape: 'rect', x: leftX + (DOCK + DOCK_GAP) / 2,
+        y: DOCK_Y + DOCK + DOCK_GAP, w: DOCK, h: DOCK, radius: 15,
       });
     }
-    this.buttons.push({
-      id: 'calibrate', kind: 'dock', icon: 'paddle',
-      shape: 'rect', x: this.showTune ? 32 + 56 + 8 : 32,
-      y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
-    });
-
-    // --- Right dock: ball color toggle. Mirror of the left gear so the
-    // panel reads symmetric. Icon renders a filled swatch in the CURRENT
-    // ball color so the button's visual state matches what the ball looks
-    // like on the table — no separate label needed. Click cycles through
-    // BALL_COLOR_ORDER (currently just orange ↔ white — ITTF legal).
-    this.buttons.push({
-      id: 'ballColor', kind: 'dock', icon: 'ballSwatch',
-      shape: 'rect', x: CANVAS_W - 32 - 56, y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
-    });
-    // Competition-rules toggle beside it: trophy lit in the accent colour
-    // when ON. Enables the strict ITTF serve-toss rule + certified table
-    // physics for the AI match (see aiMatch competition wiring).
-    this.buttons.push({
-      id: 'rules', kind: 'dock', icon: 'trophy',
-      shape: 'rect', x: CANVAS_W - 32 - 56 - 8 - 56, y: CIRCLE_Y - 28, w: 56, h: 56, radius: 15,
-    });
-    // Table-color toggle (blue ↔ green — both ITTF-approved surface colors),
-    // centred below the rules/ball pair. It cannot sit beside them: a third
-    // 56px button in that row lands on the rightmost mode circle's crosshair
-    // ticks (which reach x≈822), and hanging it directly under ballColor
-    // pokes its bottom-right corner outside the capsule's rounded end.
-    // Centred under the pair clears both.
-    this.buttons.push({
-      id: 'tableColor', kind: 'dock', icon: 'tableSwatch',
-      shape: 'rect', x: CANVAS_W - 32 - 56 - (8 + 56) / 2,
-      y: CIRCLE_Y - 28 + 56 + 8, w: 56, h: 56, radius: 15,
-    });
 
     // --- Bottom exit pill ---
     const EXIT_W = 100;
     const EXIT_H = 34;
     this.buttons.push({
       id: 'exit', kind: 'exit', label: 'EXIT',
-      shape: 'rect', x: (CANVAS_W - EXIT_W) / 2, y: CANVAS_H - EXIT_H - 22, w: EXIT_W, h: EXIT_H,
+      shape: 'rect', x: (CANVAS_W - EXIT_W) / 2, y: CANVAS_H - EXIT_H - 20, w: EXIT_W, h: EXIT_H,
     });
   }
 
@@ -629,7 +696,9 @@ export class WristMenu {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
-    ctx.fillText(text, CANVAS_W / 2, CAPTION_Y);
+    // maxWidth keeps a long caption inside the capsule's waist (usable width
+    // at this height is ~925px) instead of running off the rounded ends.
+    ctx.fillText(text, CANVAS_W / 2, CAPTION_Y, CANVAS_W - 120);
     ctx.restore();
   }
 
@@ -699,23 +768,70 @@ export class WristMenu {
     const drawIcon = ICONS[mode.icon];
     if (drawIcon) {
       ctx.save();
-      drawIcon(ctx, cx, cy - 24, 68, mode.ring);
+      drawIcon(ctx, cx, cy + MODE_ICON_DY, MODE_ICON_S, mode.ring);
       ctx.restore();
     }
 
-    // Main label + subtitle (bottom of interior).
-    ctx.fillStyle = mode.ring;
-    ctx.font = FONT_MODE_MAIN;
+    // Main label + subtitle (bottom of interior), at the one size that fits
+    // every tile — see _modeTextFit.
+    const fit = this._modeTextFit(b.r - 3);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    if ('letterSpacing' in ctx) ctx.letterSpacing = '1px';
-    ctx.fillText(mode.label, cx, cy + 26);
+
+    ctx.fillStyle = mode.ring;
+    ctx.font = `700 ${fit.labelPx}px ${FONT_FAMILY}`;
+    if ('letterSpacing' in ctx) ctx.letterSpacing = `${MODE_LABEL_LS}px`;
+    ctx.fillText(mode.label, cx, cy + MODE_LABEL_DY);
 
     ctx.fillStyle = COLORS.chromeMuted;
-    ctx.font = FONT_MODE_SUB;
-    if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
-    ctx.fillText(mode.subtitle || '', cx, cy + 48);
+    ctx.font = `600 ${fit.subPx}px ${FONT_FAMILY}`;
+    if ('letterSpacing' in ctx) ctx.letterSpacing = `${MODE_SUB_LS}px`;
+    ctx.fillText(mode.subtitle || '', cx, cy + MODE_SUB_DY);
     if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  }
+
+  /**
+   * Resolve the mode-tile label and subtitle sizes against the circle's
+   * interior, once, and cache them.
+   *
+   * Canvas has no text-overflow: a line too wide for its container is simply
+   * painted past it. "RALLY · DRILLS" measures 115px and was drawn where the
+   * tile's chord is 110px, so the PLAY subtitle ran out over the ring on both
+   * sides — the overlap this pass exists to fix. Measuring and stepping the
+   * size down makes that structurally impossible for any future wording.
+   *
+   * The size is resolved across ALL tiles and the smallest wins, rather than
+   * per tile: three subtitles at three different sizes in one row looks like
+   * a bug even when each one individually fits.
+   */
+  _modeTextFit(R) {
+    if (this._modeFitCache) return this._modeFitCache;
+    const ctx = this.ctx;
+    // Bound each line by the chord at its lowest glyph — roughly 40% of the
+    // font size below the middle baseline for caps — inset from the ring.
+    const labelMaxW = 2 * chordHalf(R, MODE_LABEL_DY + MODE_LABEL_PX * 0.4) - MODE_TEXT_INSET * 2;
+    const subMaxW   = 2 * chordHalf(R, MODE_SUB_DY   + MODE_SUB_PX   * 0.4) - MODE_TEXT_INSET * 2;
+
+    const fit = (texts, maxW, weight, size, spacing) => {
+      if ('letterSpacing' in ctx) ctx.letterSpacing = `${spacing}px`;
+      let px = size;
+      for (const t of texts) {
+        if (!t) continue;
+        while (px > MIN_FIT_PX) {
+          ctx.font = `${weight} ${px}px ${FONT_FAMILY}`;
+          if (ctx.measureText(t).width <= maxW) break;
+          px -= 0.5;
+        }
+      }
+      return px;
+    };
+
+    this._modeFitCache = {
+      labelPx: fit(MODES.map((m) => m.label), labelMaxW, 700, MODE_LABEL_PX, MODE_LABEL_LS),
+      subPx:   fit(MODES.map((m) => m.subtitle), subMaxW, 600, MODE_SUB_PX, MODE_SUB_LS),
+    };
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+    return this._modeFitCache;
   }
 
   drawSegment(b, hp, pp) {
@@ -740,7 +856,11 @@ export class WristMenu {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     if ('letterSpacing' in ctx) ctx.letterSpacing = '1px';
-    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 - 1.5 * pp);
+    // maxWidth = the segment minus its selection-pill padding, so a label
+    // that outgrows its third of the control condenses instead of running
+    // under the neighbouring segment. "INTERNATIONAL" already uses 143 of
+    // the 155 available.
+    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 - 1.5 * pp, b.w - 18);
     if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
   }
 
