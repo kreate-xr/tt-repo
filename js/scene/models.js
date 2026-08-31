@@ -571,6 +571,48 @@ function applyTableShadowFlags(root) {
   });
 }
 
+// Loud check that the GLB-embedded base-color textures actually decoded.
+//
+// GLTFLoader swallows a failed texture decode: loadTextureImage catches the
+// rejection and resolves to null, so the mesh loads perfectly with map = null
+// and nothing is logged. Both of our textured assets — Paddle.glb's WebP
+// base color and Table.glb's TT_Net PNG — went blank in production for nine
+// days that way (2026-08-22 → 08-31): the hosting CSP shipped
+// `connect-src 'self' https://*.googleapis.com`, which does not allow blob:,
+// and GLTFLoader decodes embedded images by fetching a blob: object URL
+// through ImageBitmapLoader on every browser except old Safari/Firefox.
+// img-src DID allow blob:, so nothing else on the page broke and the console
+// stayed clean.
+//
+// A console.error, not a throw: unlike the missing-node checks below (a
+// Table.glb without its 'Net' is a broken asset), a texture that failed to
+// decode is a runtime/environment condition — the game is still playable
+// untextured, and bricking a live session over cosmetics is the wrong trade.
+// The message names the CSP because that is the only cause we have seen.
+function assertGlbTexturesDecoded() {
+  const missing = [];
+  const check = (root, label) => {
+    if (!root) return;
+    root.traverse((node) => {
+      if (!node.isMesh || !node.material) return;
+      const mats = Array.isArray(node.material) ? node.material : [node.material];
+      for (const mat of mats) if (!mat.map) missing.push(`${label}/${node.name || '(unnamed)'}`);
+    });
+  };
+  // Only the GLB bat ships a base-color map; the procedural one paints with
+  // per-material colors and is expected to have none.
+  if (useGlbPaddle()) check(paddleModel, 'Paddle.glb');
+  check(netModel, "Table.glb 'Net'");
+  if (!missing.length) return;
+  console.error(
+    '[models] GLB base-color texture(s) failed to decode — rendering untextured: '
+    + missing.join(', ')
+    + '. GLTFLoader fetches embedded images as blob: URLs via ImageBitmapLoader, '
+    + "so the hosting Content-Security-Policy must list blob: in connect-src "
+    + '(img-src alone is not enough). Check the CSP header in firebase.json.',
+  );
+}
+
 export async function loadModels(loadingScreen, statusEl) {
   if (modelsLoaded) return;
   if (loadingScreen) loadingScreen.style.display = 'flex';
@@ -1116,6 +1158,10 @@ export async function loadModels(loadingScreen, statusEl) {
 
       runCollisionSelfTest();
     }
+
+    // Ungated (not logInfo) — this is the check that would have caught the
+    // blank paddle/net in production without a headset session to see it.
+    assertGlbTexturesDecoded();
 
     if (loadingScreen) loadingScreen.style.display = 'none';
     modelsLoaded = true;
