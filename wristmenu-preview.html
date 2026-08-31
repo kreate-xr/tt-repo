@@ -14,6 +14,9 @@
 <body>
 <p>Table BLUE · competition OFF (default)</p><div class="slot" id="s1"></div>
 <p>Table GREEN · competition ON — after simulated clicks on the tableColor + rules buttons</p><div class="slot" id="s2"></div>
+<p>Trophy hovered · competition OFF — hover caption</p><div class="slot" id="s3"></div>
+<p>Trophy hovered · competition ON — hover caption reads ON in the accent</p><div class="slot" id="s4"></div>
+<p>Calibrate hovered — longest of the non-trophy captions</p><div class="slot" id="s5"></div>
 <script type="module">
   import { WristMenu } from '/js/scene/wristMenu.js';
   import { setTableColor, setBallColor } from '/js/scene/models.js';
@@ -38,6 +41,20 @@
     wm.activate(wm.buttons.find(b => b.id === 'rules'));
     wm.activate(wm.buttons.find(b => b.id === 'tableColor'));
   });
+
+  // Hover captions. hoverProgress is forced to 1 because draw() eases the
+  // button's own hover tint off it, and nothing is ticking update() here.
+  // competitionMode is set explicitly, not left to the constructor: s2's
+  // simulated trophy click persists tt_competition_rules to localStorage,
+  // so every menu built after it would otherwise come up ON.
+  const hover = (id, on) => (wm) => {
+    wm.competitionMode = on;
+    wm.hovered = id;
+    wm.hoverProgress = 1;
+  };
+  snap('s3', hover('rules', false));
+  snap('s4', hover('rules', true));
+  snap('s5', hover('calibrate', false));
 </script>
 </body>
 </html>

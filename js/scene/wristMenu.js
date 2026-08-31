@@ -68,6 +68,32 @@ const FONT_MODE_MAIN = `700 28px ${FONT_FAMILY}`;
 const FONT_MODE_SUB  = `600 13px ${FONT_FAMILY}`;
 const FONT_PILL      = `600 17px ${FONT_FAMILY}`;
 const FONT_EXIT      = `600 14px ${FONT_FAMILY}`;
+const FONT_CAPTION   = `600 18px ${FONT_FAMILY}`;
+
+// Hover captions for the dock buttons. The mode circles carry their own
+// label + subtitle; the five dock buttons are icon-only and had no way to
+// say what they do. A 56px tile has no room for text inside, and a label
+// under the trophy would land on the table-color button sitting below it —
+// so the panel names whichever dock button the laser is on instead.
+//
+// The trophy is why this exists: "competition rules" is not a guessable
+// meaning for a cup glyph, and unlike the two color swatches (whose icons
+// show their own state) nothing about it says what it changes. Wording is
+// "what it does", not "what it is", because that is the question a player
+// hovering an unfamiliar icon is actually asking.
+const DOCK_CAPTIONS = {
+  tune:       'Tune Physics  —  live A/B on ball & paddle constants',
+  calibrate:  'Calibrate Paddle  —  align the bat with your controller',
+  ballColor:  'Ball Color  —  orange or white, both ITTF legal',
+  rules:      'Competition Rules  —  strict 16 cm serve toss + certified table',
+  tableColor: 'Table Color  —  blue or green, both ITTF approved',
+};
+
+// Caption baseline. The band between the mode circles' crosshair ticks
+// (which reach y = CIRCLE_Y + r + 14 = 318) and the top of the exit pill
+// (y = CANVAS_H - 34 - 22 = 354) is the only full-width gap in the layout;
+// 336 centres an 18px line in it without crowding either.
+const CAPTION_Y = 336;
 
 // The drill picker that used to live here is gone. Every drill — the ball
 // machine and the four legacy ones — is now reached through the TRAINING
@@ -555,6 +581,8 @@ export class WristMenu {
       this.drawButton(b);
     }
 
+    this.drawDockCaption();
+
     // Poke cursor.
     if (this.pokeCursor) {
       const { u, v, proximity } = this.pokeCursor;
@@ -578,6 +606,31 @@ export class WristMenu {
 
     ctx.globalAlpha = 1;
     this.texture.needsUpdate = true;
+  }
+
+  // One line naming the dock button under the cursor. Drawn after the button
+  // pass so it is never overdrawn, and only while something is hovered — an
+  // always-on caption would be dead text for the 90% of the time the laser
+  // is on a mode circle.
+  drawDockCaption() {
+    const b = this.buttons.find((x) => x.kind === 'dock' && x.id === this.hovered);
+    const base = b && DOCK_CAPTIONS[b.id];
+    if (!base) return;
+    // A stateful toggle also reports which way it is currently set: for the
+    // trophy that is half of what the caption exists to answer, and the
+    // accent/muted button tint alone doesn't read as ON vs OFF.
+    const on = b.id === 'rules' && this.competitionMode;
+    const text = b.id === 'rules' ? `${base}  ·  ${on ? 'ON' : 'OFF'}` : base;
+
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = on ? ACCENT : COLORS.chromeMuted;
+    ctx.font = FONT_CAPTION;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+    ctx.fillText(text, CANVAS_W / 2, CAPTION_Y);
+    ctx.restore();
   }
 
   drawButton(b) {
