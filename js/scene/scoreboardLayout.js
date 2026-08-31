@@ -43,6 +43,40 @@ const FONT = 'system-ui, sans-serif';
 // panel's clock overlay (renderClockValue) — one constant so they can't drift.
 const STAT_VALUE_FONT = `bold 84px ${FONT}`;
 
+// Content margins. The games-history row, the stats row and the accent bar all
+// span these, so they are the outer edge of everything on the board.
+const ROW_X0 = 36;
+const ROW_X1 = 2012;
+
+// Side-panel bounds, and with them the width of the centre column.
+//
+// The centre column carries three things stacked: VS (140px), the
+// best-of/callout badge (up to 392px for MATCH POINT), and the games tally
+// (213px at bold 80px). The panels used to run to 950 / 1098, leaving that
+// column just 148px — so the badge sat across both panel borders and the
+// tally painted its two digits directly on top of the panel gradients. The
+// column is now sized for its widest occupant with ~24px to spare.
+const PANEL_GAP = 440;
+const PANEL_W = (ROW_X1 - ROW_X0 - PANEL_GAP) / 2;   // 768
+const BLUE_X0 = ROW_X0,            BLUE_X1 = ROW_X0 + PANEL_W;         // 36 … 804
+const RED_X0  = BLUE_X1 + PANEL_GAP, RED_X1 = ROW_X1;                  // 1244 … 2012
+
+// Largest font size at which `text` fits `maxW`, stepping down from `size`
+// and never below `min`. Canvas has no text-overflow — it paints straight
+// past its container — so anything whose width depends on runtime data (match
+// banners, player names) has to be measured rather than assumed to fit.
+// Leaves ctx.font set to the returned size.
+function fitPx(ctx, text, maxW, weight, size, min) {
+  let px = size;
+  while (px > min) {
+    ctx.font = `${weight} ${px}px ${FONT}`;
+    if (ctx.measureText(text).width <= maxW) break;
+    px -= 2;
+  }
+  ctx.font = `${weight} ${px}px ${FONT}`;
+  return px;
+}
+
 export function createScoreboardState(config = {}) {
   return {
     playerScore: 0,
@@ -123,28 +157,28 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   // --- Player panels ---------------------------------------------------------
   const panelTop = 112, panelBot = 570;
   drawSidePanel(ctx, {
-    x0: 36, x1: 950, y0: panelTop, y1: panelBot,
+    x0: BLUE_X0, x1: BLUE_X1, y0: panelTop, y1: panelBot,
     cutCorner: 'top-left',
-    gradFrom: [36, panelTop], gradTo: [950, panelBot],
+    gradFrom: [BLUE_X0, panelTop], gradTo: [BLUE_X1, panelBot],
     fillA: '#16357c', fillB: '#070d24',
     border: BLUE,
   });
   drawSidePanel(ctx, {
-    x0: 1098, x1: 2012, y0: panelTop, y1: panelBot,
+    x0: RED_X0, x1: RED_X1, y0: panelTop, y1: panelBot,
     cutCorner: 'top-right',
-    gradFrom: [2012, panelTop], gradTo: [1098, panelBot],
+    gradFrom: [RED_X1, panelTop], gradTo: [RED_X0, panelBot],
     fillA: '#7c1428', fillB: '#1c060d',
     border: RED,
   });
 
   // Panel contents. Names sit on a row with the avatar; the serve dot glows
   // beside whichever name is serving (replaces the old dedicated dot row).
-  const blueCx = (36 + 950) / 2;
-  const redCx = (1098 + 2012) / 2;
+  const blueCx = (BLUE_X0 + BLUE_X1) / 2;
+  const redCx = (RED_X0 + RED_X1) / 2;
   const nameY = 215;
 
   // Names are clamped so a long multiplayer display name can't walk the
-  // serve dot into the VS column. ~620px sit between the name anchor and the
+  // serve dot into the VS column. ~549px sit between the name anchor and the
   // panel's inner edge; 380 leaves room for the dot + glow and a clear gap
   // to the VS glyph even with the dot appended.
   const NAME_MAX_W = 380;
@@ -241,8 +275,8 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   // Only games that exist are shown: every finished game plus the one in
   // progress, centered as a group. No placeholder "—" columns for games
   // that haven't started (mid-game-1 the row is just "GAME 1").
-  hline(ctx, 36, 2012, 592);
-  const rowX0 = 36, rowX1 = 2012;
+  hline(ctx, ROW_X0, ROW_X1, 592);
+  const rowX0 = ROW_X0, rowX1 = ROW_X1;
   const cols = Math.max(1, state.bestOf);
   const colW = (rowX1 - rowX0) / cols;
   const played = state.gameHistory.length;
@@ -268,7 +302,7 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   }
 
   // --- Stats row ---------------------------------------------------------------
-  hline(ctx, 36, 2012, 778);
+  hline(ctx, ROW_X0, ROW_X1, 778);
   const totalPoints = state.gameHistory.reduce(
     (sum, g) => sum + g.playerScore + g.aiScore,
     state.playerScore + state.aiScore,
@@ -294,11 +328,26 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   accent.addColorStop(0.55, 'rgba(239,68,68,0.05)');
   accent.addColorStop(1, RED);
   ctx.fillStyle = accent;
-  ctx.fillRect(36, 1108, w - 72, 8);
+  ctx.fillRect(ROW_X0, 1108, ROW_X1 - ROW_X0, 8);
 
   // --- Match-over banner (masks the score area) ------------------------------------
   if (state.matchOverBanner) {
-    roundRect(ctx, 300, 210, w - 600, 270, 28);
+    // The box grows to the text, then the text shrinks to whatever box it
+    // got. Both halves are needed: the banner was a fixed 1448px box with a
+    // fixed 150px headline, which only ever fitted the AI match's "YOU WIN!"
+    // (717px). Multiplayer's strings are far longer — "OPPONENT WINS THE
+    // MATCH 3-1" measures 2428px, so it overran the gold border by ~490px a
+    // side AND ran off both edges of the 2048px canvas with its first and
+    // last characters clipped away. Every multiplayer match-end and
+    // game-break banner was drawn that way.
+    const text = String(state.matchOverBanner);
+    const PAD = 48;
+    ctx.font = `bold 150px ${FONT}`;
+    const boxW = Math.max(
+      1448,                                    // classic box — short banners keep it
+      Math.min(ROW_X1 - ROW_X0, ctx.measureText(text).width + PAD * 2),
+    );
+    roundRect(ctx, cx - boxW / 2, 210, boxW, 270, 28);
     ctx.fillStyle = 'rgba(5, 8, 20, 0.95)';
     ctx.fill();
     ctx.strokeStyle = GOLD;
@@ -307,9 +356,11 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
     ctx.shadowBlur = 26;
     ctx.stroke();
     clearShadow(ctx);
-    ctx.font = `bold 150px ${FONT}`;
+    // Floor of 90px: still larger than the 84px stat values, so even the
+    // longest banner reads as the headline it is.
+    fitPx(ctx, text, boxW - PAD * 2, 'bold', 150, 90);
     ctx.fillStyle = '#ffe27a';
-    ctx.fillText(state.matchOverBanner, w / 2, 348);
+    ctx.fillText(text, cx, 348);
   }
 }
 

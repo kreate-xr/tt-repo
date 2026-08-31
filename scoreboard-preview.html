@@ -19,8 +19,12 @@
   <canvas id="matchpoint" width="2048" height="1152"></canvas>
   <p>Deuce at 10-10, long opponent name (ellipsized)</p>
   <canvas id="deuce" width="2048" height="1152"></canvas>
-  <p>Match over</p>
+  <p>Match over (AI match — short banner keeps the classic box)</p>
   <canvas id="over" width="2048" height="1152"></canvas>
+  <p>Match over (multiplayer — longest banner string in the codebase)</p>
+  <canvas id="overLong" width="2048" height="1152"></canvas>
+  <p>Game-break banner (multiplayer, between games)</p>
+  <canvas id="gameBreak" width="2048" height="1152"></canvas>
 <script type="module">
   import { createScoreboardState, renderScoreboardLayout } from '/js/scene/scoreboardLayout.js';
 
@@ -81,6 +85,40 @@
     shotsHit: 102, topSpeedKmh: 61.4, elapsedMs: 15 * 60000 + 42000,
   });
   renderScoreboardLayout(document.getElementById('over').getContext('2d'), over);
+
+  // Multiplayer banners, verbatim from js/modes/multiplayer/multiplayer.js.
+  // These are the strings that used to overflow the gold box and run off both
+  // edges of the canvas — the AI match's "YOU WIN!" was the only one that fit.
+  const overLong = createScoreboardState({
+    bestOf: 5, playerName: 'YOU', aiName: 'OPPONENT',
+  });
+  Object.assign(overLong, {
+    playerScore: 0, aiScore: 0, playerGames: 1, aiGames: 3,
+    currentServer: 'ai', matchOverBanner: 'OPPONENT WINS THE MATCH 3-1',
+    gameHistory: [
+      { playerScore: 11, aiScore: 8 },
+      { playerScore: 9, aiScore: 11 },
+      { playerScore: 7, aiScore: 11 },
+      { playerScore: 8, aiScore: 11 },
+    ],
+    shotsHit: 96, topSpeedKmh: 57.3, elapsedMs: 14 * 60000 + 9000,
+  });
+  renderScoreboardLayout(document.getElementById('overLong').getContext('2d'), overLong);
+
+  const gameBreak = createScoreboardState({
+    bestOf: 5, playerName: 'YOU', aiName: 'OPPONENT',
+  });
+  Object.assign(gameBreak, {
+    playerScore: 0, aiScore: 0, playerGames: 1, aiGames: 2,
+    currentServer: 'player', matchOverBanner: 'GAME 3 TO OPPONENT  11-9',
+    gameHistory: [
+      { playerScore: 11, aiScore: 8 },
+      { playerScore: 9, aiScore: 11 },
+      { playerScore: 9, aiScore: 11 },
+    ],
+    shotsHit: 71, topSpeedKmh: 55.0, elapsedMs: 10 * 60000 + 31000,
+  });
+  renderScoreboardLayout(document.getElementById('gameBreak').getContext('2d'), gameBreak);
 </script>
 </body>
 </html>
