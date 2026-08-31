@@ -18,6 +18,7 @@ import { getDefaultIceServers } from '../network/iceConfig.js';
 // lobby keyboard) can import the format without pulling in this module's
 // signaling/WebRTC dependency chain.
 import { generateRoomCode } from './roomCodes.js';
+import { traceStart } from '../network/connectTrace.js';
 
 export class LobbyManager {
   constructor({ iceServers } = {}) {
@@ -63,6 +64,9 @@ export class LobbyManager {
   }
 
   async _connectAs(role, code, { create = false } = {}) {
+    // Clock starts at the button press, not at negotiation — the wait a player
+    // actually feels includes auth and the room transaction.
+    traceStart(`${role} ${create ? 'create' : 'join'} ${code}`);
     this.signaling = new SignalingClient();
     let assignedRole;
     try {

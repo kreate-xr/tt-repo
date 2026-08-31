@@ -17,6 +17,7 @@
 import { createChannels, receiveChannels, waitForOpen, verifyChannels } from './DataChannels.js';
 import { encodeGame, decodeGame, encodeEvent, decodeEvent, PacketType } from './serialization.js';
 import { ClockSync, PING_INTERVAL_MS } from './ClockSync.js';
+import { traceMark, traceEnd } from './connectTrace.js';
 
 const ICE_TIMEOUT_MS = 30000;
 // Grace before the transient 'disconnected' connectionState is reported as a
@@ -130,12 +131,26 @@ export class NetworkManager {
     };
     this.pc.addEventListener('iceconnectionstatechange', () => {
       const s = this.pc.iceConnectionState;
+      traceMark(`ice:${s}`);
       if (s === 'connected' || s === 'completed') clearTimeout(this._iceTimeoutHandle);
     });
 
-    // Forward local ICE candidates to the peer.
+    // Forward local ICE candidates to the peer. The FIRST candidate of each
+    // type is traced: no 'srflx' means STUN never answered (blocked port,
+    // unreachable server, or a connect-src CSP that omits the stun: scheme),
+    // and no 'relay' with TURN configured means the relay is unusable — both
+    // turn into a long wait rather than a visible error.
+    this._seenCandidateTypes = new Set();
     this.pc.addEventListener('icecandidate', (e) => {
-      if (e.candidate) this.signaling.sendIce(e.candidate);
+      if (!e.candidate) { traceMark('local ICE gathering done'); return; }
+      const type = e.candidate.type
+        || (e.candidate.candidate || '').split(' ')[7]
+        || 'unknown';
+      if (!this._seenCandidateTypes.has(type)) {
+        this._seenCandidateTypes.add(type);
+        traceMark(`local ICE candidate: ${type}`);
+      }
+      this.signaling.sendIce(e.candidate);
     });
 
     this.pc.addEventListener('connectionstatechange', () => {
@@ -185,21 +200,40 @@ export class NetworkManager {
         try {
           await this.pc.setRemoteDescription(msg.sdp);
           this.remoteDescSet = true;
+          traceMark('answer applied', `${this.pendingIce.length} queued ICE`);
           await this._drainPendingIce();
         } catch (err) { console.error('host setRemoteDescription failed:', err); }
       });
 
-      // The signaling server emits peerReady once both peers have JOINed. The
-      // host kicks off the offer at that point — negotiation starts here, so
-      // this is where the ICE clock starts too.
-      this.signaling.on('peerReady', async () => {
-        armIceTimeout();
-        try {
-          const offer = await this.pc.createOffer();
-          await this.pc.setLocalDescription(offer);
-          this.signaling.sendOffer(offer);
-        } catch (err) { console.error('host createOffer failed:', err); }
-      });
+      // PRE-GATHER. The offer is created and published the moment the room
+      // exists, NOT when the guest arrives. Nothing in the SDP depends on who
+      // joins, so waiting for peerReady bought nothing and cost the guest
+      // three serial steps it had to sit through: the host's ICE gathering,
+      // the peerReady snapshot, and the offer write propagating back.
+      //
+      // Doing it here moves all of that into the dead time while the code is
+      // on screen. By the time the guest's first room snapshot arrives the
+      // offer is already in the doc (its handler reads data.offer on the
+      // initial snapshot, so it fires immediately) and the host's candidates
+      // are already sitting in hostCandidates for the guest's collection
+      // listener to deliver in one batch.
+      //
+      // Caveat: candidates gathered now age while the host waits. srflx NAT
+      // bindings and TURN allocations outlive a normal lobby wait, but a host
+      // that idles for many minutes may need an ICE restart — that's the
+      // iceFailed path, and it retries with fresh candidates.
+      try {
+        const offer = await this.pc.createOffer();
+        await this.pc.setLocalDescription(offer);
+        traceMark('offer created (pre-gathered)');
+        this.signaling.sendOffer(offer);
+      } catch (err) { console.error('host createOffer failed:', err); }
+
+      // peerReady no longer drives negotiation — it only tells us a guest has
+      // actually shown up, which is when the ICE clock may legitimately
+      // start. Arming at start() instead would time out every host that sits
+      // in the lobby longer than ICE_TIMEOUT_MS.
+      this.signaling.on('peerReady', () => armIceTimeout());
     } else {
       // Guest: wait for the offer, then answer. Channels arrive via
       // pc.ondatachannel — the receiveChannels promise resolves once both are
@@ -217,9 +251,11 @@ export class NetworkManager {
         try {
           await this.pc.setRemoteDescription(msg.sdp);
           this.remoteDescSet = true;
+          traceMark('offer applied', `${this.pendingIce.length} queued ICE`);
           await this._drainPendingIce();
           const answer = await this.pc.createAnswer();
           await this.pc.setLocalDescription(answer);
+          traceMark('answer created');
           this.signaling.sendAnswer(answer);
         } catch (err) { console.error('guest answer flow failed:', err); }
       });
@@ -231,8 +267,12 @@ export class NetworkManager {
     }
 
     const { game, events } = await channelsPromise;
+    traceMark('data channels present');
     await waitForOpen(game, events);
     verifyChannels(game, events);
+    // Everything after 'ice:connected' is the DTLS + SCTP handshake; a large
+    // delta here is packet loss driving DTLS retransmission backoff.
+    traceEnd('channels open');
 
     this.startPingLoop();
     this._emit('connected', { role: this.role });

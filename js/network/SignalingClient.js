@@ -36,6 +36,13 @@ import {
   runTransaction, serverTimestamp, deleteDoc, deleteField, updateDoc,
 } from 'firebase/firestore';
 import { getDb, ensureAnonymousAuth } from './firebaseClient.js';
+import { traceMark } from './connectTrace.js';
+
+// One-shot handshake events: each fires at most once per session and is
+// latched, so they are replayed to listeners that subscribe afterwards. The
+// streaming events ('ice') and lifecycle events ('close', 'error') are
+// deliberately excluded — replaying those would double-deliver.
+const STICKY_EVENTS = ['joined', 'peerReady', 'offer', 'answer'];
 
 export class SignalingClient {
   constructor() {
@@ -49,6 +56,8 @@ export class SignalingClient {
     this._peerReadyEmitted = false;
     this._offerEmitted = false;
     this._answerEmitted = false;
+    this._firstRemoteIce = false;
+    this._sticky = new Map(); // STICKY_EVENTS payloads, replayed in on()
 
     this.listeners = {
       joined: [], peerReady: [],
@@ -59,10 +68,25 @@ export class SignalingClient {
   }
 
   on(event, fn) {
-    if (this.listeners[event]) this.listeners[event].push(fn);
+    if (!this.listeners[event]) return;
+    this.listeners[event].push(fn);
+    // Late-subscriber replay. The handshake events below fire exactly once and
+    // are latched (_offerEmitted et al), so a listener that registers after
+    // the fact would otherwise never hear about them — and the connection
+    // hangs with no error. That race is live now that the host publishes its
+    // offer at room-creation time: the guest's very first room snapshot can
+    // already carry it, arriving before NetworkManager.start() has subscribed.
+    // Delivered on a microtask so on() never re-enters its caller.
+    if (STICKY_EVENTS.includes(event) && this._sticky.has(event)) {
+      const payload = this._sticky.get(event);
+      queueMicrotask(() => {
+        try { fn(payload); } catch (e) { console.error(`signaling replay for ${event} threw:`, e); }
+      });
+    }
   }
 
   _emit(event, payload) {
+    if (STICKY_EVENTS.includes(event)) this._sticky.set(event, payload);
     const arr = this.listeners[event];
     if (!arr) return;
     for (const fn of arr) {
@@ -75,6 +99,9 @@ export class SignalingClient {
     this.room = roomCode;
 
     const user = await ensureAnonymousAuth();
+    // First call on a cold page opens the Identity Platform round trip AND
+    // initializes the auth persistence layer — worth its own phase.
+    traceMark('anon auth');
     this.uid = user.uid;
     const db = getDb();
     this.roomRef = doc(db, 'rooms', roomCode);
@@ -110,6 +137,10 @@ export class SignalingClient {
       this._emit('error', err);
       throw err;
     }
+    // The room transaction is also the first Firestore RPC of the session, so
+    // this delta includes opening the backend channel (and any long-polling
+    // fallback the network forces).
+    traceMark('room txn', assignedRole);
 
     if (assignedRole === 'notFound') {
       throw new Error('ROOM_NOT_FOUND');
@@ -137,14 +168,17 @@ export class SignalingClient {
       }
       if (data[otherRoleField] && !this._peerReadyEmitted) {
         this._peerReadyEmitted = true;
+        traceMark('peerReady');
         this._emit('peerReady', {});
       }
       if (assignedRole === 'guest' && data.offer && !this._offerEmitted) {
         this._offerEmitted = true;
+        traceMark('offer received');
         this._emit('offer', { sdp: data.offer });
       }
       if (assignedRole === 'host' && data.answer && !this._answerEmitted) {
         this._answerEmitted = true;
+        traceMark('answer received');
         this._emit('answer', { sdp: data.answer });
       }
     }, (err) => this._emit('error', err));
@@ -156,6 +190,10 @@ export class SignalingClient {
       if (this.closed) return;
       snap.docChanges().forEach((change) => {
         if (change.type === 'added') {
+          if (!this._firstRemoteIce) {
+            this._firstRemoteIce = true;
+            traceMark('first remote ICE');
+          }
           this._emit('ice', { candidate: change.doc.data() });
         }
       });
@@ -170,12 +208,14 @@ export class SignalingClient {
     if (!this.roomRef) return;
     // Firestore needs plain objects; RTCSessionDescriptionInit IS one.
     setDoc(this.roomRef, { offer: { type: sdp.type, sdp: sdp.sdp } }, { merge: true })
+      .then(() => traceMark('offer write acked'))
       .catch((err) => this._emit('error', err));
   }
 
   sendAnswer(sdp) {
     if (!this.roomRef) return;
     setDoc(this.roomRef, { answer: { type: sdp.type, sdp: sdp.sdp } }, { merge: true })
+      .then(() => traceMark('answer write acked'))
       .catch((err) => this._emit('error', err));
   }
 
