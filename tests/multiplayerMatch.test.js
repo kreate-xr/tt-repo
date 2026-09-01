@@ -130,6 +130,32 @@ describe('createMatchModel', () => {
     expect(m.getState().scoreHost).toBe(1); // not double-counted
   });
 
+  test('reset() replays the match from 0-0 with the original server', () => {
+    // The rematch handshake resets both peers independently — no snapshot is
+    // exchanged — so the two models have to land on identical state from the
+    // shared config alone, whatever the finished match looked like.
+    const play = (m) => {
+      // Guest takes the match 3-0 and, along the way, the serve rotates away
+      // from where it started.
+      for (let g = 0; g < 3; g++) for (let i = 0; i < 11; i++) m.applyRallyEnd('guest');
+    };
+    const a = createMatchModel({ firstServer: 'guest' });
+    const b = createMatchModel({ firstServer: 'guest' });
+    play(a);
+    expect(a.getState().matchOver).toBe(true);
+
+    const after = a.reset();
+    expect(after).toEqual(b.getState());
+    expect(a.getState()).toEqual(b.getState());
+    expect(after).toMatchObject({
+      scoreHost: 0, scoreGuest: 0, gamesHost: 0, gamesGuest: 0,
+      games: [], matchOver: false, matchWinner: null, rallySeq: 0,
+      currentServer: 'guest', gameStartServer: 'guest',
+    });
+    // And it plays on normally afterwards — reset is not a dead-end state.
+    expect(a.applyRallyEnd('host').scoreHost).toBe(1);
+  });
+
   test('defaults match ITTF-simplified config', () => {
     expect(MATCH_DEFAULTS.bestOf).toBe(5);
     expect(MATCH_DEFAULTS.firstTo).toBe(11);

@@ -124,6 +124,25 @@ export function createMatchModel(cfgIn = {}) {
     return getState();
   }
 
+  // Back to game 1, 0-0, original server. Rematch after a finished match: both
+  // peers call it off the same agreed handshake, and because everything here
+  // comes from `cfg` (not from the state being discarded) the two models come
+  // back up identical without a snapshot exchange.
+  function reset() {
+    scoreHost = 0;
+    scoreGuest = 0;
+    gamesHost = 0;
+    gamesGuest = 0;
+    games = [];
+    gameStartServer = cfg.firstServer;
+    currentServer = cfg.firstServer;
+    pointsSinceSwitch = 0;
+    gameOver = false;
+    gameWinner = null;
+    rallySeq = 0;
+    return getState();
+  }
+
   const serialize = getState;
 
   function restore(snap) {
@@ -150,7 +169,7 @@ export function createMatchModel(cfgIn = {}) {
     rallySeq = snap.rallySeq | 0;
   }
 
-  return { applyRallyEnd, getState, serialize, restore };
+  return { applyRallyEnd, getState, serialize, restore, reset };
 }
 
 // Deterministic serve "toss" for the match's first server. Both peers know

@@ -28,16 +28,32 @@ export const LAYOUT_W = 2048;
 export const LAYOUT_H = 1152;
 
 // Palette — blue side = player, red side = AI, per the SportyXR mock.
-const BLUE = '#3b82f6';
-const BLUE_BRIGHT = '#4d8bff';
-const RED = '#ef4444';
-const RED_BRIGHT = '#ff4d64';
-const TEXT_DIM = '#c3cde8';
-const GOLD = '#f5b83d';
-const PURPLE = '#8b5cf6';
-const GREEN = '#22c55e';
+//
+// Exported as one object because the end-of-match report (matchReportLayout.js)
+// is the same broadcast surface seen at the end of the match it summarises. Two
+// private copies of these hexes is exactly how the board and the report would
+// drift into looking like two different products, one colour at a time.
+export const BOARD_COLORS = Object.freeze({
+  blue: '#3b82f6',
+  blueBright: '#4d8bff',
+  red: '#ef4444',
+  redBright: '#ff4d64',
+  textDim: '#c3cde8',
+  gold: '#f5b83d',
+  purple: '#8b5cf6',
+  green: '#22c55e',
+});
 
-const FONT = 'system-ui, sans-serif';
+const BLUE = BOARD_COLORS.blue;
+const BLUE_BRIGHT = BOARD_COLORS.blueBright;
+const RED = BOARD_COLORS.red;
+const RED_BRIGHT = BOARD_COLORS.redBright;
+const TEXT_DIM = BOARD_COLORS.textDim;
+const GOLD = BOARD_COLORS.gold;
+const PURPLE = BOARD_COLORS.purple;
+const GREEN = BOARD_COLORS.green;
+
+export const FONT = 'system-ui, sans-serif';
 
 // Stat values render both on the base canvas (drawStat) and on the floating
 // panel's clock overlay (renderClockValue) — one constant so they can't drift.
@@ -105,18 +121,27 @@ export function createScoreboardState(config = {}) {
 // The rect sits inside the clock stat cell (vlines at 1024/1518) and overlaps
 // nothing but the background slab gradient, so a transparent overlay reads
 // identically to drawing on the base canvas.
-export const CLOCK_VALUE_RECT = { x: 1150, y: 912, w: 360, h: 96 };
+//
+// Vertically it spans the full 84px em box of the digits (940…1024 in layout
+// space) plus ~10px of slack, and starts below the "TOTAL TIME" label's ink.
+// The old 912…1008 rect was sized for digits drawn on the alphabetic baseline;
+// on the layout's own 'middle' baseline the glyphs run to 1024 and would clip.
+export const CLOCK_VALUE_RECT = { x: 1150, y: 930, w: 360, h: 104 };
 
 // Draw just the clock digits into a CLOCK_VALUE_RECT-sized canvas, with the
 // exact style drawStat uses for stat values on the base layout.
 export function renderClockValue(ctx, elapsedMs) {
   ctx.clearRect(0, 0, CLOCK_VALUE_RECT.w, CLOCK_VALUE_RECT.h);
   ctx.textAlign = 'left';
-  ctx.textBaseline = 'alphabetic';
+  // 'middle', not 'alphabetic' — renderScoreboardLayout sets 'middle' once at
+  // the top and drawStat inherits it, so anchoring the overlay on the
+  // alphabetic baseline lifted the digits ~0.3em (25px) and pushed their tops
+  // into the "TOTAL TIME" label above them.
+  ctx.textBaseline = 'middle';
   ctx.font = STAT_VALUE_FONT;
   ctx.fillStyle = '#ffffff';
   // Same layout-space anchor drawStat uses (gx=1271 → value x = gx-115=1156,
-  // baseline y = statY+32 = 982), translated into the rect's local px.
+  // y = statY+32 = 982), translated into the rect's local px.
   ctx.fillText(formatTime(elapsedMs), 1156 - CLOCK_VALUE_RECT.x, 982 - CLOCK_VALUE_RECT.y);
 }
 
@@ -370,7 +395,7 @@ function pad2(n) {
   return String(n).padStart(2, '0');
 }
 
-function formatTime(ms) {
+export function formatTime(ms) {
   const totalS = Math.max(0, Math.floor(ms / 1000));
   const m = Math.floor(totalS / 60);
   const s = totalS % 60;
@@ -531,7 +556,10 @@ function drawStat(ctx, gx, gy, icon, color, label, value, unit) {
   ctx.textAlign = 'center';
 }
 
-function drawStatIcon(ctx, kind, x, y, color) {
+// Exported so the match report draws the same glyph set at its own scale
+// (wrap in a ctx scale transform — the radii here are sized for this 2048px
+// layout).
+export function drawStatIcon(ctx, kind, x, y, color) {
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
   ctx.lineWidth = 6;
@@ -571,6 +599,21 @@ function drawStatIcon(ctx, kind, x, y, color) {
       ctx.lineTo(ix, iy);
     }
     ctx.closePath();
+    ctx.fill();
+  } else if (kind === 'spin') {
+    // Three-quarter arc with an arrowhead — the "ball is rotating" mark the
+    // match report uses for TOP SPIN.
+    ctx.beginPath();
+    ctx.arc(x, y, 28, Math.PI * 0.35, Math.PI * 1.85);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x + 26, y + 2);
+    ctx.lineTo(x + 8, y + 16);
+    ctx.lineTo(x + 30, y + 26);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI * 2);
     ctx.fill();
   }
 }

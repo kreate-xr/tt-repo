@@ -41,11 +41,13 @@ import {
   resetRecentLandings, setStyleHomeDistance,
 } from './readyPosition.js';
 import { pickStyleForMatch, homeDistanceForStyle, contactDelayForStyle } from '../../ai/playerStyles.js';
-import { createServer } from './serve.js';
+import { createServer, SERVE_STATES } from './serve.js';
 import { createPlayerServeController } from './playerServe.js';
 import { createRallyManager } from './rallyManager.js';
 import { createFailureHandler } from './failureHandler.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
+import { createMatchReport } from '../../scene/matchReport.js';
+import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
 // BETA LAUNCH: stadium venue disabled (see js/ui/overlay.js) — these imports
 // are commented out so the stadium/crowd modules are tree-shaken out of the
 // shipped bundle. Restore together with the mount block further down.
@@ -183,7 +185,7 @@ function resetPlayerVelocity() {
 // hint at the unreleased venues. `env` is live again for the Focus Room's
 // venue handle (wall-anchored scoreboard + fixture lighting); the GLB
 // stadium mount block below stays commented out.
-export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor = null, env = null, competition = false } = {}) {
+export function createAIMatchDrill({ ballEvents, profile, xr, hooks = null, scoreboardAnchor = null, env = null, competition = false } = {}) {
   if (!ballEvents) throw new Error('createAIMatchDrill requires { ballEvents }');
   const arena = env;
 
@@ -283,6 +285,9 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
       const kmh = (info.outSpeed || 0) * 3.6;
       if (kmh > matchStats.topSpeedKmh) matchStats.topSpeedKmh = kmh;
       updateBoards({ shotsHit: matchStats.shotsHit, topSpeedKmh: matchStats.topSpeedKmh });
+      // Same contact, richer bookkeeping: the end-of-match report also wants
+      // the spin mix and (via the point verdicts) how many of these landed.
+      statTracker.recordShot({ outSpeed: info.outSpeed, spinType: info.spinType });
       const rolloutResult = shotAdapter.getLastRollout();
       // Spin-blind read for the AI's initial approach — see READ_LATENCY_MS
       // in aiFSM. Passing it is optional; the FSM falls back to the true
@@ -544,6 +549,29 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
   const clockTimer = setInterval(() => {
     updateBoards({ elapsedMs: performance.now() - matchStartMs });
   }, 1000);
+  // Report stats (accuracy / spin mix / max speed / duration). Separate from
+  // matchStats above, which is the live board's row; this one survives to the
+  // end-of-match card and is the same collector multiplayer runs.
+  const statTracker = createMatchStats({ now: () => performance.now() });
+  // The end-of-match card. Built here (hidden) rather than at match end so the
+  // canvas + texture upload doesn't land on the frame that also runs the
+  // celebration lighting and crowd audio.
+  const report = createMatchReport();
+  // Let the match-point celebration land before the card covers the table.
+  const REPORT_DELAY_MS = 3500;
+  let reportTimer = null;
+  // Flips when the card first goes up. Gates the drill's `panel` getter (see
+  // the return block) so the panel only exists once there is a match to report.
+  let matchDone = false;
+  report.on('playAgain', () => {
+    // queueMicrotask: this fires from inside the panel's own press handler,
+    // and restarting tears this drill (and the panel) down. Let the press
+    // finish unwinding first.
+    if (hooks && hooks.restart) queueMicrotask(() => hooks.restart());
+  });
+  report.on('exit', () => {
+    if (hooks && hooks.exitToMenu) queueMicrotask(() => hooks.exitToMenu());
+  });
   // Seed the first-serve indicator so it lights before any events fire.
   updateBoards({ currentServer: initialScore.currentServer });
 
@@ -561,9 +589,9 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
     return playerMP || aiMP;
   }
 
-  // On-table serve cue: pulsing chevrons on the player's half whenever
-  // it's their serve, pointing toward the net (see onServeRequested / launch
-  // below for the show/hide lifecycle).
+  // On-table serve cue: pulsing chevrons on the SERVER's half — blue on the
+  // player's, orange on the AI's — pointing toward the net (see
+  // onServeRequested / launch below for the show/hide lifecycle).
   const serveArrow = createServeArrow();
   // Over-net "+1" / "FOUL" flash at the moment a point is called; the
   // scoreboard and HUD log carry the detail.
@@ -636,6 +664,14 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
     // and inflate the injected miss rate when it's getting rolled ("defense
     // sag" — 3+ losses in a row causes visible unforced errors).
     if (fsm && fsm.onPointResult) fsm.onPointResult({ winner: e.winner });
+    // Accuracy for the end-of-match card: the rulebook's reason says whether
+    // the player lost this point by putting the ball somewhere it couldn't
+    // stay (see js/modes/matchStats.js) or simply by not reaching it.
+    statTracker.recordPoint({
+      loser: e.winner === 'player' ? 'opponent' : 'player',
+      reason: e.reason,
+      detail: e.detail,
+    });
   });
   rallyManager.on('onServerChange', (e) => {
     updateBoards({ currentServer: e.currentServer });
@@ -690,7 +726,47 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
     }
     // Match's over — retire the serve cue.
     if (serveArrow) serveArrow.hide();
+    // End-of-match card. Delayed so the celebration (crowd roar, lighting
+    // sweep, the winning point still on the table) gets its moment before a
+    // panel lands in front of the player's face.
+    statTracker.stop();
+    reportTimer = setTimeout(() => {
+      reportTimer = null;
+      showReport(e);
+    }, REPORT_DELAY_MS);
   });
+
+  // Populate and raise the end-of-match card.
+  function showReport(e) {
+    const sets = matchStats.gameHistory.map((g) => ({
+      player: g.playerScore, opponent: g.aiScore,
+    }));
+    const s = statTracker.getStats();
+    report.setModel({
+      playerName: 'YOU',
+      opponentName: 'AI',
+      playerGames: e.playerGames,
+      opponentGames: e.aiGames,
+      bestOf: 5,
+      sets,
+      winner: e.winner === 'player' ? 'player' : 'opponent',
+      durationMs: s.durationMs,
+      stats: {
+        accuracyPct: s.accuracyPct,
+        maxSpeedKmh: s.maxSpeedKmh,
+        topSpinPct: s.topSpinPct,
+        totalPoints: totalPointsFromSets(sets),
+      },
+      buttons: [
+        // No restart hook (a host that never passed one) → the button would
+        // do nothing, so it says so rather than silently swallowing presses.
+        { id: 'playAgain', label: 'PLAY AGAIN', tone: 'primary', disabled: !(hooks && hooks.restart) },
+        { id: 'exit', label: 'EXIT TO MENU', tone: 'ghost' },
+      ],
+    });
+    matchDone = true;
+    report.show();
+  }
   // Net-cord serve that still landed good — ITTF let, replayed with no
   // point.
   rallyManager.on('onLet', (e) => {
@@ -710,10 +786,13 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
     // right feel (crowd settles as the umpire calls play).
     if (crowdAudio) crowdAudio.quietDown();
     if (e.server === 'player') {
-      if (serveArrow) serveArrow.show();
+      if (serveArrow) serveArrow.show('player');
       pulseActive(0.6, 100);
     } else {
-      if (serveArrow) serveArrow.hide();
+      // AI serve: same cue on its half, so the player reads whose serve it
+      // is from the table instead of only the scoreboard dot. Cleared when
+      // the AI's toss goes up (see update()). No haptic — nothing is armed.
+      if (serveArrow) serveArrow.show('opponent');
     }
   });
   // Kick off the first serve.
@@ -755,6 +834,11 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
     if (!server.isFinished()) {
       server.update(dt);
       paddle.refreshVelocity(dt);
+      // The AI's toss is up (PRE_SERVE is the wind-up, everything after it
+      // has a live ball) — retire its serve cue, mirroring the player's
+      // playerServe.onLaunch hide. hide() is a no-op once faded, so calling
+      // it through the rest of the serve costs nothing.
+      if (serveArrow && server.getState() !== SERVE_STATES.PRE_SERVE) serveArrow.hide();
     } else {
       fsm.update(dt);
     }
@@ -775,6 +859,8 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
     failureHandler.dispose();
     rallyManager.dispose();
     clearInterval(clockTimer);
+    if (reportTimer) { clearTimeout(reportTimer); reportTimer = null; }
+    report.dispose();
     if (scoreboard) scoreboard.dispose();
     if (stadiumScoreboard) stadiumScoreboard.dispose();
     if (crowdAudio) crowdAudio.dispose();
@@ -812,5 +898,11 @@ export function createAIMatchDrill({ ballEvents, profile, xr, scoreboardAnchor =
     isFinished,
     dispose,
     launch,
+    // The report card is the drill's only panel, and it only exists after the
+    // final point. Exposed through a getter that stays null until then so the
+    // A/X button keeps opening the wrist menu mid-match (inGame.js routes A/X
+    // to `panel` whenever a drill has one) instead of toggling an empty card.
+    get panel() { return matchDone ? report : null; },
+    panelMesh: report.mesh,
   };
 }

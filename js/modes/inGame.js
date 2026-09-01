@@ -847,7 +847,19 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       // these ignore them.
       ...(options || {}),
       xr,
-      hooks: { exitToMenu: enterMenu, endSession },
+      // `restart` re-enters the SAME drill with the same parameters — what the
+      // match report's PLAY AGAIN needs. Reads lastDrillParams rather than
+      // closing over this call's arguments so a drill entered by one path and
+      // restarted later still replays what the player actually chose.
+      hooks: {
+        exitToMenu: enterMenu,
+        endSession,
+        restart: () => {
+          if (!lastDrillParams) return;
+          enterDrill(lastDrillParams.drill, lastDrillParams.difficulty,
+            lastDrillParams.preset, lastDrillParams.config, lastDrillParams.options);
+        },
+      },
       // Populated only when a venue GLB with named walls is loaded (tt-arena).
       // Drills that render UI panels (currently just aiMatch's scoreboard) use
       // it to wall-mount instead of floating in world space.
@@ -1052,7 +1064,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // they're transient in-play tools where head-follow is what you want.
   function updateMenuPlacement() {
     if (state === 'menu' && wristMenu.isVisible()) {
-      placeMenuStatic();
+      placeMenuStatic(wristMenu.mesh);
       return;
     }
     // The training and Machine Play menus are MENUS, not transient in-play
@@ -1061,11 +1073,20 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // They get the wrist menu's fixed world anchor instead — same distance,
     // same pose — so moving between menus doesn't change where you look.
     if (state === 'tuner' && isMenuPanel(currentTuner) && currentTuner.isVisible()) {
-      placeMenuStatic();
+      placeMenuStatic(currentTuner.mesh);
       return;
     }
     const panelMesh = activePanelMesh();
     if (!panelMesh) return;
+    // A drill panel can opt into the same fixed anchor (the match report
+    // does). Same reasoning as the menus above: a panel you READ — lean
+    // toward, point at, look away from — must stay where you left it, and
+    // must appear where every other panel in the game appears.
+    if (state === 'drill' && drillInstance && drillInstance.panel
+        && drillInstance.panel.staticPlacement) {
+      placeMenuStatic(panelMesh);
+      return;
+    }
     const xrCam = renderer.xr.getCamera();
     xrCam.getWorldPosition(tmpCamPos);
     xrCam.getWorldDirection(tmpCamFwd);
@@ -1079,13 +1100,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // room-scale origin has shifted between showings. Uses table anchors
   // (rather than a hard-coded coordinate) so the menu tracks whatever pose
   // the table was placed at when models loaded.
-  function placeMenuStatic() {
-    if (!tableBox || tableSurfaceY == null) return;
-    // Whichever menu is up gets the same anchor, so switching between them
-    // is a content change rather than a change of place.
-    const mesh = (state === 'tuner' && isMenuPanel(currentTuner))
-      ? currentTuner.mesh
-      : wristMenu.mesh;
+  // Whichever panel is up gets the same anchor, so moving between them is a
+  // content change rather than a change of place. The caller passes the mesh
+  // (it already knows which panel it is asking about); deriving it here from
+  // `state` is what stopped anything outside the menu family from using it.
+  function placeMenuStatic(mesh) {
+    if (!tableBox || tableSurfaceY == null || !mesh) return;
     const centerX = (tableBox.min.x + tableBox.max.x) / 2;
     // Position the panel just above the net (table Z-center) — roughly half
     // the table length from the player, so it's out of the swing volume but

@@ -45,6 +45,8 @@ import { hudLog } from '../../scene/hud.js';
 import { createMatchModel, createRallyTracker, firstServerFromCode } from './matchModel.js';
 import { createPlayerServeController } from '../aiMatch/playerServe.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
+import { createMatchReport } from '../../scene/matchReport.js';
+import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
 import { faultRuleText } from '../../scene/faultText.js';
 import { pulseFoul } from '../../xr/haptics.js';
 import { createNetTouchWatcher } from '../../scene/netTouch.js';
@@ -135,15 +137,177 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     config: { bestOf: 1, playerName: 'YOU', aiName: 'OPPONENT' },
     anchor: scoreboardAnchor,
   });
-  // On-table serve cue, same as the AI match: pulsing chevrons on the
-  // LOCAL player's half whenever it's their serve. Both peers render their
-  // own half at tableBox.max.z (the opponent is mirrored across
-  // tableCenterZ by paddleSync), so a single unmirrored arrow is correct on
-  // each client — host and guest each see it on their own serve.
+  // On-table serve cue, same as the AI match: pulsing chevrons on whichever
+  // half is serving, pointing at the net. Both peers render their own half at
+  // tableBox.max.z (the opponent is mirrored across tableCenterZ by
+  // paddleSync), so 'player'/'opponent' is a purely LOCAL side — each client
+  // shows the same serve on the half it renders that server on. Whoever
+  // serves, both peers see the cue.
   const serveArrow = createServeArrow();
   // Over-net "+1" / "FOUL" flash at the moment a point is called; the
   // scoreboard and HUD log carry the detail.
   const pointBurst = createPointBurst();
+
+  // --- Match-long stats + the end-of-match report ---
+  // Same collector the AI match runs, fed from the same two places: our own
+  // paddle contacts, and the shared rulebook's verdict for each point. Both
+  // are available identically on either side of the wire — ball events after
+  // our shot are not (ownership hands off ~1 RTT after contact), which is why
+  // accuracy is derived from verdicts. See js/modes/matchStats.js.
+  const statTracker = createMatchStats({ now: () => performance.now() });
+  // TOTAL TIME on the board, and the duration on the report. The AI match has
+  // had this since the board shipped; multiplayer's whole stats row was
+  // reading 0 because nothing ever fed it.
+  let matchStartMs = performance.now();
+  let clockTimer = null;
+  function startMatchClock() {
+    stopMatchClock();
+    matchStartMs = performance.now();
+    if (scoreboard) scoreboard.update({ elapsedMs: 0 });
+    clockTimer = setInterval(() => {
+      if (scoreboard) scoreboard.update({ elapsedMs: performance.now() - matchStartMs });
+    }, 1000);
+  }
+  function stopMatchClock() {
+    if (clockTimer) clearInterval(clockTimer);
+    clockTimer = null;
+  }
+  startMatchClock();
+  const report = createMatchReport();
+  // Delay so the deciding point is still on the table when the match ends,
+  // rather than a panel appearing over it instantly.
+  const REPORT_DELAY_MS = 3000;
+  let reportTimer = null;
+  let matchDone = false;
+  // Rematch handshake. Both peers must ask before either resets — see
+  // PacketType.REMATCH_REQUEST. `matchEpoch` counts completed rematches and
+  // fences packets from the match that just ended.
+  let matchEpoch = 0;
+  let localRematch = false;
+  let peerRematch = false;
+  let peerLeft = false;
+
+  report.on('rematch', () => requestRematch());
+  report.on('exit', () => {
+    // Tell the peer before going, so a "WAITING FOR OPPONENT…" on their card
+    // resolves instead of hanging on an answer that will never arrive.
+    try {
+      nm.sendEvent({ type: PacketType.REMATCH_REQUEST, epoch: matchEpoch, wants: false });
+    } catch (err) { /* leaving anyway */ }
+    // queueMicrotask: this runs inside the panel's own press handler, and
+    // leaving tears the drill (and the panel) down.
+    if (hooks && hooks.exitToMenu) queueMicrotask(() => hooks.exitToMenu());
+  });
+
+  // Buttons + status line, recomputed whenever either side's rematch intent
+  // changes. Patch-only: the sets table and stats stay as showMatchReport
+  // left them.
+  function refreshReportButtons() {
+    const status = peerLeft ? 'OPPONENT LEFT THE MATCH'
+      : localRematch ? 'WAITING FOR OPPONENT…'
+      : peerRematch ? 'OPPONENT WANTS A REMATCH' : null;
+    report.setModel({
+      status,
+      buttons: [
+        {
+          id: 'rematch',
+          label: localRematch ? 'REMATCH SENT' : 'REMATCH',
+          tone: 'primary',
+          // Asking twice does nothing (the handshake is already pending), and
+          // there is nobody left to ask once the opponent has gone.
+          disabled: localRematch || peerLeft,
+        },
+        { id: 'exit', label: 'EXIT TO MENU', tone: 'ghost' },
+      ],
+    });
+  }
+
+  function showMatchReport(s) {
+    const sets = s.games.map((g) => ({
+      player: myAbs === 'host' ? g.scoreHost : g.scoreGuest,
+      opponent: myAbs === 'host' ? g.scoreGuest : g.scoreHost,
+    }));
+    const st = statTracker.getStats();
+    report.setModel({
+      playerName: 'YOU',
+      opponentName: 'OPPONENT',
+      playerGames: myAbs === 'host' ? s.gamesHost : s.gamesGuest,
+      opponentGames: myAbs === 'host' ? s.gamesGuest : s.gamesHost,
+      bestOf: s.bestOf,
+      sets,
+      winner: s.matchWinner === myAbs ? 'player' : 'opponent',
+      durationMs: st.durationMs,
+      stats: {
+        accuracyPct: st.accuracyPct,
+        maxSpeedKmh: st.maxSpeedKmh,
+        topSpinPct: st.topSpinPct,
+        totalPoints: totalPointsFromSets(sets),
+      },
+    });
+    refreshReportButtons();
+    matchDone = true;
+    report.show();
+  }
+
+  // Both match-over paths (our own applyRallyEnd, and adopting the host's
+  // reconciled state) come through here, so a guest that only learns the match
+  // is over from a SCORE_UPDATE still gets the card — and never gets it twice.
+  function scheduleMatchReport(s) {
+    if (matchDone || reportTimer) return;
+    statTracker.stop();
+    stopMatchClock();
+    reportTimer = setTimeout(() => {
+      reportTimer = null;
+      showMatchReport(s);
+    }, REPORT_DELAY_MS);
+  }
+
+  function requestRematch() {
+    if (localRematch || peerLeft) return;
+    localRematch = true;
+    hudLog('rematch requested — waiting for opponent');
+    try {
+      nm.sendEvent({ type: PacketType.REMATCH_REQUEST, epoch: matchEpoch, wants: true });
+    } catch (err) {
+      // A dead channel must not leave the button stuck in "sent" forever.
+      localRematch = false;
+      hudLog(`rematch request failed: ${err.message || err}`);
+    }
+    if (!(localRematch && peerRematch)) {
+      refreshReportButtons();
+      return;
+    }
+    startRematch();
+  }
+
+  // Runs on both peers off the same agreed handshake. Everything it touches is
+  // derived from the shared config (matchModel.reset) or is local presentation,
+  // so no snapshot exchange is needed to come back up in sync.
+  function startRematch() {
+    matchEpoch += 1;
+    localRematch = false;
+    peerRematch = false;
+    peerLeft = false;
+    match.reset();
+    statTracker.reset();
+    startMatchClock();
+    if (reportTimer) { clearTimeout(reportTimer); reportTimer = null; }
+    matchDone = false;
+    report.hide();
+    if (scoreboard) scoreboard.setMatchOverBanner(null);
+    refreshScoreUi();
+    // Clean slate for the rally machinery — same shape as the reconnect path.
+    // Marked decided so a swing at the previous match's dead ball can't start
+    // a phantom rally before the serve window opens.
+    tracker.reset();
+    rallyDecided = true;
+    tossLive = false;
+    playerServe.disarm();
+    if (serveArrow) serveArrow.hide();
+    if (ballModel) ballModel.visible = false;
+    hudLog(`rematch starting (match ${matchEpoch + 1})`);
+    scheduleServeWindow();
+  }
   let tossLive = false;             // my serve toss is airborne, not yet struck
   // A point (or let) has been called and the dead ball is still on the table
   // until openServeWindow hides it. Contacts and verdicts are ignored in that
@@ -421,6 +585,9 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         // ahead, or level on rallySeq with different state. Not a cheat
         // defence (nothing peer-to-peer is) — a divergence repair.
         if (role === 'host' || !msg.match) break;
+        // Epoch fence: a snapshot of the match we just agreed to replay would
+        // otherwise restore the finished score straight over the fresh one.
+        if ((msg.epoch | 0) !== matchEpoch) break;
         const snap = msg.match;
         const local = match.getState();
         if (typeof snap.rallySeq !== 'number') break;
@@ -431,15 +598,40 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         refreshScoreUi();
         hudLog(`score reconciled from host (rally ${snap.rallySeq})`);
         const s = match.getState();
-        if (s.matchOver && scoreboard) {
+        if (s.matchOver) {
           const myGames = myAbs === 'host' ? s.gamesHost : s.gamesGuest;
           const oppGames = myAbs === 'host' ? s.gamesGuest : s.gamesHost;
-          scoreboard.setMatchOverBanner(
-            s.matchWinner === myAbs
-              ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
-              : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
-          );
+          if (scoreboard) {
+            scoreboard.setMatchOverBanner(
+              s.matchWinner === myAbs
+                ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
+                : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
+            );
+          }
+          // Reconciliation is the only way a peer whose own verdict was
+          // dropped learns the match is over — so the card is raised here too.
+          scheduleMatchReport(s);
         }
+        break;
+      }
+      case PacketType.REMATCH_REQUEST: {
+        // Stale epoch = intent about a match that has already been replayed.
+        if ((msg.epoch | 0) !== matchEpoch) break;
+        // Absent `wants` = a peer on the pre-decline build; treat as "yes",
+        // which is what the field originally meant.
+        if (msg.wants === false) {
+          if (peerLeft) break;
+          peerLeft = true;
+          peerRematch = false;
+          hudLog('opponent left the match');
+          if (matchDone) refreshReportButtons();
+          break;
+        }
+        if (peerRematch) break;
+        peerRematch = true;
+        hudLog('opponent wants a rematch');
+        if (localRematch) startRematch();
+        else if (matchDone) refreshReportButtons();
         break;
       }
       case PacketType.PLAYER_PAUSED: {
@@ -515,6 +707,10 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     // a reflex return of a let (which the player has no way to know was a
     // let) must not restart the rally or read as an obstruction.
     if (rallyDecided) return;
+    // Report stats: our own contacts are the one shot-level signal that is
+    // just as reliable online as offline (the ball itself leaves our
+    // authority a moment later).
+    statTracker.recordShot({ outSpeed: info.outSpeed, spinType: info.spinType });
     hm.localHit(gameSync.encodeForWire(ballModel.position, ballVelocity, ballAngularVelocity));
     // Keep (or grab — an early swing at a still-incoming dead-reckoned ball
     // can fire before we adopted the opponent's handoff) full authority for
@@ -643,10 +839,13 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     if (iServe) {
       releaseBallAuthority('self');
       playerServe.arm();
-      if (serveArrow) serveArrow.show();
+      if (serveArrow) serveArrow.show('player');
     } else {
       releaseBallAuthority('opponent');
-      if (serveArrow) serveArrow.hide();
+      // Receiving: the cue goes on THEIR half so this peer can still read
+      // whose serve it is. It clears the moment their ball goes live (see
+      // the dead-reckoning branch in update()).
+      if (serveArrow) serveArrow.show('opponent');
     }
   }
 
@@ -657,7 +856,10 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     sessionState.scoreOpponent = myAbs === 'host' ? s.scoreGuest : s.scoreHost;
     sessionState.rallyCount = s.rallySeq;
     if (scoreboard) {
+      const st = statTracker.getStats();
       scoreboard.update({
+        shotsHit: st.shots,
+        topSpeedKmh: st.maxSpeedKmh,
         playerScore: sessionState.scoreSelf,
         aiScore: sessionState.scoreOpponent,
         playerGames: myAbs === 'host' ? s.gamesHost : s.gamesGuest,
@@ -713,7 +915,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     // periodic heartbeat in update()) — the reconciliation half of the
     // crossed-verdict story; see the SCORE_UPDATE receive handler.
     if (role === 'host') {
-      nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize() });
+      nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize(), epoch: matchEpoch });
     }
     // The rally is over but the ball is still on the table until the serve
     // window opens. Nothing that happens to it from here counts.
@@ -725,6 +927,16 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     // reopens it, so the on-table cue must not survive into the READY window
     // (covers a whiffed toss, where no paddle hit ever fired).
     if (serveArrow) serveArrow.hide();
+    // Accuracy for the end-of-match card. Runs on both peers (this whole
+    // function does), from the same verdict, so the two cards agree about who
+    // put the ball out. Lets carry no winner and are not judged.
+    if (winnerAbs) {
+      statTracker.recordPoint({
+        loser: winnerAbs === myAbs ? 'opponent' : 'player',
+        reason,
+        detail,
+      });
+    }
     refreshScoreUi();
     if (winnerAbs) {
       hudLog(`point ${winnerAbs === myAbs ? 'YOU' : 'OPPONENT'} (${reason})  ${sessionState.scoreSelf}-${sessionState.scoreOpponent}`);
@@ -759,6 +971,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         );
       }
       hudLog(`match over: ${s.matchWinner === myAbs ? 'you win' : 'opponent wins'} ${myGames}-${oppGames}`);
+      scheduleMatchReport(s);
       return;
     }
     if (s.gameJustEnded) {
@@ -940,7 +1153,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
       scoreSyncAccum += dt;
       if (scoreSyncAccum >= SCORE_SYNC_INTERVAL_S) {
         scoreSyncAccum = 0;
-        nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize() });
+        nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize(), epoch: matchEpoch });
       }
     }
 
@@ -1001,6 +1214,11 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         ballVelocity.set(dr.vel.x, dr.vel.y, dr.vel.z);
         ballAngularVelocity.set(dr.spin.x, dr.spin.y, dr.spin.z);
         ballModel.visible = true;
+        // Their ball is airborne, so their serve cue has done its job — this
+        // is the receiver's mirror of the server hiding on its own toss
+        // (playerServe.onLaunch). hide() is a no-op once faded, so calling it
+        // every rally frame costs nothing.
+        if (serveArrow) serveArrow.hide();
         // Locally predicted table bounce: zero network latency, synchronized
         // with the visual by construction. Same intensity curve as ball.js;
         // the wire TABLE_BOUNCE fallback dedupes against this.
@@ -1068,6 +1286,9 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   }
   function dispose() {
     if (serveTimer) clearTimeout(serveTimer);
+    if (reportTimer) clearTimeout(reportTimer);
+    stopMatchClock();
+    report.dispose();
     if (remotePaddleVisual) remoteGroup.remove(remotePaddleVisual);
     scene.remove(remoteGroup);
     if (nm) nm.stopSendLoop();
@@ -1098,5 +1319,10 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     liveLine,
     dispose,
     isLocalOwner,
+    // Only the end-of-match card, and only once the match is over — until then
+    // this stays null so A/X keeps opening the wrist menu (see the same note
+    // in aiMatch.js).
+    get panel() { return matchDone ? report : null; },
+    panelMesh: report.mesh,
   };
 }

@@ -1,0 +1,97 @@
+<!-- TEMPORARY dev-only preview for the end-of-match report card.
+     Not part of the game — safe to delete. Open at /match-report-preview.html -->
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Match report layout preview</title>
+<style>
+  body { background: #222; margin: 20px; font-family: sans-serif; color: #ddd; }
+  canvas { width: 720px; display: block; margin-bottom: 8px; border: 1px solid #555; }
+</style>
+</head>
+<body>
+  <p>AI match — player wins 3-1 (the mock case)</p>
+  <canvas id="win" width="1024" height="640"></canvas>
+  <p>AI match — player loses 0-3 (sweep: two rows never played), PLAY AGAIN hovered</p>
+  <canvas id="loss" width="1024" height="640"></canvas>
+  <p>Multiplayer — rematch requested, waiting on the opponent</p>
+  <canvas id="waiting" width="1024" height="640"></canvas>
+  <p>Multiplayer — opponent left; long display name (ellipsized)</p>
+  <canvas id="left" width="1024" height="640"></canvas>
+  <p>Deciding fifth game, zero stats (nothing recorded — the empty-model case)</p>
+  <canvas id="empty" width="1024" height="640"></canvas>
+<script type="module">
+  import { renderMatchReport } from '/js/scene/matchReportLayout.js';
+
+  const draw = (id, model) =>
+    renderMatchReport(document.getElementById(id).getContext('2d'), model);
+
+  draw('win', {
+    playerName: 'YOU', opponentName: 'AI',
+    playerGames: 3, opponentGames: 1, bestOf: 5,
+    sets: [
+      { player: 11, opponent: 6 }, { player: 11, opponent: 9 },
+      { player: 8, opponent: 11 }, { player: 11, opponent: 7 },
+    ],
+    winner: 'player', durationMs: 12 * 60000 + 43000,
+    stats: { accuracyPct: 87, maxSpeedKmh: 18.6, topSpinPct: 72, totalPoints: 74 },
+    buttons: [
+      { id: 'playAgain', label: 'PLAY AGAIN', tone: 'primary' },
+      { id: 'exit', label: 'EXIT TO MENU', tone: 'ghost' },
+    ],
+  });
+
+  draw('loss', {
+    playerName: 'YOU', opponentName: 'AI',
+    playerGames: 0, opponentGames: 3, bestOf: 5,
+    sets: [
+      { player: 7, opponent: 11 }, { player: 9, opponent: 11 },
+      { player: 4, opponent: 11 },
+    ],
+    winner: 'opponent', durationMs: 8 * 60000 + 5000,
+    stats: { accuracyPct: 61, maxSpeedKmh: 14.2, topSpinPct: 38, totalPoints: 53 },
+    hoveredId: 'playAgain',
+    buttons: [
+      { id: 'playAgain', label: 'PLAY AGAIN', tone: 'primary' },
+      { id: 'exit', label: 'EXIT TO MENU', tone: 'ghost' },
+    ],
+  });
+
+  draw('waiting', {
+    playerName: 'YOU', opponentName: 'OPPONENT',
+    playerGames: 3, opponentGames: 2, bestOf: 5,
+    sets: [
+      { player: 11, opponent: 8 }, { player: 9, opponent: 11 },
+      { player: 12, opponent: 10 }, { player: 6, opponent: 11 },
+      { player: 11, opponent: 9 },
+    ],
+    winner: 'player', durationMs: 21 * 60000 + 9000,
+    stats: { accuracyPct: 79, maxSpeedKmh: 22.4, topSpinPct: 64, totalPoints: 98 },
+    status: 'WAITING FOR OPPONENT…',
+    buttons: [
+      { id: 'rematch', label: 'REMATCH SENT', tone: 'primary', disabled: true },
+      { id: 'exit', label: 'EXIT TO MENU', tone: 'ghost' },
+    ],
+  });
+
+  draw('left', {
+    playerName: 'YOU', opponentName: 'A_VERY_LONG_DISPLAY_NAME_INDEED',
+    playerGames: 1, opponentGames: 3, bestOf: 5,
+    sets: [
+      { player: 11, opponent: 4 }, { player: 8, opponent: 11 },
+      { player: 5, opponent: 11 }, { player: 9, opponent: 11 },
+    ],
+    winner: 'opponent', durationMs: 15 * 60000 + 30000,
+    stats: { accuracyPct: 55, maxSpeedKmh: 19.1, topSpinPct: 41, totalPoints: 70 },
+    status: 'OPPONENT LEFT THE MATCH',
+    buttons: [
+      { id: 'rematch', label: 'REMATCH', tone: 'primary', disabled: true },
+      { id: 'exit', label: 'EXIT TO MENU', tone: 'ghost' },
+    ],
+  });
+
+  draw('empty', {});
+</script>
+</body>
+</html>

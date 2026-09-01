@@ -42,6 +42,16 @@ export const PacketType = Object.freeze({
   // remote paddle freezes mid-swing.
   CONGESTION_STATE:   'CONGESTION_STATE',
   PLAYER_PAUSED:      'PLAYER_PAUSED',
+  // Rematch intent from the end-of-match report: { epoch, wants }.
+  // `wants: true` is "I want to play again" — the rematch starts only once
+  // BOTH peers have asked, so the two match models reset together; one side
+  // restarting alone would leave the peers scoring different matches with no
+  // way back. `wants: false` is sent when a peer leaves the report instead,
+  // so the other side is told rather than left waiting on an answer that is
+  // never coming. `epoch` is the sender's rematch counter; a message (or a
+  // SCORE_UPDATE) stamped with a stale epoch belongs to a match that has
+  // already been reset and is dropped.
+  REMATCH_REQUEST:    'REMATCH_REQUEST',
   GAME_READY:         'GAME_READY',
   HELLO:              'HELLO',
   RECONNECT_RESTORE:  'RECONNECT_RESTORE',
