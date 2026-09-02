@@ -41,6 +41,43 @@ export const BUOYANCY_ACCEL = 0.146;
 // off a brush. Downstream paths (edge scale, air drag) model different physical
 // effects rather than the same one — no double-counting to compensate for here.
 export const SPIN_CAPTURE_GAIN = 35;
+// VR input-domain compensation on spin capture. PLAYER CONTACTS ONLY.
+//
+// SPIN_CAPTURE_GAIN above is correct physics, and measurement confirms the
+// transfer chain honours it: a 20-contact headset capture (2026-09-02) came
+// back with tangentSpeed median 1.80 m/s → spinMag median 65 rad/s, i.e.
+// 1.80 × 35 ≈ 63 predicted vs 65 observed. The model is not lossy.
+//
+// The problem is upstream of the model. Reaching a real 300 rad/s loop needs
+// ~8.6 m/s of tangential contact speed (300 / 35). That capture measured a
+// paddle face-centre speed of median 2.68 m/s, max 4.53 — against the 15-20
+// m/s a real racket head reaches in a loop. A player holding a 100 g
+// controller, standing, with no ball weight and no stroke resistance, simply
+// does not produce racket-head speeds; the input domain is roughly a fifth of
+// the real one. Correct physics over a 5×-too-small input yields 5×-too-little
+// spin, and no adjustment to the transfer can fix an input problem.
+//
+// So this scales the CAPTURE for the player only, leaving the AI (whose
+// paddleSolver plans real-scale strike speeds) on unmodified physics. It is
+// deliberately NOT folded into SPIN_CAPTURE_GAIN: that constant is the no-slip
+// ceiling and should keep meaning that, so the compensation stays visible and
+// separately tunable instead of quietly corrupting a physical quantity — the
+// mistake MAGNUS_COEFFICIENT's 0.010 era made and paid for (see its comment).
+//
+// 2.5 maps the ACHIEVABLE VR range onto the MEANINGFUL spin range. Against the
+// measured capture, with the effective gain at 87.5:
+//   u_t 0.30 (a block)          →  26 rad/s   nearly flat, as it should be
+//   u_t 1.80 (median contact)   → 157 rad/s   past "light brush" (125)
+//   u_t 3.40 (a good brush)     → 298 rad/s   a heavy loop
+//   u_t 6.37 (best of 20)       → 557 rad/s   compressed by PADDLE_SPIN_CAP
+// The cap still binds at the top, which is intended: it models rubber-ball
+// grip saturation and is a property of the BALL, so it must not scale with a
+// compensation for how fast a human can wave a controller.
+//
+// This knowingly breaks the "one ball, one spin economy" invariant the
+// 2026-08 unification established, for players only and for a stated reason.
+// Revisit if VR controllers or stroke tracking ever close the speed gap.
+export let PLAYER_SPIN_GAIN = 2.5;
 // Ceiling on outgoing ball spin after a paddle contact, applied in
 // computeImpulse. SPIN_CAPTURE_GAIN is the per-contact TRANSFER ceiling
 // (no-slip physics), but nothing bounded the SLIP feeding it: a VR
@@ -627,6 +664,11 @@ export function setHapticMaxSpeed(v)         { HAPTIC_MAX_SPEED = clamp(v, 2, 20
 export function setPaddleContactSpeedCap(v)  { PADDLE_CONTACT_SPEED_CAP = clamp(v, 0, 15); }
 export function setSpinDamping(v)            { SPIN_DAMPING = clamp(v, 0, 1); }
 export function setMagnusCoefficient(v)      { MAGNUS_COEFFICIENT = clamp(v, 0, 0.05); }
+// Floor of 1 — below it the player would generate LESS spin than the physics
+// says, which is a different (and unjustifiable) claim than compensating for a
+// slow input. Ceiling of 6 is roughly full compensation for the measured
+// racket-speed gap; past that the cap does all the work anyway.
+export function setPlayerSpinGain(v)         { PLAYER_SPIN_GAIN = clamp(v, 1, 6); }
 export function setTableSpinGain(v)          { TABLE_SPIN_GAIN = clamp(v, 0, 20); }
 export function setTableSidespinKick(v)      { TABLE_SIDESPIN_KICK = clamp(v, 0, 0.03); }
 

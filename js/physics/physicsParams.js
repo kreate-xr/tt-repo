@@ -144,6 +144,12 @@ export const FEEL_ROWS = [
     step: 0.001, default: 0.004, fmt: (v) => v.toFixed(3),
   },
   {
+    id: 'playerSpinGain', label: 'Player Spin Gain',
+    desc: 'Compensates a controller swing reaching ~1/5 real racket speed. 1 = raw physics.',
+    get: () => P.PLAYER_SPIN_GAIN, set: (v) => P.setPlayerSpinGain(num(v)),
+    step: 0.25, default: 2.5, fmt: (v) => v.toFixed(2),
+  },
+  {
     id: 'sidespinKick', label: 'Sidespin Bounce Kick',
     desc: 'Lateral top-up at the bounce for pure vertical sidespin.',
     get: () => P.TABLE_SIDESPIN_KICK, set: (v) => P.setTableSidespinKick(num(v)),

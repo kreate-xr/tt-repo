@@ -15,7 +15,7 @@ import { shouldSuppressContact as trackingShouldSuppressContact } from '../xr/tr
 import { recordHit as recordContactLogHit } from '../xr/contactLog.js';
 import { integrateFlightStep, applyTableBounce } from './rollout.js';
 import {
-  SPIN_CAPTURE_GAIN,
+  SPIN_CAPTURE_GAIN, PLAYER_SPIN_GAIN,
   NET_NORMAL_RESTITUTION, NET_TANGENT_DAMP, NET_SPIN_DAMP,
   NET_TOP_CORD_RESTITUTION, NET_TOP_CORD_TANGENT_KEEP, NET_TOP_CORD_LATERAL_JITTER,
   NET_HIT_COOLDOWN,
@@ -425,6 +425,14 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
       restitution = PADDLE_EDGE_RESTITUTION;
       spinCaptureGain = SPIN_CAPTURE_GAIN * PADDLE_EDGE_SPIN_SCALE;
     }
+    // VR input-domain compensation — player only. A controller swing reaches
+    // roughly a fifth of real racket-head speed (see PLAYER_SPIN_GAIN), and
+    // the AI's paddleSolver plans real-scale strikes, so applying this to both
+    // would hand the AI five times the spin it was tuned for. Multiplied AFTER
+    // the edge branch on purpose: the wood-blade model and the input gap are
+    // unrelated effects, so an edge strike keeps its halved grip and still
+    // gets the same compensation for a slow swing.
+    if (ctx.origin === 'player') spinCaptureGain *= PLAYER_SPIN_GAIN;
 
     // Impulse + spin capture — extracted into a shared pure helper so the
     // AI's paddleSolver can run the same math against synthetic inputs
