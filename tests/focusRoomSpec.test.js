@@ -6,7 +6,7 @@
 // panels clear of the ceiling, scoreboard clear of the wall top.
 
 const {
-  ROOM, COURT, BARRIER, LIGHT_PANELS, computeFocusRoomLayout,
+  ROOM, COURT, BARRIER, BARRIER_LOGO, LIGHT_PANELS, computeFocusRoomLayout,
 } = require('../js/scene/focusRoomSpec.js');
 
 // tableBox as models.js derives it from the Table.glb edge anchors.
@@ -64,6 +64,39 @@ test('barrier segments ring the court: inside the room, clear of the table', () 
     const outsideZ = seg.z <= TABLE_BOX.min.z - 1.0 || seg.z >= TABLE_BOX.max.z + 1.0;
     expect(outsideX || outsideZ).toBe(true);
   }
+});
+
+test('every barrier gets a branding decal, facing the court', () => {
+  const layout = computeFocusRoomLayout(TABLE_BOX);
+  const { barrierSegments: segs, barrierLogos: logos, center } = layout;
+  expect(logos.length).toBe(segs.length);
+  const gap = BARRIER.THICK / 2 + BARRIER_LOGO.OFFSET;
+  logos.forEach((logo, i) => {
+    const seg = segs[i];
+    // The decal's own normal, (sin, cos) of its rotY — which is the
+    // direction it was pushed off the panel face.
+    const nx = Math.sin(logo.rotY);
+    const nz = Math.cos(logo.rotY);
+    // Faces the court center, never out at the wall behind it.
+    const toCenter = (center.x - seg.x) * nx + (center.z - seg.z) * nz;
+    expect(toCenter).toBeGreaterThan(0);
+    // Clear of the panel face by the full gap, along that same normal.
+    expect(logo.x).toBeCloseTo(seg.x + nx * gap);
+    expect(logo.z).toBeCloseTo(seg.z + nz * gap);
+    expect(gap).toBeGreaterThan(BARRIER.THICK / 2);
+    // Centered on the panel it prints onto.
+    expect(logo.y).toBeCloseTo(BARRIER.HEIGHT / 2);
+  });
+});
+
+test('the printed mark fits inside the barrier panel it sits on', () => {
+  // Worst case is the height ceiling binding — the mark still has to clear
+  // the panel top (where the stripe cap wraps) and the floor.
+  const halfH = BARRIER_LOGO.MAX_HEIGHT / 2;
+  expect(BARRIER.HEIGHT / 2 + halfH).toBeLessThan(BARRIER.HEIGHT - 0.05);
+  expect(BARRIER.HEIGHT / 2 - halfH).toBeGreaterThan(0.05);
+  // And the width has to leave real panel either side of the print.
+  expect(BARRIER_LOGO.WIDTH).toBeLessThan(BARRIER.SEG_W - 0.2);
 });
 
 test('light panels hang below the ceiling and inside the room', () => {

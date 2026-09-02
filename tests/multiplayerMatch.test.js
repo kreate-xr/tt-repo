@@ -162,6 +162,62 @@ describe('createMatchModel', () => {
     expect(MATCH_DEFAULTS.deucePoint).toBe(10);
     expect(MATCH_DEFAULTS.serveRotationEvery).toBe(2);
   });
+
+  // --- Match length -------------------------------------------------------
+  // The room's format is the HOST's, and the guest builds its model before it
+  // has heard from anyone. Adoption rides the score stream (SCORE_UPDATE →
+  // restore) rather than a bespoke handshake, so the guest converges on the
+  // host's format through the same path that already repairs its score.
+
+  test('best-of-3 ends the match at 2 games, not 3', () => {
+    const m = createMatchModel({ bestOf: 3 });
+    for (let g = 0; g < 2; g++) for (let i = 0; i < 11; i++) m.applyRallyEnd('guest');
+    const s = m.getState();
+    expect(s.matchOver).toBe(true);
+    expect(s.matchWinner).toBe('guest');
+    expect(s.gamesGuest).toBe(2);
+  });
+
+  test('an even or junk bestOf is coerced, never honoured', () => {
+    // best-of-2 has no majority; taking it literally would let a 1-1 match
+    // run forever. Falls back to the default rather than inventing a rule.
+    expect(createMatchModel({ bestOf: 2 }).getState().bestOf).toBe(MATCH_DEFAULTS.bestOf);
+    expect(createMatchModel({ bestOf: 'three' }).getState().bestOf).toBe(MATCH_DEFAULTS.bestOf);
+  });
+
+  test('restore adopts the host format — and the new length decides the match', () => {
+    const host = createMatchModel({ bestOf: 3 });
+    const guest = createMatchModel({ bestOf: 5 });   // its own stored default
+    guest.restore(host.serialize());
+    expect(guest.getState().bestOf).toBe(3);
+
+    // Not just cosmetic: the adopted length has to move gamesNeeded with it,
+    // or the guest plays a best-of-3 that never ends.
+    for (let g = 0; g < 2; g++) for (let i = 0; i < 11; i++) guest.applyRallyEnd('host');
+    expect(guest.getState().matchOver).toBe(true);
+  });
+
+  test('an adopted format survives the rematch reset', () => {
+    // reset() rebuilds from cfg, so a format adopted mid-session has to have
+    // landed in cfg — otherwise "play again" silently reverts to best-of-5.
+    const guest = createMatchModel({ bestOf: 5 });
+    guest.restore(createMatchModel({ bestOf: 1 }).serialize());
+    for (let i = 0; i < 11; i++) guest.applyRallyEnd('host');
+    expect(guest.getState().matchOver).toBe(true);
+    expect(guest.reset().bestOf).toBe(1);
+    for (let i = 0; i < 11; i++) guest.applyRallyEnd('guest');
+    expect(guest.getState().matchOver).toBe(true);
+  });
+
+  test('a snapshot without bestOf leaves the format alone', () => {
+    // Peer on an older build: its snapshots carry no format, and adopting
+    // `undefined` would silently reset the room to the default mid-match.
+    const m = createMatchModel({ bestOf: 3 });
+    const snap = m.serialize();
+    delete snap.bestOf;
+    m.restore(snap);
+    expect(m.getState().bestOf).toBe(3);
+  });
 });
 
 describe('createRallyTracker', () => {

@@ -18,8 +18,11 @@
 
 import { ROOM_CODE_ALPHABET, ROOM_CODE_LEN } from '../../lobby/roomCodes.js';
 import { friendlyLobbyError } from '../../lobby/lobbyErrors.js';
+import {
+  BEST_OF_OPTIONS, normalizeBestOf, loadBestOf, saveBestOf,
+} from '../matchFormat.js';
 
-export { ROOM_CODE_ALPHABET, ROOM_CODE_LEN };
+export { ROOM_CODE_ALPHABET, ROOM_CODE_LEN, BEST_OF_OPTIONS };
 
 export const MP_SCREENS = Object.freeze({
   HOME: 'home',             // Create / Join choice
@@ -40,6 +43,16 @@ export class LobbyMenuModel {
     this.screen = MP_SCREENS.HOME;
     this.codeEntry = '';   // join-side keyboard buffer
     this.hostCode = null;  // code being hosted, once createRoom returns it
+    // Match length for a room WE create. Seeded from (and written back to) the
+    // shared preference the wrist menu's BEST OF control also edits, so the
+    // two are never two different answers to the same question. Editable only
+    // on HOME: once a code is out in the world the format is the room's, and a
+    // guest that joined a best-of-3 must not have it changed underneath them.
+    this.bestOf = loadBestOf();
+    // The value latched at createRoom time, handed to the drill on connect.
+    // Read from here rather than from `bestOf` so it is immune to any later
+    // edit, including one made on a HOME screen the player backed out to.
+    this.hostBestOf = null;
     this.message = null;   // neutral status line
     this.error = null;     // red error line (friendlyLobbyError output)
     this.lobby = null;     // the in-flight attempt this model owns
@@ -59,12 +72,29 @@ export class LobbyMenuModel {
     const old = this.lobby;
     this.lobby = null;
     this.hostCode = null;
+    this.hostBestOf = null;
     if (old) old.teardown().catch(() => { /* best-effort */ });
+  }
+
+  /**
+   * Pick the match length for rooms this player hosts. Ignored once an attempt
+   * is in flight (see the field comment) and persisted immediately, so the
+   * choice survives backing out of the panel — or the session.
+   */
+  setBestOf(value) {
+    if (this.screen !== MP_SCREENS.HOME) return this.bestOf;
+    const n = normalizeBestOf(value);
+    if (n === this.bestOf) return n;
+    this.bestOf = saveBestOf(n);
+    this._changed();
+    return this.bestOf;
   }
 
   async startCreate() {
     this._reset();
     const my = this.session;
+    // Latch the format for this room before anything can await.
+    this.hostBestOf = this.bestOf;
     this.screen = MP_SCREENS.HOSTING;
     this.message = 'Creating room…';
     this.error = null;
@@ -74,7 +104,15 @@ export class LobbyMenuModel {
       // stack isn't ready yet — that lands on the friendly retryable error
       // path instead of escaping as an unhandled rejection.
       this.lobby = this.createLobby();
-      const { code, ready } = this.lobby.createRoom();
+      const { code, ready } = this.lobby.createRoom({
+        // A collision re-roll swaps the code out from under us; repaint so the
+        // panel never advertises one the host is no longer hosting.
+        onCode: (next) => {
+          if (this.session !== my) return;
+          this.hostCode = next;
+          this._changed();
+        },
+      });
       this.hostCode = code;
       this.message = 'Share this code — waiting for your opponent…';
       this._changed();
@@ -166,7 +204,9 @@ export class LobbyMenuModel {
     const lobby = this.lobby;
     this.lobby = null; // ownership passes to the host — see header comment
     this.hostCode = null;
-    this.connected = { networkManager: nm, role: lobby.role, lobby };
+    // `bestOf` is null for a guest: the room's format belongs to whoever
+    // created it, and the guest adopts it over the wire.
+    this.connected = { networkManager: nm, role: lobby.role, lobby, bestOf: this.hostBestOf };
     this.message = 'Opponent connected!';
     this.error = null;
     this._changed();

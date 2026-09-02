@@ -43,6 +43,7 @@ import { ReconnectHandler } from '../../network/ReconnectHandler.js';
 import { SessionState } from '../../lobby/SessionState.js';
 import { hudLog } from '../../scene/hud.js';
 import { createMatchModel, createRallyTracker, firstServerFromCode } from './matchModel.js';
+import { normalizeBestOf, loadBestOf, matchLengthLabel } from '../matchFormat.js';
 import { createPlayerServeController } from '../aiMatch/playerServe.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
 import { createMatchReport } from '../../scene/matchReport.js';
@@ -114,10 +115,20 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // peers; myAbs/oppAbs translate to/from this peer's perspective.
   const myAbs = role === 'host' ? 'host' : 'guest';
   const oppAbs = myAbs === 'host' ? 'guest' : 'host';
+  // Match length. The HOST's choice is the room's, latched in the lobby when
+  // the room was created and carried through on the connection bundle; the
+  // guest has none to carry, so it opens on its own last choice and adopts
+  // the host's from the first SCORE_UPDATE (matchModel.restore). Starting the
+  // guest on a stored default rather than a hardcoded 5 means its scoreboard
+  // is usually right immediately and, when it isn't, wrong for under a rally.
+  const bestOf = normalizeBestOf(multiplayer.bestOf ?? loadBestOf());
   // First server comes from a deterministic hash of the room code — a serve
   // "toss" both peers compute identically with no extra wire traffic. The
   // old hardcoded 'host' gave the host the first serve of every match.
-  const match = createMatchModel({ firstServer: firstServerFromCode(lobby && lobby.code) });
+  const match = createMatchModel({
+    bestOf,
+    firstServer: firstServerFromCode(lobby && lobby.code),
+  });
   // Full ITTF rulebook, shared with the AI match (js/modes/rallyRules.js).
   // Geometry is read live so service-position and obstruction tests use the
   // same table the physics does.
@@ -134,7 +145,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // release); the trigger auto-toss remains the fallback path.
   const playerServe = createPlayerServeController({ xr });
   const scoreboard = createScoreboard({
-    config: { bestOf: 1, playerName: 'YOU', aiName: 'OPPONENT' },
+    config: { bestOf, playerName: 'YOU', aiName: 'OPPONENT' },
     anchor: scoreboardAnchor,
   });
   // On-table serve cue, same as the AI match: pulsing chevrons on whichever
@@ -596,6 +607,13 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         if (!differs) break;
         match.restore(snap);
         refreshScoreUi();
+        // The host's snapshot carries the room's match length as well as its
+        // score, so this is also where a guest finds out it joined a
+        // best-of-3. Announced separately — "score reconciled" would be a
+        // strange way to tell somebody the match got shorter.
+        if (local.bestOf !== match.getState().bestOf) {
+          hudLog(`match length: ${matchLengthLabel(match.getState().bestOf)} (set by the host)`);
+        }
         hudLog(`score reconciled from host (rally ${snap.rallySeq})`);
         const s = match.getState();
         if (s.matchOver) {
@@ -636,6 +654,16 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
       }
       case PacketType.PLAYER_PAUSED: {
         hudLog(`peer ${msg.paused ? 'paused' : 'resumed'}`);
+        break;
+      }
+      case PacketType.GAME_READY: {
+        // "I'm in the match now." The two peers enter XR independently — the
+        // host can be serving before the guest has left the start screen — so
+        // the host answers with its match state instead of leaving the guest
+        // to wait up to a full heartbeat (SCORE_SYNC_INTERVAL_S) to find out
+        // the room's match length. Everything about the reply is idempotent.
+        if (role !== 'host') break;
+        nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize(), epoch: matchEpoch });
         break;
       }
       case PacketType.RECONNECT_RESTORE: {
@@ -1045,6 +1073,20 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     });
     nm.startSendLoop(60);
     startTelemetry();
+    // Announce arrival AFTER the handlers are attached, so the host's reply
+    // (see the GAME_READY case) cannot land before we can hear it. Sent on
+    // reconnect too — the peer's answer costs one packet and re-agreeing the
+    // format after an outage is exactly what we want.
+    try {
+      nm.sendEvent({ type: PacketType.GAME_READY, role });
+    } catch (err) { /* a channel that can't take this will surface elsewhere */ }
+    // The host answers guests that arrive later; this covers the opposite
+    // order, where the guest was already waiting when we got here.
+    if (role === 'host') {
+      try {
+        nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize(), epoch: matchEpoch });
+      } catch (err) { /* heartbeat in update() will repeat it */ }
+    }
   }
   wireConnection();
 

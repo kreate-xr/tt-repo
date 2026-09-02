@@ -34,9 +34,10 @@
 //       - no hits yet (serve toss whiffed) → null: re-serve, no point
 
 import { createRallyRules } from '../rallyRules.js';
+import { normalizeBestOf, gamesToWin, DEFAULT_BEST_OF } from '../matchFormat.js';
 
 export const MATCH_DEFAULTS = Object.freeze({
-  bestOf: 5,
+  bestOf: DEFAULT_BEST_OF,
   firstTo: 11,
   deucePoint: 10,
   serveRotationEvery: 2,
@@ -45,7 +46,11 @@ export const MATCH_DEFAULTS = Object.freeze({
 
 export function createMatchModel(cfgIn = {}) {
   const cfg = { ...MATCH_DEFAULTS, ...cfgIn };
-  const gamesNeeded = Math.floor(cfg.bestOf / 2) + 1;
+  cfg.bestOf = normalizeBestOf(cfg.bestOf);
+  // Recomputed rather than const: the guest adopts the host's match length
+  // from the score stream (see restore), and the number of games it takes to
+  // win has to move with it.
+  let gamesNeeded = gamesToWin(cfg.bestOf);
 
   let scoreHost = 0;
   let scoreGuest = 0;
@@ -147,6 +152,17 @@ export function createMatchModel(cfgIn = {}) {
 
   function restore(snap) {
     if (!snap) return;
+    // Match LENGTH rides the same host-authoritative channel as the score.
+    // The host owns the room's format; the guest picked its own default
+    // before the first packet arrived and adopts the host's here, which is
+    // what makes a best-of-3 room actually a best-of-3 for both peers. Only
+    // bestOf is adopted — it is the only field the player can choose, and
+    // taking firstTo without deucePoint (which the wire never carries) would
+    // build a match model with an incoherent rulebook.
+    if (snap.bestOf !== undefined) {
+      cfg.bestOf = normalizeBestOf(snap.bestOf);
+      gamesNeeded = gamesToWin(cfg.bestOf);
+    }
     scoreHost = snap.scoreHost | 0;
     scoreGuest = snap.scoreGuest | 0;
     gamesHost = snap.gamesHost | 0;

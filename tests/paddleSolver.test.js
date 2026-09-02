@@ -502,7 +502,6 @@ describe('solvePaddle — net clearance', () => {
     const N = 40;
     let fullOK = 0;
     let laddered = 0;
-    let dumb = 0;
     for (let i = 0; i < N; i++) {
       // Low-to-mid contacts at loop pace with heavy physical-rps spin — the
       // band the regression concentrated in.
@@ -528,12 +527,13 @@ describe('solvePaddle — net clearance', () => {
         });
         if (r.feasible) { rescued = true; break; }
       }
-      if (rescued) laddered += 1; else dumb += 1;
+      if (rescued) laddered += 1;
     }
     // The ladder must actually fire on this band…
     expect(laddered).toBeGreaterThan(0);
     // …and tactical intent (full-pace OR softened same-target) must dominate:
-    // the safe block is the exception again, not the identity of the tier.
+    // the safe block — everything this leaves over — is the exception again,
+    // not the identity of the tier.
     expect((fullOK + laddered) / N).toBeGreaterThanOrEqual(0.8);
   });
 

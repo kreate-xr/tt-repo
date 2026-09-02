@@ -5,6 +5,7 @@
 //     live NetworkManager handed through.
 
 import { friendlyLobbyError } from '../lobby/lobbyErrors.js';
+import { loadBestOf, saveBestOf, matchLengthLabel } from '../modes/matchFormat.js';
 
 // LobbyManager drags in the signaling/WebRTC stack including the Firebase
 // SDK (~1 MB of parse on the Quest CPU) — lazy-loaded on the first
@@ -20,9 +21,21 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
   const joinRoomBtn = document.getElementById('join-room');
   const roomCodeInput = document.getElementById('room-code-input');
   const mpStatusEl = document.getElementById('multiplayer-status');
+  const bestOfSelect = document.getElementById('mp-best-of');
 
   let lobby = null;
   let pendingNetworkManager = null;
+  // Match length for a room created HERE. Latched at Create time (below) so a
+  // later fiddle with the dropdown can't change the format out from under a
+  // guest who has already joined; a joiner leaves it null and adopts the
+  // host's over the connection. Shares its stored value with the in-XR menus.
+  let hostBestOf = null;
+  if (bestOfSelect) {
+    bestOfSelect.value = String(loadBestOf());
+    bestOfSelect.addEventListener('change', () => {
+      bestOfSelect.value = String(saveBestOf(bestOfSelect.value));
+    });
+  }
   // Bumped every time a lobby attempt starts or is cancelled. Async
   // continuations capture the value at their start and bail if it moved on,
   // so an abandoned attempt can never clobber the one that replaced it.
@@ -108,7 +121,12 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
       statusEl,
       xrMode,
       multiplayer: pendingNetworkManager
-        ? { networkManager: pendingNetworkManager, role: pendingNetworkManager.role, lobby }
+        ? {
+            networkManager: pendingNetworkManager,
+            role: pendingNetworkManager.role,
+            lobby,
+            bestOf: hostBestOf,
+          }
         : null,
     });
   });
@@ -144,6 +162,7 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     const old = lobby;
     lobby = null;
     pendingNetworkManager = null;
+    hostBestOf = null;
     if (old) {
       try { await old.teardown(); } catch { /* best-effort */ }
     }
@@ -160,14 +179,25 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
   async function handleCreate() {
     await resetLobby();
     const mySession = lobbySession;
+    // Latch the format for this room before the first await — resetLobby just
+    // cleared it, and from here on it is what the guest will be playing.
+    hostBestOf = bestOfSelect ? saveBestOf(bestOfSelect.value) : loadBestOf();
     setEnterMrEnabled(false, 'Waiting for opponent…');
     setMpStatus('Creating room…');
     try {
       const { LobbyManager } = await loadLobbyManager();
       if (lobbySession !== mySession) return; // cancelled while loading
       lobby = new LobbyManager();
-      const { code, ready } = lobby.createRoom();
-      setMpStatus(`Room code: ${code} — share it with your opponent and wait here. (Click Create again for a new code.)`);
+      const codeMessage = (c) => `Room code: ${c} — ${matchLengthLabel(hostBestOf).toLowerCase()}. Share it with your opponent and wait here. (Click Create again for a new code.)`;
+      const { code, ready } = lobby.createRoom({
+        // Re-rolled after a collision: reprint so the code on screen is the
+        // one actually being hosted.
+        onCode: (next) => {
+          if (lobbySession !== mySession) return;
+          setMpStatus(codeMessage(next));
+        },
+      });
+      setMpStatus(codeMessage(code));
       const nm = await ready;
       if (lobbySession !== mySession) return; // cancelled or replaced meanwhile
       onLobbyConnected(nm, 'host');

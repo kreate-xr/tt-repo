@@ -352,7 +352,7 @@ describe('low-toss detection (ITTF 2.6.2)', () => {
     const xr = makeFakeXR();
     const { ctrl, setTime } = makeController(xr);
     const events = [];
-    const low = jest.fn((e) => events.push('low'));
+    const low = jest.fn(() => events.push('low'));
     ctrl.onLaunch(() => events.push('launch'));
     ctrl.onLowToss(low);
     ctrl.arm();

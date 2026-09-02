@@ -7,7 +7,7 @@
 //   - Center row: three large circular mode tiles (Play / AI / Multi),
 //     each with a coloured crosshair ring, icon, main label + subtitle.
 //   - Right dock: how it looks — Table Color, Ball Color.
-//   - Top pill: difficulty segmented control.
+//   - Top pills: difficulty segmented control, and match length (BEST OF).
 //   - Below the tiles: hover caption naming the dock button under the cursor.
 //   - Bottom pill: Exit.
 //
@@ -26,6 +26,7 @@ import * as haptics from '../xr/haptics.js';
 import { BALL_COLORS, getBallColorId, TABLE_COLORS, getTableColorId } from './models.js';
 import { getDriftFlag as getCalibrationDriftFlag } from '../xr/driftDetector.js';
 import { TUNER_ENABLED } from './hud.js';
+import { BEST_OF_OPTIONS, loadBestOf, saveBestOf } from '../modes/matchFormat.js';
 
 // Rotation order for the ball-color toggle. Keep in sync with BALL_COLORS.
 const BALL_COLOR_ORDER = ['orange', 'white'];
@@ -362,6 +363,10 @@ export class WristMenu {
     try {
       this.competitionMode = localStorage.getItem('tt_competition_rules') === '1';
     } catch { /* no storage — default off */ }
+    // Match length for the AI match, and the default for any multiplayer room
+    // this player hosts (the lobby reads the same stored preference). Best-of-5
+    // to 11 is 20-40 minutes in a headset; this is how you ask for one game.
+    this.bestOf = loadBestOf();
 
     this.hoverProgress = 0;
     this.showProgress  = 0;
@@ -387,6 +392,7 @@ export class WristMenu {
     // Chrome regions computed by layoutButtons(). Drawn as background before
     // the interactive buttons so segment / arrow highlights layer on top.
     this._diffPill = null;
+    this._formatPill = null;
 
     this.buttons = [];
     this.layoutButtons();
@@ -491,17 +497,32 @@ export class WristMenu {
   }
 
   layoutButtons() {
-    // --- Top pill row: difficulty segmented control ---
-    // The drill picker that sat beside it is gone; drills are chosen inside
-    // the TRAINING menu now. The difficulty control stays because it selects
-    // the AI tier for the match modes, which is independent of training.
-    // With the picker's half of the row freed, the control takes the width
-    // it always needed: at 300px each segment was 100px, which clipped
-    // "INTERNATIONAL" at any legible font size.
+    // --- Top pill row: difficulty + match length ---
+    // The drill picker that sat beside the difficulty control is gone; drills
+    // are chosen inside the TRAINING menu now. The difficulty control stays
+    // because it selects the AI tier for the match modes, which is independent
+    // of training, and it keeps its full 520px: at 300px each segment was
+    // 100px, which clipped "INTERNATIONAL" at any legible font size.
+    //
+    // Match length joins it as a second pill rather than a dock button because
+    // it is a CHOICE OF THREE, not a toggle — the dock's icon-only tiles can
+    // show two states at most, and "how many games" is not a guessable glyph.
+    // The two pills centre as a group. The row is bounded by the capsule's
+    // rounded left/right ends: at the pills' own vertical centre the capsule
+    // is 136px wider on each side than it is at their top edge, and each
+    // pill's rounded end pulls its corner inward by another 27px, so 800px of
+    // row inside a 1024px canvas clears the sides with room to spare.
     const TOP_Y = 30;
     const TOP_H = 54;
+    const PILL_GAP = 22;
     const diffW  = 520;
-    const rowX = (CANVAS_W - diffW) / 2;
+    // "BEST OF" is drawn as static chrome inside the pill: three segments
+    // reading "1 / 3 / 5" are unambiguous with it and meaningless without.
+    const FORMAT_LABEL_W = 96;
+    const formatSegW = 54;
+    const formatW = FORMAT_LABEL_W + BEST_OF_OPTIONS.length * formatSegW;
+    const rowW = diffW + PILL_GAP + formatW;
+    const rowX = (CANVAS_W - rowW) / 2;
 
     this._diffPill = { x: rowX, y: TOP_Y, w: diffW, h: TOP_H };
 
@@ -510,6 +531,17 @@ export class WristMenu {
       this.buttons.push({
         id: 'diff-' + i, kind: 'segment', index: i, label: DIFFICULTIES[i].label,
         shape: 'rect', x: rowX + i * segW, y: TOP_Y, w: segW, h: TOP_H,
+      });
+    }
+
+    const formatX = rowX + diffW + PILL_GAP;
+    this._formatPill = { x: formatX, y: TOP_Y, w: formatW, h: TOP_H, labelW: FORMAT_LABEL_W };
+    for (let i = 0; i < BEST_OF_OPTIONS.length; i++) {
+      const n = BEST_OF_OPTIONS[i];
+      this.buttons.push({
+        id: 'bestOf-' + n, kind: 'format', value: n, label: String(n),
+        shape: 'rect', x: formatX + FORMAT_LABEL_W + i * formatSegW,
+        y: TOP_Y, w: formatSegW, h: TOP_H,
       });
     }
 
@@ -643,6 +675,27 @@ export class WristMenu {
       ctx.restore();
     }
 
+    // Match-length container, plus the "BEST OF" it is answering. The label is
+    // chrome, not a button: tapping it would do nothing and it must not
+    // hit-test away part of the "1" segment beside it.
+    if (this._formatPill) {
+      const p = this._formatPill;
+      ctx.save();
+      roundRectPath(ctx, p.x, p.y, p.w, p.h, p.h / 2);
+      ctx.fillStyle = COLORS.chromeBg;
+      ctx.fill();
+      ctx.fillStyle = COLORS.chromeMuted;
+      ctx.font = FONT_PILL;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '1px';
+      // Centred in its own slot, not nudged inward: the text sits on the
+      // pill's vertical centreline, where the rounded end is at full width.
+      ctx.fillText('BEST OF', p.x + p.labelW / 2, p.y + p.h / 2 - 1, p.labelW - 16);
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+      ctx.restore();
+    }
+
     // --- Buttons pass ---
     for (const b of this.buttons) {
       this.drawButton(b);
@@ -710,6 +763,7 @@ export class WristMenu {
     switch (b.kind) {
       case 'mode':    return this.drawModeCircle(b, hp, pp);
       case 'segment': return this.drawSegment(b, hp, pp);
+      case 'format':  return this.drawSegment(b, hp, pp);
       case 'dock':    return this.drawDock(b, hp, pp);
       case 'exit':    return this.drawExit(b, hp, pp);
     }
@@ -834,9 +888,14 @@ export class WristMenu {
     return this._modeFitCache;
   }
 
+  // Both segmented controls draw identically — only the question of "which
+  // one is selected" differs, so the two pills stay visually consistent by
+  // construction rather than by two functions being kept in step.
   drawSegment(b, hp, pp) {
     const ctx = this.ctx;
-    const isSelected = b.index === this.selectedDifficultyIndex;
+    const isSelected = b.kind === 'format'
+      ? b.value === this.bestOf
+      : b.index === this.selectedDifficultyIndex;
     const pad = 3;
     if (isSelected) {
       ctx.save();
@@ -985,18 +1044,33 @@ export class WristMenu {
       this.draw();
       return;
     }
+    if (button.kind === 'format') {
+      // Persisted immediately: the multiplayer lobby reads this same stored
+      // value as the default format for a room the player hosts, and it may
+      // be opened from the 2D start screen in a later session.
+      this.bestOf = saveBestOf(button.value);
+      this.emit('bestOf', { bestOf: this.bestOf });
+      this.draw();
+      return;
+    }
     if (button.kind === 'mode') {
       const difficultyId = DIFFICULTIES[this.selectedDifficultyIndex].id;
       const competition = this.competitionMode;
+      const bestOf = this.bestOf;
       if (button.modeId === 'training') {
         // Opens the unified PLAY menu; what to play is chosen in there.
         this.emit('training', { difficulty: difficultyId });
       } else if (button.modeId === 'aiMatch') {
-        this.emit('start', { drill: 'aiMatch', difficulty: difficultyId, options: { competition } });
+        this.emit('start', { drill: 'aiMatch', difficulty: difficultyId, options: { competition, bestOf } });
       } else if (button.modeId === 'multiplayer') {
         // Competition physics is NOT applied in multiplayer yet — the two
         // peers would need to agree on it over the wire. Passed through so
         // the wiring exists when that handshake lands.
+        //
+        // Match length is deliberately NOT passed here: online, the format
+        // belongs to whoever created the room, and it reaches the drill on the
+        // lobby's connection bundle. Sending it from the tile as well would
+        // give the guest a second, losing opinion.
         this.emit('start', { drill: 'multiplayer', difficulty: difficultyId, options: { competition } });
       }
       return;

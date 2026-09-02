@@ -14,7 +14,10 @@ function v(x, y, z) { return new THREE.Vector3(x, y, z); }
 
 const R = 0.02;
 const E = 0.82;
-const GAIN = 35;
+// The shipped gain, not a copy of its current value: these tests pin the
+// friction couple as the game actually plays it, so tuning the constant has
+// to be reflected here rather than silently diverging from a literal 35.
+const GAIN = SPIN_CAPTURE_GAIN;
 
 // Canonical block: ball flies toward the player (+z isn't used here — use
 // +x for clarity), paddle stationary, face square to the ball.

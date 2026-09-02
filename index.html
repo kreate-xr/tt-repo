@@ -418,6 +418,28 @@
       letter-spacing: 0.1em;
     }
 
+    /* Match length — host side only: the room's format belongs to whoever
+       created it, and a guest adopts it over the connection. */
+    .mp-format {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--ink-soft);
+      font-size: 0.86rem;
+      font-weight: 600;
+    }
+    .mp-format select {
+      padding: 7px 10px;
+      font: inherit;
+      font-weight: 700;
+      color: var(--ink);
+      border: 2px solid #d9def2;
+      border-radius: 10px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .mp-format select:focus { outline: none; border-color: var(--brand-1); }
+
     #create-room {
       padding: 13px 28px;
       font-size: 0.98rem;
@@ -619,6 +641,14 @@
             <div class="mp-col">
               <h4>Host a match</h4>
               <p class="hint">Get a room code and share it with your opponent.</p>
+              <label class="mp-format" for="mp-best-of">
+                Match length
+                <select id="mp-best-of">
+                  <option value="1">Single game</option>
+                  <option value="3">Best of 3</option>
+                  <option value="5">Best of 5</option>
+                </select>
+              </label>
               <button id="create-room">Create Multiplayer Room</button>
             </div>
 

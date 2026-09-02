@@ -156,7 +156,12 @@ describe('spin scouting — learning WHAT the player fails against', () => {
   });
 
   test('no verdict without enough class evidence', () => {
-    const r = computeSpinScouting([shot(-30, false), shot(-25, false)]); // mass 2 < min 3
+    // One sample short of the threshold, expressed in terms of the constant
+    // rather than a literal 3 — two lucky misses must not brand a player, and
+    // that stays the claim if the bar moves.
+    const shots = [];
+    for (let i = 0; i < SCOUT_MIN_CLASS_SAMPLES - 1; i++) shots.push(shot(-30 + i, false));
+    const r = computeSpinScouting(shots);
     expect(r.weakness).toBeNull();
   });
 

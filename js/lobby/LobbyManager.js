@@ -20,6 +20,12 @@ import { getDefaultIceServers } from '../network/iceConfig.js';
 import { generateRoomCode } from './roomCodes.js';
 import { traceStart } from '../network/connectTrace.js';
 
+// A generated code that lands on somebody else's live room is re-rolled
+// rather than failing the host outright (SignalingClient throws
+// ROOM_CODE_COLLISION for that case). Bounded, because a misconfigured rules
+// deployment surfaces as the same permission-denied and must not spin here.
+const MAX_CODE_ATTEMPTS = 5;
+
 export class LobbyManager {
   constructor({ iceServers } = {}) {
     this.iceServers = iceServers;
@@ -32,12 +38,32 @@ export class LobbyManager {
     this.code = null;
   }
 
-  createRoom() {
+  // The first code comes back synchronously so the panel can paint it
+  // immediately. `onCode` fires only if a collision forces a re-roll, handing
+  // over the replacement — without it the screen would keep advertising a code
+  // the host is no longer on.
+  createRoom({ onCode = null } = {}) {
     const code = generateRoomCode();
     this.role = 'host';
     this.code = code;
-    const ready = this._connectAs('host', code, { create: true });
-    return { code, ready };
+    return { code, ready: this._createWithRetry(code, onCode) };
+  }
+
+  async _createWithRetry(firstCode, onCode) {
+    let code = firstCode;
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this._connectAs('host', code, { create: true });
+      } catch (err) {
+        const collided = String((err && err.message) || '').includes('ROOM_CODE_COLLISION');
+        if (!collided || attempt >= MAX_CODE_ATTEMPTS) throw err;
+        code = generateRoomCode();
+        this.code = code;
+        if (onCode) {
+          try { onCode(code); } catch (e) { console.error('createRoom onCode listener threw:', e); }
+        }
+      }
+    }
   }
 
   async joinRoom(code) {

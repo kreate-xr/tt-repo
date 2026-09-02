@@ -23,8 +23,9 @@ import * as THREE from 'three';
 import { scene, ARENA_LIGHT_LAYER } from './sceneSetup.js';
 import { tableBox } from './models.js';
 import {
-  ROOM, COURT, BARRIER, LIGHT_PANELS, computeFocusRoomLayout,
+  ROOM, COURT, BARRIER, BARRIER_LOGO, LIGHT_PANELS, computeFocusRoomLayout,
 } from './focusRoomSpec.js';
+import { loadBrandLogoTexture } from './brandLogo.js';
 
 export function createFocusRoom() {
   if (!tableBox) {
@@ -38,6 +39,10 @@ export function createFocusRoom() {
   const group = new THREE.Group();
   group.name = 'FocusRoom';
   group.visible = false;
+  // Read by the async branding load below — the room can be disposed while
+  // the logo asset is still in flight (leave the venue during the first
+  // session on a cold cache) and the callback must not resurrect it.
+  let disposed = false;
 
   // Adds a mesh with the ArrayCamera-safe layer setup: enable() keeps
   // bit 0 (camera render) while adding bit 3 (arena light rig).
@@ -152,6 +157,74 @@ export function createFocusRoom() {
   track(barriers);
   track(stripes);
 
+  // --- Venue branding: the SportyXR mark printed on the court-facing face
+  // of every barrier panel — where a real tournament puts its title
+  // sponsor. One InstancedMesh of unit quads sharing one alpha-cutout
+  // texture, so the whole ring is a single draw call.
+  //
+  // The quads are built now but sized later: the mark's aspect ratio is a
+  // measured property of the trimmed asset (brandLogo.js) and is not
+  // knowable until it decodes. So they start hidden with identity
+  // matrices, and the load callback composes the real transforms. The room
+  // itself never waits — `ready` stays resolved and the venue is complete
+  // and playable with or without the mark.
+  const logoSlots = layout.barrierLogos;
+  const logoMat = new THREE.MeshStandardMaterial({
+    roughness: 0.9, metalness: 0,
+    transparent: true,
+    // alphaTest drops the fully-clear background before the depth test, so
+    // a decal quad never occludes what is behind it. The transparent path
+    // is kept on top of that purely so the ink EDGES stay smooth — a pure
+    // cutout goes crunchy on lettering this thin at this distance.
+    alphaTest: 0.05,
+    // A print sits ON the panel, not in front of it. Same decal-stack
+    // reasoning as the floor/court-border pair above: the 6 mm physical
+    // gap alone lands in depth-buffer noise when the barrier line is
+    // viewed edge-on from the serve position.
+    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
+  });
+  const logoMesh = new THREE.InstancedMesh(
+    new THREE.PlaneGeometry(1, 1), logoMat, logoSlots.length);
+  logoMesh.visible = false;
+  track(logoMesh);
+
+  let logoTexture = null;
+  loadBrandLogoTexture().then((logo) => {
+    if (!logo) return;
+    if (disposed) { logo.texture.dispose(); return; }
+    logoTexture = logo.texture;
+    logoMat.map = logoTexture;
+    logoMat.needsUpdate = true;
+
+    // Fit to WIDTH, but if that overflows the height ceiling, back the
+    // width off too — scaling one axis alone would squash the wordmark.
+    let w = BARRIER_LOGO.WIDTH;
+    let h = w / logo.aspect;
+    if (h > BARRIER_LOGO.MAX_HEIGHT) {
+      h = BARRIER_LOGO.MAX_HEIGHT;
+      w = h * logo.aspect;
+    }
+
+    const lm = new THREE.Matrix4();
+    const lq = new THREE.Quaternion();
+    const le = new THREE.Euler();
+    const lp = new THREE.Vector3();
+    const ls = new THREE.Vector3(w, h, 1);
+    logoSlots.forEach((slot, i) => {
+      lq.setFromEuler(le.set(0, slot.rotY, 0));
+      lm.compose(lp.set(slot.x, slot.y, slot.z), lq, ls);
+      logoMesh.setMatrixAt(i, lm);
+    });
+    logoMesh.instanceMatrix.needsUpdate = true;
+    // Instance matrices do not invalidate the bounding sphere. Without
+    // this the sphere stays the one implied by the identity matrices the
+    // quads were built with — a speck at the origin — and the whole ring
+    // gets frustum-culled the moment you look at a barrier.
+    logoMesh.computeBoundingSphere();
+    logoMesh.visible = true;
+    console.log(`[focusRoom] branding: mark on ${logoSlots.length} barrier panels`);
+  });
+
   // --- Wall accent stripe: one thin band per wall at a constant height —
   // a quiet horizon line that keeps the dark walls from reading as a void.
   // Axis-aligned, so per-instance non-uniform scale does the work.
@@ -213,6 +286,7 @@ export function createFocusRoom() {
   // cache), everything here is owned by this instance — dispose it all.
   // Rebuilding next session is sub-millisecond.
   function dispose() {
+    disposed = true;
     scene.remove(group);
     group.traverse((obj) => {
       if (obj.isInstancedMesh) obj.dispose();
@@ -221,6 +295,10 @@ export function createFocusRoom() {
         if (obj.material) obj.material.dispose();
       }
     });
+    // Material.dispose() does not release its maps, and this texture is
+    // owned by this room — brandLogo.js caches the decoded canvas but
+    // hands every caller its own CanvasTexture for exactly this reason.
+    if (logoTexture) logoTexture.dispose();
   }
 
   return {

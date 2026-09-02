@@ -44,6 +44,7 @@ import { pickStyleForMatch, homeDistanceForStyle, contactDelayForStyle } from '.
 import { createServer, SERVE_STATES } from './serve.js';
 import { createPlayerServeController } from './playerServe.js';
 import { createRallyManager } from './rallyManager.js';
+import { normalizeBestOf, loadBestOf, gamesToWin, matchLengthLabel } from '../matchFormat.js';
 import { createFailureHandler } from './failureHandler.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
 import { createMatchReport } from '../../scene/matchReport.js';
@@ -185,9 +186,19 @@ function resetPlayerVelocity() {
 // hint at the unreleased venues. `env` is live again for the Focus Room's
 // venue handle (wall-anchored scoreboard + fixture lighting); the GLB
 // stadium mount block below stays commented out.
-export function createAIMatchDrill({ ballEvents, profile, xr, hooks = null, scoreboardAnchor = null, env = null, competition = false } = {}) {
+export function createAIMatchDrill({
+  ballEvents, profile, xr, hooks = null, scoreboardAnchor = null, env = null,
+  competition = false, bestOf: bestOfIn = null,
+} = {}) {
   if (!ballEvents) throw new Error('createAIMatchDrill requires { ballEvents }');
   const arena = env;
+
+  // Match length, from the wrist menu's BEST OF control (null when the caller
+  // has no opinion — headless tests, a restart replaying old params — in which
+  // case the stored preference stands in). Normalized here rather than trusted,
+  // because an even bestOf has no majority and would make gamesToWin lie.
+  const bestOf = normalizeBestOf(bestOfIn === null ? loadBestOf() : bestOfIn);
+  const gamesNeeded = gamesToWin(bestOf);
 
   // Competition rules (wrist-menu trophy toggle): the match runs on the
   // certified ITTF table instead of the shipped lively default, and the
@@ -210,6 +221,7 @@ export function createAIMatchDrill({ ballEvents, profile, xr, hooks = null, scor
       PhysicsParams.setTableMu(prev.tableMu);
     };
   }
+  hudLog(`[match] ${matchLengthLabel(bestOf)} — first to 11, win by 2`);
 
   // Difficulty comes from the wrist menu's difficulty buttons via
   // getProfile(id). Key off the profile's stable `id`, never its display
@@ -418,6 +430,7 @@ export function createAIMatchDrill({ ballEvents, profile, xr, hooks = null, scor
   const rallyManager = createRallyManager({
     ballEvents, server, playerServe,
     config: {
+      bestOf,
       firstServer: Math.random() < 0.5 ? 'player' : 'ai',
       strictToss: competition,
     },
@@ -438,7 +451,7 @@ export function createAIMatchDrill({ ballEvents, profile, xr, hooks = null, scor
   // Focus Room (js/scene/focusRoom.js) and the tt-arena GLB (js/scene/
   // arena.js getBackWallAnchor). Other modes leave it null and the
   // scoreboard falls back to its floating position behind the AI baseline.
-  const scoreboard = createScoreboard({ config: { bestOf: 5 }, anchor: scoreboardAnchor });
+  const scoreboard = createScoreboard({ config: { bestOf }, anchor: scoreboardAnchor });
 
   // Stadium-only enhancements. When the player is inside the broadcast-
   // stadium venue, mirror the scoreboard onto the venue's TV / Screen /
@@ -472,7 +485,7 @@ export function createAIMatchDrill({ ballEvents, profile, xr, hooks = null, scor
     if (screens && screens.length > 0) {
       stadiumScoreboard = createStadiumScoreboard({
         screenMeshes: screens,
-        config: { bestOf: 5 },
+        config: { bestOf },
       });
       if (stadiumScoreboard) {
         hudLog(`[arena] stadium scoreboard mounted on ${stadiumScoreboard.screenCount} screen(s)`);
@@ -577,11 +590,12 @@ export function createAIMatchDrill({ ballEvents, profile, xr, hooks = null, scor
 
   // Helper: is EITHER side one point away from winning the match with the
   // CURRENT score state? Called right after a point is scored to decide
-  // whether to pulse the ceiling ring for the upcoming point. bestOf 5 =>
-  // 3 games needed; a side with 2 games + score ≥ 10 and (score − opp) ≥ 1
-  // is at match point.
+  // whether to pulse the ceiling ring for the upcoming point. A side needs
+  // `gamesNeeded` games (3 at best-of-5, 1 at a single game); one with
+  // gamesNeeded-1 already won plus score ≥ 10 and (score − opp) ≥ 1 is at
+  // match point. This used to hardcode 3, which at any other match length
+  // pulsed the ring on the wrong point — or never.
   function isEitherSideAtMatchPoint(playerGames, aiGames, playerScore, aiScore) {
-    const gamesNeeded = 3;
     const playerMP = playerGames + 1 >= gamesNeeded
       && playerScore >= 10 && (playerScore - aiScore) >= 1;
     const aiMP = aiGames + 1 >= gamesNeeded
@@ -747,7 +761,7 @@ export function createAIMatchDrill({ ballEvents, profile, xr, hooks = null, scor
       opponentName: 'AI',
       playerGames: e.playerGames,
       opponentGames: e.aiGames,
-      bestOf: 5,
+      bestOf,
       sets,
       winner: e.winner === 'player' ? 'player' : 'opponent',
       durationMs: s.durationMs,

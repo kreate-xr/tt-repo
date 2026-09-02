@@ -113,7 +113,9 @@ describe('host flow by click', () => {
     const nm = { fakeNm: 'host' };
     lobby.resolveReady(nm);
     await flush();
-    expect(connected).toEqual({ networkManager: nm, role: 'host', lobby });
+    expect(connected).toEqual({
+      networkManager: nm, role: 'host', lobby, bestOf: menu.model.bestOf,
+    });
   });
 
   test('CANCEL while hosting tears the room down and returns home', async () => {
@@ -133,6 +135,46 @@ describe('host flow by click', () => {
     menu.hide();
     await flush();
     expect(lobby.torn).toBe(true);
+  });
+});
+
+describe('match length', () => {
+  test('the HOME screen offers one segment per length, current one selected', () => {
+    const { menu } = makeMenu();
+    menu.show();
+    const ids = menu.panel.widgets.filter((w) => w.id.startsWith('bo:')).map((w) => w.id);
+    expect(ids).toEqual(['bo:1', 'bo:3', 'bo:5']);
+    expect(menu.panel.get('bo:' + menu.model.bestOf).selected).toBe(true);
+  });
+
+  test('clicking one changes the format the created room will use', async () => {
+    const { menu, lobby } = makeMenu();
+    menu.show();
+    let connected = null;
+    menu.on('connected', (mp) => { connected = mp; });
+
+    clickById(menu, 'bo:3');
+    expect(menu.model.bestOf).toBe(3);
+
+    clickById(menu, 'create');
+    lobby.resolveReady({ fakeNm: true });
+    await flush();
+    expect(connected.bestOf).toBe(3);
+  });
+
+  test('the selector is gone once the code is out — hosting reports, not offers', () => {
+    const { menu } = makeMenu();
+    menu.show();
+    clickById(menu, 'create');
+    expect(menu.panel.widgets.some((w) => w.id.startsWith('bo:'))).toBe(false);
+  });
+
+  test('the segments do not shadow the CREATE / JOIN cards above them', () => {
+    const { menu } = makeMenu();
+    menu.show();
+    for (const id of ['create', 'join', 'bo:1', 'bo:3', 'bo:5']) {
+      expect(menu.hitTestUV(...uvOf(menu, id))).toBe(id);
+    }
   });
 });
 

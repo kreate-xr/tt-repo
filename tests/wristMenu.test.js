@@ -192,12 +192,63 @@ describe('the other tiles still work', () => {
   });
 });
 
+function click(menu, id) {
+  const [u, v] = uvOfButton(menu, id);
+  menu.setHovered(menu.hitTestUV(u, v));
+  menu.selectHovered();
+}
+
+describe('match-length pill', () => {
+  // Best-of-5 to 11 is 20-40 minutes in a headset. This control is how a
+  // player asks for one game instead — and, because the lobby reads the same
+  // stored preference, the default format for a room they host.
+
+  test('offers one segment per length, defaulting to best-of-5', () => {
+    const menu = new WristMenu();
+    const ids = menu.buttons.filter((b) => b.kind === 'format').map((b) => b.id);
+    expect(ids).toEqual(['bestOf-1', 'bestOf-3', 'bestOf-5']);
+    expect(menu.bestOf).toBe(5);
+  });
+
+  test('each segment is individually clickable and sets the length', () => {
+    const menu = new WristMenu();
+    const seen = [];
+    menu.on('bestOf', (p) => seen.push(p));
+    click(menu, 'bestOf-3');
+    expect(menu.bestOf).toBe(3);
+    click(menu, 'bestOf-1');
+    expect(menu.bestOf).toBe(1);
+    expect(seen).toEqual([{ bestOf: 3 }, { bestOf: 1 }]);
+  });
+
+  test('the new pill does not shadow the difficulty segments beside it', () => {
+    // The two pills share the top row; a mis-sized hit region on either
+    // swallows the other's edge segment and reads as a dead button.
+    const menu = new WristMenu();
+    for (const id of ['diff-0', 'diff-1', 'diff-2', 'bestOf-1', 'bestOf-3', 'bestOf-5']) {
+      expect(menu.hitTestUV(...uvOfButton(menu, id))).toBe(id);
+    }
+  });
+
+  test('the whole top row stays inside the panel capsule', () => {
+    // Canvas has no clipping: a row wider than the capsule paints its ends
+    // over the rounded edge and off the visible panel.
+    const menu = new WristMenu();
+    const row = menu.buttons.filter((b) => b.kind === 'segment' || b.kind === 'format');
+    expect(Math.min(...row.map((b) => b.x))).toBeGreaterThan(79);
+    expect(Math.max(...row.map((b) => b.x + b.w))).toBeLessThan(1024 - 79);
+  });
+
+  test('picking a length does not start a drill', () => {
+    const menu = new WristMenu();
+    const starts = [];
+    menu.on('start', (p) => starts.push(p));
+    click(menu, 'bestOf-1');
+    expect(starts).toHaveLength(0);
+  });
+});
+
 describe('competition-rules toggle', () => {
-  function click(menu, id) {
-    const [u, v] = uvOfButton(menu, id);
-    menu.setHovered(menu.hitTestUV(u, v));
-    menu.selectHovered();
-  }
 
   test('the rules dock exists, defaults off, and toggles with an event', () => {
     const menu = new WristMenu();
@@ -218,10 +269,19 @@ describe('competition-rules toggle', () => {
     menu.on('start', (p) => seen.push(p));
     click(menu, 'rules');                 // ON
     click(menu, 'mode-aiMatch');
-    expect(seen[0].options).toEqual({ competition: true });
+    expect(seen[0].options).toEqual({ competition: true, bestOf: menu.bestOf });
     click(menu, 'rules');                 // OFF
     click(menu, 'mode-aiMatch');
-    expect(seen[1].options).toEqual({ competition: false });
+    expect(seen[1].options).toEqual({ competition: false, bestOf: menu.bestOf });
+  });
+
+  test('start payloads carry the match length too', () => {
+    const menu = new WristMenu();
+    const seen = [];
+    menu.on('start', (p) => seen.push(p));
+    click(menu, 'bestOf-1');
+    click(menu, 'mode-aiMatch');
+    expect(seen[0].options.bestOf).toBe(1);
   });
 
   test('the toggle does not shadow the ball-color dock beside it', () => {

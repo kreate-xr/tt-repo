@@ -44,6 +44,25 @@ import { traceMark } from './connectTrace.js';
 // deliberately excluded — replaying those would double-deliver.
 const STICKY_EVENTS = ['joined', 'peerReady', 'offer', 'answer'];
 
+// Mirrors the `fresh()` window in firestore.rules. The rules stay the
+// authority on what may be overwritten; this copy only lets the client
+// RECOGNISE a room-code collision up front, so the lobby can re-roll instead
+// of dead-ending on a generic permission-denied.
+export const ROOM_MAX_AGE_MS = 2 * 60 * 60 * 1000;
+
+// True when this code already holds a live room belonging to a DIFFERENT host.
+// Our own room (reconnect / re-create) and an expired leftover from a dead
+// session are both fair game — that reclaim is what makes codes reusable.
+function isLiveForeignRoom(data, uid, nowMs) {
+  if (!data || !data.host) return false;
+  if (data.hostUid === uid) return false;
+  // No usable createdAt means the rules' `fresh()` fails too, so the overwrite
+  // would be permitted — not a collision.
+  const createdAt = data.createdAt;
+  if (!createdAt || typeof createdAt.toMillis !== 'function') return false;
+  return nowMs - createdAt.toMillis() < ROOM_MAX_AGE_MS;
+}
+
 export class SignalingClient {
   constructor() {
     this.room = null;
@@ -112,6 +131,13 @@ export class SignalingClient {
       assignedRole = await runTransaction(db, async (txn) => {
         const snap = await txn.get(this.roomRef);
         if (create) {
+          // Collision: a DIFFERENT host is live on this code right now.
+          // Overwriting would evict them from their own lobby, and the rules
+          // deny it anyway (validHostDoc needs isHost or an expired room), so
+          // name it here rather than surfacing an opaque permission-denied.
+          // LobbyManager re-rolls and retries. Vanishingly rare at 32^6 codes,
+          // but unrecoverable for whoever it hits and one transaction to fix.
+          if (isLiveForeignRoom(snap.data(), user.uid, Date.now())) return 'collision';
           // Fresh room, full overwrite: room codes are random, so anything
           // already at this code is leftover from a dead session — wiping the
           // stale guest/offer/answer fields here is what lets the same code
@@ -134,6 +160,15 @@ export class SignalingClient {
         return 'guest';
       });
     } catch (err) {
+      // isLiveForeignRoom judges freshness off the LOCAL clock; a skewed
+      // headset can call a live room expired, try the overwrite, and get
+      // bounced by the rules — which are the authority. On a create that
+      // bounce is a collision in all but name, so route it to the same retry
+      // instead of dead-ending the host. Not emitted as 'error': it is
+      // internal and recoverable, like the roomFull / notFound results below.
+      if (create && err && err.code === 'permission-denied') {
+        throw new Error('ROOM_CODE_COLLISION');
+      }
       this._emit('error', err);
       throw err;
     }
@@ -142,6 +177,9 @@ export class SignalingClient {
     // fallback the network forces).
     traceMark('room txn', assignedRole);
 
+    if (assignedRole === 'collision') {
+      throw new Error('ROOM_CODE_COLLISION');
+    }
     if (assignedRole === 'notFound') {
       throw new Error('ROOM_NOT_FOUND');
     }

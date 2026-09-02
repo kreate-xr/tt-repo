@@ -19,8 +19,9 @@ import * as haptics from '../xr/haptics.js';
 import { Panel } from './panelKit.js';
 import { COLORS, F, roundRect } from './panelStyle.js';
 import {
-  LobbyMenuModel, MP_SCREENS, ROOM_CODE_ALPHABET, ROOM_CODE_LEN,
+  LobbyMenuModel, MP_SCREENS, ROOM_CODE_ALPHABET, ROOM_CODE_LEN, BEST_OF_OPTIONS,
 } from '../modes/multiplayer/lobbyMenuModel.js';
+import { matchLengthLabel } from '../modes/matchFormat.js';
 
 const CANVAS_W = 1024;
 const CANVAS_H = 640;
@@ -29,6 +30,10 @@ export const PLANE_W = 1.40;
 export const PLANE_H = PLANE_W * (CANVAS_H / CANVAS_W);
 
 const HEADER_H = 76;
+
+// Match-length row on the HOME screen: below the two cards (which end at 400)
+// and clear of the status/error line the screen draws at 560.
+const BEST_OF_ROW_Y = 462;
 
 // Keyboard grid: the 32-character room-code alphabet as 4 rows of 8. Rendering
 // exactly ROOM_CODE_ALPHABET (not a QWERTY layout) means every key is a legal
@@ -164,6 +169,7 @@ export class MultiplayerMenu {
     if (id === 'submit') { m.startJoin(); return; }
     if (id === 'del') { m.backspace(); return; }
     if (id.startsWith('key:')) { m.appendChar(id.slice(4)); return; }
+    if (id.startsWith('bo:')) { m.setBestOf(id.slice(3)); return; }
   }
 
   // --- layout ---------------------------------------------------------------
@@ -186,6 +192,21 @@ export class MultiplayerMenu {
         id: 'join', shape: 'rect', x: x0 + cardW + gap, y: 170, w: cardW, h: cardH,
         label: 'JOIN ROOM', sub: 'Enter a friend’s code',
       });
+      // Match length, host side. Sits under BOTH cards rather than inside the
+      // CREATE one because it is also the answer to "what am I about to
+      // join?" — a guest reads it and knows the setting exists even though
+      // theirs is overridden by whoever created the room.
+      const boW = 160, boGap = 12;
+      const boRowW = BEST_OF_OPTIONS.length * boW + (BEST_OF_OPTIONS.length - 1) * boGap;
+      const bx0 = (CANVAS_W - boRowW) / 2;
+      for (let i = 0; i < BEST_OF_OPTIONS.length; i++) {
+        const n = BEST_OF_OPTIONS[i];
+        p.add({
+          id: 'bo:' + n, shape: 'rect', label: matchLengthLabel(n),
+          x: bx0 + i * (boW + boGap), y: BEST_OF_ROW_Y, w: boW, h: 56,
+          selected: m.bestOf === n,
+        });
+      }
     } else if (m.screen === MP_SCREENS.JOIN) {
       const KEY_W = 88, KEY_H = 54, KEY_GAP = 10;
       const rowW = KEY_COLS * KEY_W + (KEY_COLS - 1) * (KEY_GAP);
@@ -252,6 +273,19 @@ export class MultiplayerMenu {
     // Screen-static content (code slots, status lines) under the widgets.
     if (m.screen === MP_SCREENS.HOSTING) this.drawHostCode();
     if (m.screen === MP_SCREENS.JOIN) this.drawEntrySlots();
+    if (m.screen === MP_SCREENS.HOME) {
+      ctx.fillStyle = COLORS.muted;
+      ctx.font = F(700, 15);
+      ctx.fillText('MATCH LENGTH  —  APPLIES TO THE ROOM YOU CREATE', CANVAS_W / 2, BEST_OF_ROW_Y - 26);
+    }
+    // Hosting: the format is locked in now (a guest may already be joining on
+    // it), so it is reported rather than offered. Without this the host has no
+    // way to check what they set before someone walks into a best-of-5.
+    if (m.screen === MP_SCREENS.HOSTING && m.hostBestOf) {
+      ctx.fillStyle = COLORS.accentBright;
+      ctx.font = F(700, 22);
+      ctx.fillText(matchLengthLabel(m.hostBestOf), CANVAS_W / 2, 340);
+    }
     if (m.screen === MP_SCREENS.CONNECTING && m.message) {
       ctx.fillStyle = COLORS.text;
       ctx.font = F(700, 26);
@@ -286,7 +320,11 @@ export class MultiplayerMenu {
     const r = Math.min(16, w.h / 2);
 
     roundRect(ctx, w.x, w.y, w.w, w.h, r);
+    // A selected segment is filled with the accent (same grammar as the wrist
+    // menu's difficulty control) so the current choice reads at a glance
+    // rather than being inferred from a subtle tint.
     if (w.disabled) ctx.fillStyle = COLORS.panel;
+    else if (w.selected) ctx.fillStyle = COLORS.accent;
     else if (hovered) ctx.fillStyle = w.warn ? COLORS.warnHover : COLORS.panelHover;
     else ctx.fillStyle = COLORS.panel;
     ctx.fill();
@@ -302,6 +340,7 @@ export class MultiplayerMenu {
     ctx.textBaseline = 'middle';
     let color = COLORS.text;
     if (w.disabled) color = COLORS.disabled;
+    else if (w.selected) color = '#0a1a12';   // dark ink on the accent fill
     else if (w.warn) color = COLORS.warn;
     else if (w.accent) color = COLORS.accentBright;
 
@@ -316,7 +355,9 @@ export class MultiplayerMenu {
     } else {
       ctx.fillStyle = color;
       ctx.font = w.id.startsWith('key:') ? F(700, 26) : F(700, 20);
-      ctx.fillText(w.label, w.x + w.w / 2, w.y + w.h / 2 + 1);
+      // maxWidth so a long label ("SINGLE GAME" in a 160px segment) condenses
+      // instead of painting past its own button — canvas has no overflow.
+      ctx.fillText(w.label, w.x + w.w / 2, w.y + w.h / 2 + 1, w.w - 18);
     }
   }
 

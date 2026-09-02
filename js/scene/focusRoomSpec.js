@@ -60,6 +60,26 @@ export const BARRIER = {
   STRIPE_END: 0.012,   // stripe overhang past the panel's end faces
 };
 
+// Venue branding: the SportyXR mark printed on the court-facing face of
+// every barrier panel, where a real tournament prints its title sponsor.
+// The mark's own aspect ratio is NOT a constant here — brandLogo.js
+// measures it off the trimmed asset at load — so only the width and a
+// height ceiling are specified, and the builder derives the other.
+export const BARRIER_LOGO = {
+  // Leaves ~25 cm of bare panel either side of a 1.4 m segment, so the
+  // print reads as centered art on a panel rather than as the panel.
+  WIDTH: 0.90,
+  // Ceiling for a taller-than-expected replacement asset: a mark this tall
+  // still clears the 0.73 m panel top and the floor by ~14 cm. When it
+  // binds, the builder scales WIDTH down with it rather than squashing.
+  MAX_HEIGHT: 0.44,
+  // Clearance in front of the panel face. Same reasoning as STRIPE_LIP
+  // above: a decal flush with the surface it decorates z-fights into a
+  // shimmer at distance, and the barrier line is seen edge-on from the
+  // serve position where that is worst.
+  OFFSET: 0.006,
+};
+
 // Emissive ceiling light panels — visual luminaires only (unlit material,
 // zero lighting cost; the actual light comes from sceneSetup's layer-3 rig).
 // DROP = gap between the panel's top face and the interior ceiling face so
@@ -111,14 +131,33 @@ export function computeFocusRoomLayout(tableBox) {
 
   // Barrier ring around the court rectangle. Side rows run along Z
   // (rotY 90°), end rows along X.
+  //
+  // Each segment also emits the transform for its branding decal, in a
+  // parallel array with matching indices. `inwardRotY` is the rotation
+  // that turns a plane's +Z normal to face the court — NOT the panel's own
+  // rotY, which is ambiguous about which of the two faces is the front:
+  // the two side rows share rotY 90° but face opposite directions. A
+  // rotation of θ about Y sends +Z to (sinθ, 0, cosθ), which is also what
+  // pushes the decal off the panel face along its own normal.
   const barrierSegments = [];
+  const barrierLogos = [];
+  const decalGap = BARRIER.THICK / 2 + BARRIER_LOGO.OFFSET;
+  function pushSegment(x, z, rotY, inwardRotY) {
+    barrierSegments.push({ x, z, rotY });
+    barrierLogos.push({
+      x: x + Math.sin(inwardRotY) * decalGap,
+      y: BARRIER.HEIGHT / 2,
+      z: z + Math.cos(inwardRotY) * decalGap,
+      rotY: inwardRotY,
+    });
+  }
   for (const off of barrierRowOffsets(COURT.HALF_Z * 2)) {
-    barrierSegments.push({ x: center.x - COURT.HALF_X, z: center.z + off, rotY: Math.PI / 2 });
-    barrierSegments.push({ x: center.x + COURT.HALF_X, z: center.z + off, rotY: Math.PI / 2 });
+    pushSegment(center.x - COURT.HALF_X, center.z + off, Math.PI / 2, Math.PI / 2);
+    pushSegment(center.x + COURT.HALF_X, center.z + off, Math.PI / 2, -Math.PI / 2);
   }
   for (const off of barrierRowOffsets(COURT.HALF_X * 2)) {
-    barrierSegments.push({ x: center.x + off, z: center.z - COURT.HALF_Z, rotY: 0 });
-    barrierSegments.push({ x: center.x + off, z: center.z + COURT.HALF_Z, rotY: 0 });
+    pushSegment(center.x + off, center.z - COURT.HALF_Z, 0, 0);
+    pushSegment(center.x + off, center.z + COURT.HALF_Z, 0, Math.PI);
   }
 
   // Center of each panel box; top face lands DROP below the interior
@@ -136,6 +175,7 @@ export function computeFocusRoomLayout(tableBox) {
     frontWallInnerZ,
     backWallAnchor,
     barrierSegments,
+    barrierLogos,
     panelY,
     panelSlots,
   };
