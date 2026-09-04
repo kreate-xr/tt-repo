@@ -238,8 +238,12 @@ export const SOLVER_REASONS = Object.freeze({
 
 function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
 
-function specTargetToWorld(tx, tz, tableCenterZ, tableSurfaceY, out) {
-  out.set(tx, tableSurfaceY, tableCenterZ + tz);
+// Spec coords are table-local on BOTH axes — see the shared copy in
+// modes/aiMatch/telegraph.js for why x needs the centre too. env.tableCenterX
+// defaults to 0 for callers on a table that really is centred (and for the
+// headless solver tests, which build their own env).
+function specTargetToWorld(tx, tz, tableCenterX, tableCenterZ, tableSurfaceY, out) {
+  out.set(tableCenterX + tx, tableSurfaceY, tableCenterZ + tz);
   return out;
 }
 
@@ -438,9 +442,25 @@ function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targe
   // the solved direction) tanks feasibility on spin shots. Every slip term is
   // known at plan time — paddle tangential motion, incoming tangential
   // velocity, incoming spin — so predict the kick and aim the reflection at
-  // (v_out − kick) instead. Two fixed-point rounds converge: round 0 is the
-  // old kick-blind solution, round 1 re-derives the face from the adjusted
-  // target; the kick is sub-half of the (small) tangential magnitude.
+  // (v_out − kick) instead. Round 0 is the old kick-blind solution, round 1
+  // re-derives the face from the adjusted target, and so on.
+  //
+  // This ran at 2 rounds, which is NOT converged. Swept against the envelope
+  // suite's 120 pro contacts (signed range bias, m — negative is short):
+  //     rounds      1       2       3       4       5       6      12
+  //     bias    +0.052  -0.038  -0.099  -0.101  -0.102  -0.103  -0.103
+  //     feasible   90     120     120     120     120     120     120
+  // Two things there. The iteration is a clean contraction — settled by 5,
+  // stationary to 0.1 mm after 6 — and stopping at 2 was reading a value
+  // still in flight. And 2 rounds is not merely imprecise: it left a quarter
+  // of these contacts infeasible, because a face derived from a half-applied
+  // kick correction needs more paddle speed than the tier's cap allows.
+  //
+  // The converged solution sits ~10 cm short, which is pass 1 being drag-free
+  // and is not this loop's job to fix — the range-correction loop at the
+  // bottom of solvePaddle centres it. Stopping at 2 rounds was hiding that
+  // bias at ~4 cm, under the gate that decides whether that loop runs at all.
+  const PASS1_KICK_ROUNDS = 6;
   const worldUp = new THREE.Vector3(0, 1, 0);
   const kickGain = HOLLOW_SPHERE_MOI_FACTOR * ballRadius * SPIN_CAPTURE_GAIN;
   const slipSat = PADDLE_SPIN_CAP > 0 ? PADDLE_SPIN_CAP / SPIN_CAPTURE_GAIN : Infinity;
@@ -451,7 +471,7 @@ function pass1Analytical(contactPos, contactVel, targetWorld, targetSpeed, targe
   let tangentDir = null;
   let paddleNormalMag = 0;
 
-  for (let round = 0; round < 2; round++) {
+  for (let round = 0; round < PASS1_KICK_ROUNDS; round++) {
     vOutAdj.copy(v_out).sub(predictedKick);
 
     // Impulse vector (in ball frame).
@@ -585,7 +605,7 @@ function pass2Verify(contactPos, contactVel, contactSpin, paddleV, faceNormal, e
 //   contactVel                 Vector3 world — predicted ball velocity at contact
 //   contactSpin                Vector3 world — predicted ball angular velocity at contact
 //   difficulty                 'beginner' | 'intermediate' | 'pro'
-//   env                        { tableBox, tableSurfaceY, ballRadius, tableCenterZ }
+//   env                        { tableBox, tableSurfaceY, ballRadius, tableCenterX, tableCenterZ }
 //
 // Returns:
 //   {
@@ -608,7 +628,9 @@ export function* solvePaddleSteps({
 }) {
   const maxPaddleSpeed = MAX_PADDLE_SPEED_MPS[difficulty] || MAX_PADDLE_SPEED_MPS.beginner;
   const targetWorld = new THREE.Vector3();
-  specTargetToWorld(targetX, targetZ, env.tableCenterZ, env.tableSurfaceY, targetWorld);
+  specTargetToWorld(
+    targetX, targetZ, env.tableCenterX || 0, env.tableCenterZ, env.tableSurfaceY, targetWorld,
+  );
 
   // Net geometry, when the caller supplies it (env.netBox is optional — tests
   // and headless envs without a net solve exactly as before). Pass 1 gets a
@@ -716,7 +738,26 @@ export function* solvePaddleSteps({
   const errZ = verify.landing.z - targetWorld.z;
   const error = Math.hypot(errX, errZ);
 
-  if (error <= ACCEPTABLE_LANDING_ERROR_M) {
+  // Accept outright only when the shot is CONVERGED, not merely acceptable.
+  //
+  // This gate used to read ACCEPTABLE_LANDING_ERROR_M — the threshold below
+  // which a shot is not rejected — and so returned any pass-1 solution inside
+  // 15 cm without ever entering the range-correction loop. That made the
+  // loop's own convergence target (CORRECTION_TARGET_ERROR_M, 5 cm) dead
+  // letter for exactly the shots it was written for: a systematic pass-1
+  // bias, which is drag-free-short by construction, sails through here and
+  // the loop never sees it. The envelope suite measured the result as a
+  // ~10 cm mean short landing across every pro contact, with the entire
+  // error being that bias rather than scatter.
+  //
+  // The two constants mean different things and this is the one that wants
+  // the tighter of them. Anything between 5 and 15 cm now falls through to
+  // the correction loop, which breaks the moment it gets inside 5 cm; the
+  // loop is capped at CORRECTION_MAX_ITERS rollouts that each terminate at
+  // first bounce, and the FSM amortizes them across frames through the
+  // generator, so the cost of centring is a few yields on shots that were
+  // previously accepted crooked.
+  if (error <= CORRECTION_TARGET_ERROR_M) {
     return {
       feasible: true,
       reason: null,
@@ -772,7 +813,19 @@ export function* solvePaddleSteps({
         baseError = e;
       }
     }
-    if (baseError <= ACCEPTABLE_LANDING_ERROR_M) {
+    // Same distinction as the gate above, and the same reason. The loop
+    // CONDITION stays at ACCEPTABLE_LANDING_ERROR_M — that is the shift
+    // budget, and the shift exists to kill a lateral miss, which it has done
+    // once the ball is inside tolerance. But RETURNING here at merely
+    // acceptable hands back a shot that is still up to 15 cm out, and the
+    // range-correction loop below is the thing that would have centred it.
+    //
+    // This was where nearly all of the residual actually lived: with the
+    // gate at 0.15, the envelope suite ran the correction loop on 17 of 120
+    // pro contacts and returned the other 103 straight from here at ~10 cm
+    // short. The 17 that did reach the loop came out of it substantially
+    // better (0.085 → 0.045, 0.129 → 0.084), which is what the loop is for.
+    if (baseError <= CORRECTION_TARGET_ERROR_M) {
       return {
         feasible: true,
         reason: null,
@@ -808,6 +861,10 @@ export function* solvePaddleSteps({
   let bestLanding = baseLanding;
   let bestError = baseError;
   let correctedSpeed = base.paddleV.length();
+  // Set when the loop stopped because a correction step wanted more racket
+  // speed than the tier allows — used only to name the reason if the best
+  // solution we already hold is itself unacceptable.
+  let cappedOut = false;
 
   const distTarget = Math.hypot(targetWorld.x - contactPos.x, targetWorld.z - contactPos.z);
 
@@ -828,15 +885,17 @@ export function* solvePaddleSteps({
 
     correctedSpeed = corrected.length();
     if (correctedSpeed > maxPaddleSpeed) {
-      return {
-        feasible: false,
-        reason: SOLVER_REASONS.CORRECTED_SPEED_CAP,
-        paddleV: corrected,
-        faceNormal: base.faceNormal,
-        paddleSpeed: correctedSpeed,
-        predictedLanding: { x: bestLanding.x, z: bestLanding.z },
-        landingError: bestError,
-      };
+      // The step wants more racket speed than the tier has. Stop correcting,
+      // but do not throw away what we already verified in order to say so.
+      // The old `return feasible: false` here discarded a base solution that
+      // may well have been inside tolerance, purely because the attempt to
+      // CENTRE it overran the cap — which contradicts the promise made two
+      // dozen lines up, that keeping the best iterate means a bad step can
+      // never make the answer worse than what we had. Harmless while the
+      // gate above accepted everything under 15 cm and this loop ran only on
+      // already-failing shots; routine now that centring is its job.
+      cappedOut = true;
+      break;
     }
 
     const v = pass2Verify(contactPos, contactVel, contactSpin, corrected, base.faceNormal, env);
@@ -859,7 +918,9 @@ export function* solvePaddleSteps({
   const feasible = bestError <= ACCEPTABLE_LANDING_ERROR_M;
   return {
     feasible,
-    reason: feasible ? null : SOLVER_REASONS.LANDING_ERROR,
+    reason: feasible
+      ? null
+      : (cappedOut ? SOLVER_REASONS.CORRECTED_SPEED_CAP : SOLVER_REASONS.LANDING_ERROR),
     paddleV: bestPaddleV,
     faceNormal: base.faceNormal,
     paddleSpeed: bestPaddleV.length(),
