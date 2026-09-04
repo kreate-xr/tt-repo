@@ -248,31 +248,24 @@ describe('match-length pill', () => {
   });
 });
 
-describe('competition-rules toggle', () => {
+describe('competition rules', () => {
+  // The trophy toggle is gone and ITTF rules are always on, so what these
+  // guard now is that it STAYS gone: no dock button, no state, no flag in the
+  // start payload for aiMatch to read a stale `false` out of.
 
-  test('the rules dock exists, defaults off, and toggles with an event', () => {
+  test('there is no rules dock and no competition state to toggle', () => {
     const menu = new WristMenu();
-    expect(menu.competitionMode).toBe(false);
-    const seen = [];
-    menu.on('rules', (p) => seen.push(p));
-    click(menu, 'rules');
-    expect(menu.competitionMode).toBe(true);
-    expect(seen).toEqual([{ competition: true }]);
-    click(menu, 'rules');
-    expect(menu.competitionMode).toBe(false);
-    expect(seen[1]).toEqual({ competition: false });
+    expect(menu.buttons.find((b) => b.id === 'rules')).toBeUndefined();
+    expect(menu.competitionMode).toBeUndefined();
   });
 
-  test('start payloads carry the flag so the match factory can enforce it', () => {
+  test('start payloads carry no competition flag — the match factory defaults it on', () => {
     const menu = new WristMenu();
     const seen = [];
     menu.on('start', (p) => seen.push(p));
-    click(menu, 'rules');                 // ON
     click(menu, 'mode-aiMatch');
-    expect(seen[0].options).toEqual({ competition: true, bestOf: menu.bestOf });
-    click(menu, 'rules');                 // OFF
-    click(menu, 'mode-aiMatch');
-    expect(seen[1].options).toEqual({ competition: false, bestOf: menu.bestOf });
+    expect(seen[0].options).toEqual({ bestOf: menu.bestOf });
+    expect('competition' in seen[0].options).toBe(false);
   });
 
   test('start payloads carry the match length too', () => {
@@ -284,11 +277,23 @@ describe('competition-rules toggle', () => {
     expect(seen[0].options.bestOf).toBe(1);
   });
 
-  test('the toggle does not shadow the ball-color dock beside it', () => {
+  test('the freed left-dock slot is not clickable', () => {
     const menu = new WristMenu();
     const [u, v] = uvOfButton(menu, 'ballColor');
     expect(menu.hitTestUV(u, v)).toBe('ballColor');
-    const [u2, v2] = uvOfButton(menu, 'rules');
-    expect(menu.hitTestUV(u2, v2)).toBe('rules');
+    // Where the trophy used to sit: one dock width + gap right of calibrate.
+    const cal = menu.buttons.find((b) => b.id === 'calibrate');
+    const px = cal.x + cal.w + 8 + cal.w / 2;
+    expect(menu.hitTestUV(px / 1024, 1 - (cal.y + cal.h / 2) / 410)).toBe(null);
+  });
+
+  test('the caption line states the service law when nothing is hovered', () => {
+    const menu = new WristMenu();
+    const lines = [];
+    menu.ctx.fillText = (t) => lines.push(String(t));
+    menu.hovered = null;
+    menu.drawDockCaption();
+    expect(lines.join(' ')).toMatch(/16 cm/);
+    expect(lines.join(' ')).toMatch(/end line/);
   });
 });

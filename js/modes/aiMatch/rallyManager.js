@@ -69,6 +69,12 @@ const DEFAULT_CONFIG = Object.freeze({
   // mode turns it on and gets the umpire's ladder: one warning per match,
   // fault thereafter.
   strictToss: false,
+  // ITTF 2.9.1.2 — a let when the receiver is not ready. Supplied by the
+  // caller because readiness is a scene question, not a rules one: give it a
+  // predicate returning false while the receiver can't play the serve, and
+  // the AI's serve waits instead of being struck into an empty half. Null
+  // (the default, and every headless test) means "always ready".
+  isReceiverReady: null,
 });
 
 // Inter-rally delay before triggering next serve. Long enough for the
@@ -81,6 +87,21 @@ const NEXT_SERVE_DELAY_MS = 2500;
 // the ball sailing long); short enough that nobody keeps rallying a dead
 // ball into the next serve window and mistakes it for live play.
 const POINT_END_DESPAWN_MS = 700;
+
+// Receiver-readiness poll, and the cap on how long the serve will wait.
+//
+// On a flat screen the receiver is always ready, which is why no version of
+// this game needed the rule. In a headset they may be recentring, stepping
+// back into the box, or holding a controller that dropped tracking for a
+// few hundred milliseconds — and the fixed NEXT_SERVE_DELAY_MS timer serves
+// into all three and takes the point. Only the AI's serve needs this; the
+// player's own waits on their trigger pull by construction.
+//
+// The cap matters as much as the rule: a controller that never comes back
+// must not freeze the match. Missing a let is a far smaller failure than a
+// match that never resumes, so after the cap we serve anyway and say so.
+const RECEIVER_READY_POLL_MS = 150;
+const RECEIVER_READY_MAX_HOLD_MS = 5000;
 
 export function createRallyManager({
   ballEvents,
@@ -99,6 +120,8 @@ export function createRallyManager({
   let currentServer = config.firstServer === 'player' ? 'player' : 'ai';
   let pointsSinceServerSwitch = 0;
   let matchOver = false;
+  // Timestamp the current receiver-not-ready hold began, 0 when not holding.
+  let receiverHoldStartedAt = 0;
   let initialServerForGame = currentServer;
 
   // Every rally rule — who struck what, service legality, obstruction, lets,
@@ -153,7 +176,9 @@ export function createRallyManager({
     onMatchEnd: [],
     onServerChange: [],
     onServeRequested: [], // emitted when next-serve fires (UI hooks)
-    onLet: [],            // net-cord serve landed good — replayed, no point
+    // A let: replay, no point. `reason` is 'netCord' (cord serve landed
+    // good) or 'receiverNotReady' (the serve is being held, ITTF 2.9.1.2).
+    onLet: [],
   };
   function on(eventName, fn) { if (listeners[eventName]) listeners[eventName].push(fn); }
   function emit(eventName, payload) {
@@ -245,7 +270,7 @@ export function createRallyManager({
     hudLog(`[SCORE-DBG] LET — net-cord serve landed good, replay (server=${currentServer})`);
     rallyInProgress = false;
     scheduleBallDespawn();
-    emit('onLet', { server: currentServer });
+    emit('onLet', { server: currentServer, reason: 'netCord' });
     scheduleNextServe();
   }
 
@@ -347,7 +372,19 @@ export function createRallyManager({
 
   // --- Next serve ---------------------------------------------------------
 
-  function scheduleNextServe() {
+  // A missing predicate, or one that throws because the scene tore down
+  // mid-match, both mean "ready". The failure that matters here is a serve
+  // that never comes, not one that comes a beat early.
+  function receiverIsReady() {
+    if (typeof config.isReceiverReady !== 'function') return true;
+    try {
+      return config.isReceiverReady() !== false;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function scheduleNextServe(delayMs = NEXT_SERVE_DELAY_MS) {
     if (matchOver) return;
     if (nextServeTimer) {
       clearTimeout(nextServeTimer);
@@ -356,7 +393,7 @@ export function createRallyManager({
     nextServeTimer = setTimeout(() => {
       nextServeTimer = null;
       triggerNextServe();
-    }, NEXT_SERVE_DELAY_MS);
+    }, delayMs);
   }
 
   // Pressure context for the AI's serve archetype selection. Deuce raises
@@ -383,6 +420,26 @@ export function createRallyManager({
 
   function triggerNextServe() {
     if (matchOver) return;
+
+    // ITTF 2.9.1.2 — receiver not ready. Checked BEFORE resetRallyState and
+    // the onServeRequested emit so a hold is silent after the first beat:
+    // re-emitting per poll would re-show the serve arrow and re-buzz the
+    // paddle hand six times a second.
+    if (currentServer === 'ai' && !receiverIsReady()) {
+      const heldFor = receiverHoldStartedAt ? Date.now() - receiverHoldStartedAt : 0;
+      if (!receiverHoldStartedAt) {
+        receiverHoldStartedAt = Date.now();
+        emit('onLet', { server: currentServer, reason: 'receiverNotReady' });
+      }
+      if (heldFor < RECEIVER_READY_MAX_HOLD_MS) {
+        scheduleNextServe(RECEIVER_READY_POLL_MS);
+        return;
+      }
+      hudLog('[serve] receiver still not tracked after '
+        + `${(RECEIVER_READY_MAX_HOLD_MS / 1000).toFixed(0)}s — serving anyway.`);
+    }
+    receiverHoldStartedAt = 0;
+
     resetRallyState();
     emit('onServeRequested', { server: currentServer });
     if (currentServer === 'ai') {

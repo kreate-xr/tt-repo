@@ -23,8 +23,10 @@
 export const BEST_OF_OPTIONS = Object.freeze([1, 3, 5]);
 export const DEFAULT_BEST_OF = 5;
 
-// Shared with the wrist menu's 'tt_competition_rules' key — same namespace,
-// same "settings that live outside the training profile" bucket.
+// Plain localStorage rather than the training profile store: this is a hub
+// preference, not training progress. (It used to share the namespace with the
+// wrist menu's 'tt_competition_rules' key, which is gone — competition rules
+// are no longer optional.)
 const STORAGE_KEY = 'tt_best_of';
 
 /**

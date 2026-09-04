@@ -117,15 +117,16 @@ function buildIncomingContext(rolloutResult) {
 // Convert the player paddle's current world position to spec coords (signed
 // lateral x, non-negative "from net" z on the player side) so the AI worker
 // can bias targeting away from where the player is standing. Mirrors the
-// same shotAdapter conversion used for landings: x is directly signed, z is
-// abs(world_z - tableCenterZ).
+// same shotAdapter conversion used for landings: both axes are table-local,
+// x signed about the centre line and z as abs(world_z - tableCenterZ).
 //
 // Returns null when the paddle model isn't available (early boot, or if the
 // player is out of tracking): engines fall back to the plain neutral picker.
 function buildPlayerXZ() {
   if (!paddleModel || !tableBox) return null;
+  const tableCenterX = (tableBox.min.x + tableBox.max.x) / 2;
   const tableCenterZ = (tableBox.min.z + tableBox.max.z) / 2;
-  const x = paddleModel.position.x;
+  const x = paddleModel.position.x - tableCenterX;
   const z = Math.abs(paddleModel.position.z - tableCenterZ);
   if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
   return { x, z };
@@ -146,6 +147,9 @@ function sampleAndSmoothPlayerVelocity(nowMs) {
     return;
   }
   const tableCenterZ = (tableBox.min.z + tableBox.max.z) / 2;
+  // Deliberately NOT re-centred on the table's x like buildPlayerXZ above:
+  // everything here is a difference between successive samples, and a
+  // constant frame offset cancels out of one.
   const x = paddleModel.position.x;
   const z = Math.abs(paddleModel.position.z - tableCenterZ);
   if (!_playerVelState.hasPrev) {
@@ -188,7 +192,7 @@ function resetPlayerVelocity() {
 // stadium mount block below stays commented out.
 export function createAIMatchDrill({
   ballEvents, profile, xr, hooks = null, scoreboardAnchor = null, env = null,
-  competition = false, bestOf: bestOfIn = null,
+  competition = true, bestOf: bestOfIn = null,
 } = {}) {
   if (!ballEvents) throw new Error('createAIMatchDrill requires { ballEvents }');
   const arena = env;
@@ -200,12 +204,19 @@ export function createAIMatchDrill({
   const bestOf = normalizeBestOf(bestOfIn === null ? loadBestOf() : bestOfIn);
   const gamesNeeded = gamesToWin(bestOf);
 
-  // Competition rules (wrist-menu trophy toggle): the match runs on the
-  // certified ITTF table instead of the shipped lively default, and the
-  // strict 16 cm serve-toss rule is enforced (warn once, then fault — see
-  // rallyManager strictToss). Equipment values are captured here and
-  // restored on dispose so a competition match never leaks certified
-  // physics into casual play or the training machine.
+  // Competition rules: the match runs on the certified ITTF table instead of
+  // the shipped lively default, and the strict 16 cm serve-toss rule is
+  // enforced (warn once, then fault — see rallyManager strictToss).
+  //
+  // This defaults ON now. It was an opt-in wrist-menu trophy toggle,
+  // defaulting off, which meant the shipped experience of a game that calls
+  // itself ITTF was neither certified equipment nor the service law — behind
+  // an icon whose meaning nobody could guess. The flag survives as a
+  // parameter because the save/restore below still matters: training and the
+  // ball machine keep the lively default, and a caller can still ask for it.
+  //
+  // Equipment values are captured here and restored on dispose so a match
+  // never leaks certified physics into casual play or the training machine.
   let restoreEquipment = null;
   if (competition) {
     const prev = {
@@ -370,10 +381,11 @@ export function createAIMatchDrill({
           ? server.consumeLastServeThirdBallPlan()
           : null;
         if (plan && rolloutResult && rolloutResult.bouncePoint && tableBox) {
+          const tableCenterX = (tableBox.min.x + tableBox.max.x) / 2;
           const tableCenterZ = (tableBox.min.z + tableBox.max.z) / 2;
-          // Convert bouncePoint world → spec coords (signed x, from-net z
-          // on AI side, mirroring buildPlayerXZ conventions).
-          const bx = rolloutResult.bouncePoint.x;
+          // Convert bouncePoint world → spec coords (signed x about the
+          // centre line, from-net z on AI side, mirroring buildPlayerXZ).
+          const bx = rolloutResult.bouncePoint.x - tableCenterX;
           const bz = Math.abs(rolloutResult.bouncePoint.z - tableCenterZ);
           const dx = bx - plan.expectedReturnZone.x;
           const dz = bz - plan.expectedReturnZone.z;
@@ -433,6 +445,25 @@ export function createAIMatchDrill({
       bestOf,
       firstServer: Math.random() < 0.5 ? 'player' : 'ai',
       strictToss: competition,
+      // ITTF 2.9.1.2 — hold the AI's serve while the player isn't ready to
+      // receive it. Two conditions, both cheap and both real in a headset:
+      //
+      //   tracked — an untracked controller reports the world origin (the
+      //   same test netTouch.js and the xrPaddle attach sweep use). A serve
+      //   struck during a tracking dropout is a point taken for nothing.
+      //
+      //   on their own side of the net — covers the player who has wandered,
+      //   is leaning over the table, or hasn't stepped back into the box.
+      //
+      // Deliberately no "paddle held high enough" test: a receiver waiting
+      // with the bat down is ready, and a predicate that says otherwise
+      // stalls every serve for the 5 s cap.
+      isReceiverReady: () => {
+        const p = paddleFaceCenterWorld;
+        if (!p || !tableBox) return true;
+        if (p.x === 0 && p.y === 0 && p.z === 0) return false;
+        return p.z > (tableBox.min.z + tableBox.max.z) / 2;
+      },
     },
   });
   // Probe is the paddle's face centre, which ball.js already maintains every
@@ -781,10 +812,12 @@ export function createAIMatchDrill({
     matchDone = true;
     report.show();
   }
-  // Net-cord serve that still landed good — ITTF let, replayed with no
-  // point.
+  // ITTF let — replayed, no point. Either a net-cord serve that still landed
+  // good, or the serve being held because the receiver isn't ready.
   rallyManager.on('onLet', (e) => {
-    hudLog(`[AI Match] LET — net-cord serve, replaying (server=${e.server})`);
+    hudLog(e.reason === 'receiverNotReady'
+      ? '[AI Match] LET — receiver not ready, holding the serve'
+      : `[AI Match] LET — net-cord serve, replaying (server=${e.server})`);
   });
   // Fires at the end of the NEXT_SERVE_DELAY_MS window. For AI serves the
   // ball is about to spawn automatically. For player serves the controller

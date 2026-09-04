@@ -106,18 +106,30 @@ const chordHalf = (r, dy) => Math.sqrt(Math.max(0, r * r - dy * dy));
 // beneath it either — so the panel names whichever dock button the laser is
 // on, on a shared line under the mode row.
 //
-// The trophy is why this exists: "competition rules" is not a guessable
-// meaning for a cup glyph, and unlike the two color swatches (whose icons
-// show their own state) nothing about it says what it changes. Wording is
-// "what it does", not "what it is", because that is the question a player
-// hovering an unfamiliar icon is actually asking.
+// Wording is "what it does", not "what it is", because that is the question
+// a player hovering an unfamiliar icon is actually asking.
 const DOCK_CAPTIONS = {
   tune:       'Tune Physics  —  live A/B on ball & paddle constants',
   calibrate:  'Calibrate Paddle  —  align the bat with your controller',
   ballColor:  'Ball Color  —  orange or white, both ITTF legal',
-  rules:      'Competition Rules  —  strict 16 cm serve toss + certified table',
   tableColor: 'Table Color  —  blue or green, both ITTF approved',
 };
+
+// What the caption line says when nothing is hovered, which is most of the
+// time the menu is open.
+//
+// The game enforces the service law — struck from behind your end line, above
+// the surface, tossed 16 cm from an open palm, first bounce on your own half
+// — and until now told the player none of that. The fault copy in
+// faultText.js is written but only reaches the dev HUD log, so a player who
+// serves from over the table just loses a point with no idea why. A rule you
+// enforce has to be a rule you stated.
+//
+// One line, and only the serve, deliberately. Everything else in table tennis
+// a player either already knows or discovers harmlessly; the service law is
+// the one that costs points on the first serve of the first match.
+const SERVE_RULE_CAPTION =
+  'ITTF RULES  ·  serve from behind your end line, toss 16 cm from an open palm, your half first';
 
 // Caption baseline. The band between the mode circles' crosshair ticks
 // (which reach y = CIRCLE_Y + r + 14 = 310) and the top of the exit pill
@@ -356,13 +368,12 @@ export class WristMenu {
     this.parent = null;
     this.selectedDifficultyIndex = 0;
     this.hovered = null;
-    // Competition rules (ITTF-strict): strict 16cm serve toss + certified
-    // table physics for the AI match. Persisted so the choice survives
-    // sessions; storage can be absent/throwing in headless tests.
-    this.competitionMode = false;
-    try {
-      this.competitionMode = localStorage.getItem('tt_competition_rules') === '1';
-    } catch { /* no storage — default off */ }
+    // Competition rules — strict 16 cm serve toss + certified table physics —
+    // used to be a trophy toggle here, defaulting off. It is now simply how
+    // the AI match plays (see aiMatch's `competition` default), so there is
+    // no state to hold and nothing to persist. A game that claims ITTF rules
+    // should not ship with them behind an icon nobody can guess the meaning
+    // of; the serve law is stated in the panel caption instead.
     // Match length for the AI match, and the default for any multiplayer room
     // this player hosts (the lobby reads the same stored preference). Best-of-5
     // to 11 is 20-40 minutes in a headset; this is how you ask for one game.
@@ -589,13 +600,12 @@ export class WristMenu {
       id: 'calibrate', kind: 'dock', icon: 'paddle',
       shape: 'rect', x: leftX, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
     });
-    // Competition-rules toggle: trophy lit in the accent colour when ON.
-    // Enables the strict ITTF serve-toss rule + certified table physics for
-    // the AI match (see aiMatch competition wiring).
-    this.buttons.push({
-      id: 'rules', kind: 'dock', icon: 'trophy',
-      shape: 'rect', x: leftX + DOCK + DOCK_GAP, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
-    });
+    // The competition-rules trophy used to sit here, at leftX + DOCK + GAP.
+    // It is gone: ITTF rules are always on, so the toggle had nothing left to
+    // toggle. That leaves calibrate alone on the left against the two colour
+    // swatches on the right — still one idea per side, and a single button on
+    // the mode row's centreline reads as deliberate in a way the old L of one
+    // against three did not.
     // Both swatch icons render in the CURRENT colour, so each button reports
     // its own state and needs no label. Clicks cycle the *_COLOR_ORDER lists
     // (orange ↔ white ball, blue ↔ green table — all ITTF legal).
@@ -734,17 +744,14 @@ export class WristMenu {
   // is on a mode circle.
   drawDockCaption() {
     const b = this.buttons.find((x) => x.kind === 'dock' && x.id === this.hovered);
-    const base = b && DOCK_CAPTIONS[b.id];
-    if (!base) return;
-    // A stateful toggle also reports which way it is currently set: for the
-    // trophy that is half of what the caption exists to answer, and the
-    // accent/muted button tint alone doesn't read as ON vs OFF.
-    const on = b.id === 'rules' && this.competitionMode;
-    const text = b.id === 'rules' ? `${base}  ·  ${on ? 'ON' : 'OFF'}` : base;
+    // Falls back to the service law rather than going blank — see
+    // SERVE_RULE_CAPTION. Hovering a dock button still wins, because that is
+    // an answer to a question the player just asked.
+    const text = (b && DOCK_CAPTIONS[b.id]) || SERVE_RULE_CAPTION;
 
     const ctx = this.ctx;
     ctx.save();
-    ctx.fillStyle = on ? ACCENT : COLORS.chromeMuted;
+    ctx.fillStyle = COLORS.chromeMuted;
     ctx.font = FONT_CAPTION;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -935,26 +942,11 @@ export class WristMenu {
     ctx.fillStyle = hp > 0 ? COLORS.chromeHoverBg : COLORS.chromeBg;
     ctx.fill();
     ctx.restore();
-    // The rules trophy is a stateful toggle: lit accent when competition
-    // rules are on, muted when off — same visual grammar as the selected
-    // difficulty segment. Icon tint alone was too subtle at dock size, so
-    // ON also washes the button background in the accent.
-    const rulesOn = b.id === 'rules' && this.competitionMode;
-    if (rulesOn) {
-      ctx.save();
-      roundRectPath(ctx, b.x, dy, b.w, b.h, b.radius || 14);
-      ctx.fillStyle = 'rgba(61,220,151,0.18)';
-      ctx.fill();
-      ctx.strokeStyle = 'rgba(61,220,151,0.55)';
-      ctx.lineWidth = 2;
-      ctx.stroke();
-      ctx.restore();
-    }
+    // Every dock button is now stateless — the accent wash and the ON/OFF
+    // icon tint that lived here existed only for the competition-rules
+    // trophy, which is gone.
     const drawIcon = ICONS[b.icon];
-    const iconColor = b.id === 'rules'
-      ? (rulesOn ? ACCENT : COLORS.chromeMuted)
-      : COLORS.chromeText;
-    if (drawIcon) drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, iconColor);
+    if (drawIcon) drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, COLORS.chromeText);
     // Calibration drift badge (spec §C8) — small yellow dot on top-right
     // of the calibrate button when the drift detector suggests recalibration.
     if (b.id === 'calibrate' && this._driftFlagCache) {
@@ -1055,23 +1047,23 @@ export class WristMenu {
     }
     if (button.kind === 'mode') {
       const difficultyId = DIFFICULTIES[this.selectedDifficultyIndex].id;
-      const competition = this.competitionMode;
       const bestOf = this.bestOf;
       if (button.modeId === 'training') {
         // Opens the unified PLAY menu; what to play is chosen in there.
         this.emit('training', { difficulty: difficultyId });
       } else if (button.modeId === 'aiMatch') {
-        this.emit('start', { drill: 'aiMatch', difficulty: difficultyId, options: { competition, bestOf } });
+        this.emit('start', { drill: 'aiMatch', difficulty: difficultyId, options: { bestOf } });
       } else if (button.modeId === 'multiplayer') {
-        // Competition physics is NOT applied in multiplayer yet — the two
-        // peers would need to agree on it over the wire. Passed through so
-        // the wiring exists when that handshake lands.
+        // Competition physics is NOT applied in multiplayer — the two peers
+        // would need to agree on it over the wire. The flag used to be passed
+        // through here for a handshake that never landed, and multiplayer.js
+        // never read it, so it is no longer sent.
         //
         // Match length is deliberately NOT passed here: online, the format
         // belongs to whoever created the room, and it reaches the drill on the
         // lobby's connection bundle. Sending it from the tile as well would
         // give the guest a second, losing opinion.
-        this.emit('start', { drill: 'multiplayer', difficulty: difficultyId, options: { competition } });
+        this.emit('start', { drill: 'multiplayer', difficulty: difficultyId, options: {} });
       }
       return;
     }
@@ -1081,15 +1073,6 @@ export class WristMenu {
     }
     if (button.kind === 'dock' && button.id === 'calibrate') {
       this.emit('calibrate');
-      return;
-    }
-    if (button.kind === 'dock' && button.id === 'rules') {
-      this.competitionMode = !this.competitionMode;
-      try {
-        localStorage.setItem('tt_competition_rules', this.competitionMode ? '1' : '0');
-      } catch { /* no storage — session-only toggle */ }
-      this.emit('rules', { competition: this.competitionMode });
-      this.draw();
       return;
     }
     if (button.kind === 'dock' && button.id === 'tableColor') {
