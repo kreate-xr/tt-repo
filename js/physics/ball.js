@@ -1069,7 +1069,18 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       const dz = bz - cz;
       const outsideXZ = (dx !== 0) || (dz !== 0);
       if (outsideXZ) {
-        const dy = ballModel.position.y - tableSurfaceY;
+        // Nearest point on the table's TOP SLAB (tableBox spans
+        // tableSurfaceY-0.02 → tableSurfaceY, the thickness of the top), not
+        // on the perimeter line at the surface alone. For a ball at or above
+        // the surface the clamp is a no-op and the edge-ball behaviour below
+        // is bit-for-bit what it was; below the surface the nearest point is
+        // now on the vertical SIDE face, which the ball used to pass clean
+        // through. The score was already right (it never bounced on that
+        // half, so registerBallLost reads 'out'), but on a monitor nobody
+        // sees a ball travel through 2 cm of table — in a headset it happens
+        // an arm's length from the player's face and reads as a broken game.
+        const cy = Math.max(tableBox.min.y, Math.min(tableSurfaceY, ballModel.position.y));
+        const dy = ballModel.position.y - cy;
         const distSq = dx * dx + dy * dy + dz * dz;
         const rSq = ballRadius * ballRadius;
         if (distSq < rSq && distSq > 1e-12) {
@@ -1098,10 +1109,29 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
             ballAngularVelocity.multiplyScalar(TABLE_EDGE_SPIN_DAMP);
             const bounceIntensity = Math.min(impactSpeed / 5, 1.0);
             playBounceSound(bounceIntensity, ballModel.position);
-            if (SELF_TEST) hudLog(`[EDGE BALL] impact=${impactSpeed.toFixed(2)}`);
-            // Tag the tableBounce event with edge:true so rally scoring and
-            // stats can distinguish edge balls from clean bounces.
-            emit('tableBounce', { x: ballModel.position.x, z: ballModel.position.z, impactSpeed, edge: true });
+            // ITTF 2.5.7: the playing surface includes the top edges but NOT
+            // the vertical sides. A top-edge contact is a good bounce — the
+            // unreturnable edge ball — and has to reach scoring as one. A
+            // side contact is not a bounce at all: that ball is out, and it
+            // gets here only to be deflected and heard.
+            //
+            // Judged on the ball's CENTRE height. A centre already below the
+            // surface has struck the side with most of its face, whatever
+            // the top of it grazed on the way past — and the alternative,
+            // calling anything that touches the rim volume an edge ball,
+            // hands out good bounces for balls that visibly hit the skirt.
+            //
+            // Staying silent is exactly what scores the side hit correctly:
+            // with no bounce recorded on that half, rallyRules'
+            // registerBallLost reads 'out' and the striker loses the point.
+            if (ballModel.position.y >= tableSurfaceY) {
+              if (SELF_TEST) hudLog(`[EDGE BALL] impact=${impactSpeed.toFixed(2)}`);
+              // Tag the tableBounce event with edge:true so rally scoring and
+              // stats can distinguish edge balls from clean bounces.
+              emit('tableBounce', { x: ballModel.position.x, z: ballModel.position.z, impactSpeed, edge: true });
+            } else if (SELF_TEST) {
+              hudLog(`[TABLE SIDE] impact=${impactSpeed.toFixed(2)} — out, no bounce`);
+            }
           }
         }
       }

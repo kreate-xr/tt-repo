@@ -16,6 +16,7 @@ import { ballEnvMap } from './sceneSetup.js';
 import { enhancePaddleMaterial } from './paddleMaterial.js';
 import { buildProceduralPaddle } from './paddleGeometry.js';
 import { setPaddleSpec, paddleSpecOverridesFromQuery } from '../physics/paddleSpec.js';
+import { FLOOR_LEVEL_Y } from '../physics/constants.js';
 import { deriveHandleGripPreset } from '../xr/handleGrip.js';
 import { registerDerivedPreset } from '../xr/calibrationPresets.js';
 
@@ -874,29 +875,84 @@ export async function loadModels(loadingScreen, statusEl) {
     // ballShadow.js. Needs tableSurfaceY, already extracted above, and
     // tableBox so the blob hides once the ball leaves the table footprint
     // instead of hanging at surface height in mid-air.
-    createBallShadow(scene, tableSurfaceY, tableBox);
+    // TEMP (headset A/B): blob disabled to judge how the table reads without
+    // it. Skipping creation is enough — updateBallShadow/resetBallShadow both
+    // early-return while the blob is null, so no call sites need touching.
+    // createBallShadow(scene, tableSurfaceY, tableBox);
 
     // Mirror-ghost reflection (P16 §3.2) — dim mirrored copy below the
     // table plane, visible only when ball is within 0.5 m over the table
     // AND within the table rect. Companion depth cue to the blob for the
     // near-bounce moment. Needs the ball mesh (for shared geometry + map
     // + live color) and tableBox (rect gate).
-    createBallGhost(scene, ballMesh, tableSurfaceY, tableBox);
+    // TEMP (headset A/B): disabled alongside the blob so the ball carries no
+    // added ground cue at all. Same mechanism — updateBallGhost/resetBallGhost
+    // early-return while the ghost is null.
+    // createBallGhost(scene, ballMesh, tableSurfaceY, tableBox);
 
     // Net AABB — derived from NetCenter (top-center of the net) plus the
-    // GLB's known net dimensions. NetCenter.y is the *top* of the net, the
-    // base sits on the play surface. Net plane overhangs the play surface
-    // by ~14 cm each side (regulation TT geometry). Inflated by ballRadius
-    // as a Minkowski-sum swept-sphere approximation for the AABB slab test.
+    // regulation post overhang. NetCenter.y is the *top* of the net, the
+    // base sits on the play surface. Inflated by ballRadius as a
+    // Minkowski-sum swept-sphere approximation for the AABB slab test.
     // netCtr is read once with the other anchors above.
-    const NET_OVERHANG = 0.14;
-    const NET_HALF_X = Math.max(Math.abs(edgeLeft.x), Math.abs(edgeRight.x)) + NET_OVERHANG;
+    //
+    // ITTF 2.2.2: the net runs 15.25 cm beyond each side line — 1.83 m
+    // overall on a regulation table. Two things were wrong here.
+    //
+    // The overhang shipped as 0.14, which is not the regulation figure but
+    // the one MEASURED off Table.glb's net plane — and that plane is itself
+    // 4.7 cm narrow (1.783 m). Copying the asset's error into the rulebook
+    // made it invisible.
+    //
+    // Worse, the half-width was max(|edgeLeft.x|, |edgeRight.x|), which
+    // assumes the play surface straddles x = 0. It does not: Table.glb's
+    // surface runs -0.8302..0.6841, centred on x ≈ -0.073. Taking the larger
+    // magnitude therefore added the off-centre distance to BOTH sides and
+    // then re-centred the box on netCtr, giving a 1.94 m collider against a
+    // 1.78 m visible net — roughly 8 cm of invisible net past each post.
+    // Balls that should have passed outside the post bounced off nothing,
+    // and netTouch.js (which shares this box) could take a point off a
+    // paddle 8 cm clear of the visible net.
+    //
+    // Half the MEASURED surface width plus the regulation overhang, centred
+    // on the authored net centre, is correct for any table we're handed.
+    const NET_OVERHANG = 0.1525;
+    const NET_HALF_X = (edgeRight.x - edgeLeft.x) / 2 + NET_OVERHANG;
     const NET_THICKNESS = 0.01;
     netBox = new THREE.Box3(
       new THREE.Vector3(netCtr.x - NET_HALF_X, tableSurfaceY, netCtr.z - NET_THICKNESS / 2),
       new THREE.Vector3(netCtr.x + NET_HALF_X, netCtr.y,      netCtr.z + NET_THICKNESS / 2),
     ).expandByScalar(ballRadius);
     logInfo('Net bounds (inflated):', netBox.min, netBox.max);
+
+    // Stretch the visible net plane onto the collider. The asset's net is
+    // 1.783 m, so without this the outer ~1.6 cm per side is a surface the
+    // ball bounces off and the player cannot see — the exact complaint the
+    // fix above exists to remove, just smaller. Measured first so the
+    // conformance check below can still report what the ASSET shipped.
+    //
+    // X only: the 15.25 cm drop and the alpha-map's cell aspect stay as
+    // authored, and a 2.6% horizontal stretch of a mesh grid is invisible at
+    // VR viewing distance. Scaled about the mesh's own centre — the node
+    // origin is not the centre (the plane's local bounds are asymmetric), so
+    // the naive scale walks the net sideways by ~5 mm. Rather than derive
+    // that offset, scale, re-measure, and push the drift back out through
+    // the parent's world scale.
+    const netMeshBoxBefore = new THREE.Box3().setFromObject(netModel);
+    const netMeshSpanX = netMeshBoxBefore.max.x - netMeshBoxBefore.min.x;
+    if (netMeshSpanX > 1e-3 && Math.abs(NET_HALF_X * 2 - netMeshSpanX) > 1e-4) {
+      const centreBefore = (netMeshBoxBefore.min.x + netMeshBoxBefore.max.x) / 2;
+      netModel.scale.x *= (NET_HALF_X * 2) / netMeshSpanX;
+      netModel.updateWorldMatrix(true, true);
+      const netMeshBoxAfter = new THREE.Box3().setFromObject(netModel);
+      const drift = (netMeshBoxAfter.min.x + netMeshBoxAfter.max.x) / 2 - centreBefore;
+      const parentScaleX = netModel.parent
+        ? new THREE.Vector3().setFromMatrixScale(netModel.parent.matrixWorld).x
+        : 1;
+      if (parentScaleX > 1e-9) netModel.position.x -= drift / parentScaleX;
+      netModel.updateWorldMatrix(true, true);
+      logInfo(`Net mesh widened ${netMeshSpanX.toFixed(4)} → ${(NET_HALF_X * 2).toFixed(4)} m`);
+    }
 
     // ITTF conformance check. Every rule, physics tolerance and AI envelope
     // in this codebase assumes a regulation table (2.74 × 1.525 m, net cord
@@ -910,16 +966,32 @@ export async function loadModels(loadingScreen, statusEl) {
       const ITTF_LENGTH_M = 2.74;
       const ITTF_WIDTH_M = 1.525;
       const ITTF_NET_HEIGHT_M = 0.1525;
+      // 2.1.2 — the play surface sits 76 cm above the floor. Checked last
+      // and mattering most: on a flat screen table height is a number, but
+      // in passthrough it is the one dimension measured against the player's
+      // own body. A surface 2 cm high makes every stroke height subtly wrong
+      // for every player, and nothing else in the codebase would say so.
+      // FLOOR_LEVEL_Y is the arena floor the ball bounces on, so the
+      // comparison is against the same datum the physics uses.
+      const ITTF_TABLE_HEIGHT_M = 0.76;
+      // 2.2.2 — net span, measured off the asset's own net plane BEFORE the
+      // widening above. Independent of the anchors, so it catches a net
+      // re-authored to a different width even on a correctly-sized table.
+      const ITTF_NET_SPAN_M = 1.83;
       const DIM_TOLERANCE_M = 0.01;
       const measured = {
         length: edgeNear.z - edgeFar.z,
         width: edgeRight.x - edgeLeft.x,
         netHeight: netCtr.y - tableSurfaceY,
+        tableHeight: tableSurfaceY - FLOOR_LEVEL_Y,
+        netSpan: netMeshSpanX,
       };
       const offSpec = [
         ['table length', measured.length, ITTF_LENGTH_M],
         ['table width', measured.width, ITTF_WIDTH_M],
         ['net height', measured.netHeight, ITTF_NET_HEIGHT_M],
+        ['table height above floor', measured.tableHeight, ITTF_TABLE_HEIGHT_M],
+        ['net span', measured.netSpan, ITTF_NET_SPAN_M],
       ].filter(([, got, want]) => Math.abs(got - want) > DIM_TOLERANCE_M);
       for (const [what, got, want] of offSpec) {
         console.warn(
