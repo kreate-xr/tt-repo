@@ -193,6 +193,15 @@ export function createShotAdapter({ worker, ballEvents }) {
     return tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;
   }
 
+  // The spec frame's X origin. Not a no-op: Table.glb's play surface is
+  // centred on x ≈ -0.073, not on zero. This is the inverse of
+  // specTargetToWorld (telegraph.js) — the seeds recorded here and the
+  // targets the engines emit have to live in the same frame, or the Voronoi
+  // heatmap is sampled through a ~7 cm shear.
+  function tableCenterX() {
+    return tableBox ? (tableBox.min.x + tableBox.max.x) / 2 : 0;
+  }
+
   function sampleEachFrame() {
     if (!ballModel || !ballModel.visible || !tableBox) {
       prevSampleZ = null;
@@ -265,7 +274,7 @@ export function createShotAdapter({ worker, ballEvents }) {
     pending = [
       shotIdCounter,
       performance.now(),
-      bounce.x,
+      bounce.x - tableCenterX(),
       Math.abs(bounce.z - centerZ),
       0,   // success                   — back-filled
       0,   // swing_lateness_ms         — back-filled on player contact

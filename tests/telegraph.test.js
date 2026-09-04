@@ -242,10 +242,24 @@ describe('windupPositionForShot', () => {
 describe('specTargetToWorld', () => {
   test('maps target_z to tableCenterZ + target_z (player side is +z)', () => {
     const out = new THREE.Vector3();
-    specTargetToWorld(/* tx */ 0.3, /* tz */ 0.8, /* centerZ */ 0, /* surfaceY */ 0.75, out);
+    specTargetToWorld(
+      /* tx */ 0.3, /* tz */ 0.8, /* centerX */ 0, /* centerZ */ 0, /* surfaceY */ 0.75, out,
+    );
     expect(out.x).toBeCloseTo(0.3, 5);
     expect(out.z).toBeCloseTo(0.8, 5);
     expect(out.y).toBeGreaterThan(0.75); // slightly above table
+  });
+
+  // The bug this signature exists to prevent: an off-centre table (Table.glb
+  // runs -0.8302..0.6841) used to leave every spec x displaced by the centre
+  // offset, so the engines' symmetric envelopes reached past one side line
+  // and never used the other.
+  test('offsets target_x by the table centre line, not by zero', () => {
+    const out = new THREE.Vector3();
+    specTargetToWorld(
+      /* tx */ 0.7, /* tz */ 0.8, /* centerX */ -0.073, /* centerZ */ 0, /* surfaceY */ 0.75, out,
+    );
+    expect(out.x).toBeCloseTo(0.627, 5);
   });
 });
 

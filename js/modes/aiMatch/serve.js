@@ -1137,9 +1137,12 @@ export function createServer({ paddle, difficulty = 'beginner', rng = Math.rando
 
   // World-space landing point this serve is aimed at.
   function targetWorldPoint() {
+    // Both axes are table-local — the play surface is not centred on x = 0
+    // (see specTargetToWorld in telegraph.js).
+    const tableCenterX = tableBox ? (tableBox.min.x + tableBox.max.x) / 2 : 0;
     const tableCenterZ = tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;
     return new THREE.Vector3(
-      serveTarget.target_x,
+      tableCenterX + serveTarget.target_x,
       tableSurfaceY || 0,
       tableCenterZ + serveTarget.target_z,
     );

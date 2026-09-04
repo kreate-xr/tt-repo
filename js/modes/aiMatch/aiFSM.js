@@ -138,6 +138,13 @@ function tableCenterZ() {
   return tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;
 }
 
+// The spec frame's X origin. Table.glb's play surface is not centred on
+// x = 0, so this is not the no-op it looks like — see specTargetToWorld in
+// telegraph.js.
+function tableCenterX() {
+  return tableBox ? (tableBox.min.x + tableBox.max.x) / 2 : 0;
+}
+
 export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHandler = null }) {
   let state = STATES.IDLE;
   let stateEnteredAtMs = performance.now();
@@ -429,7 +436,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     }
     specTargetToWorld(
       targetPayload[0], targetPayload[1],
-      tableCenterZ(), tableSurfaceY,
+      tableCenterX(), tableCenterZ(), tableSurfaceY,
       intent.targetWorld,
     );
 
@@ -448,6 +455,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     // table GLB loads, populated long before the first rally decision.
     const env = {
       tableBox, tableSurfaceY, ballRadius, netBox,
+      tableCenterX: tableCenterX(),
       tableCenterZ: tableCenterZ(),
     };
     // Payload [6] (sidespin, rps) is emitted by all three engines; the
@@ -584,7 +592,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       intent.target = [0, 0.7, 4.0, 0, 1.0, SHOT_TYPES.BLOCK];
       intent.shotType = SHOT_TYPES.BLOCK;
       intent.displayedShotType = SHOT_TYPES.BLOCK;
-      specTargetToWorld(0, 0.7, tableCenterZ(), tableSurfaceY, intent.targetWorld);
+      specTargetToWorld(0, 0.7, tableCenterX(), tableCenterZ(), tableSurfaceY, intent.targetWorld);
       if (DEBUG_LOG) console.log('[AI FSM] solver fell back to safe target');
     } else if (!solverResult.feasible && DEBUG_LOG) {
       console.log('[AI FSM] solver infeasible even on safe target — honest miss');

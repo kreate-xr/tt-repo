@@ -212,13 +212,23 @@ export function windupPositionForShot(shotType, targetSpeed, interceptionWorldPo
 }
 
 // Convenience: convert decision-layer target (spec coords on player side)
-// to a world-space target position. Caller supplies tableCenterZ; we pick
-// a target height slightly above table — Phase 3 doesn't try to predict
+// to a world-space target position. Caller supplies the table's centre; we
+// pick a target height slightly above table — Phase 3 doesn't try to predict
 // exact landing Y (the host's physics gives the ball its trajectory once
 // the impulse is applied at AI contact).
-export function specTargetToWorld(targetX, targetZ, tableCenterZ, tableSurfaceY, out) {
+//
+// BOTH axes are table-local. Z always was. X was not: it was written
+// straight out as a world coordinate, which is only correct while the
+// table's centre line happens to sit on x = 0. Table.glb's does not — its
+// play surface runs -0.8302..0.6841, centred on x ≈ -0.073 — so every
+// engine envelope expressed about zero (intermediate's ±0.7625 landing
+// clamp, tacticalZones' ±0.66 corners, pro's tighter court) was displaced
+// ~7 cm: it reached past the right side line into balls that could only go
+// out, and never used the outer strip of the left. The engines' numbers are
+// right; the frame they were resolved in was not.
+export function specTargetToWorld(targetX, targetZ, tableCenterX, tableCenterZ, tableSurfaceY, out) {
   const _DEFAULT_Y_ABOVE_TABLE = 0.10;
-  out.set(targetX, tableSurfaceY + _DEFAULT_Y_ABOVE_TABLE, tableCenterZ + targetZ);
+  out.set(tableCenterX + targetX, tableSurfaceY + _DEFAULT_Y_ABOVE_TABLE, tableCenterZ + targetZ);
   return out;
 }
 
