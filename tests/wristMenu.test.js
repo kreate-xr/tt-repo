@@ -40,7 +40,7 @@ beforeAll(() => {
   };
 });
 
-const { WristMenu } = require('../js/scene/wristMenu.js');
+const { WristMenu, RULES_COLUMNS } = require('../js/scene/wristMenu.js');
 
 function uvOfButton(menu, id) {
   const b = menu.buttons.find((x) => x.id === id);
@@ -277,14 +277,12 @@ describe('competition rules', () => {
     expect(seen[0].options.bestOf).toBe(1);
   });
 
-  test('the freed left-dock slot is not clickable', () => {
+  test('the trophy slot is now the rules card, and still hit-tests', () => {
     const menu = new WristMenu();
     const [u, v] = uvOfButton(menu, 'ballColor');
     expect(menu.hitTestUV(u, v)).toBe('ballColor');
-    // Where the trophy used to sit: one dock width + gap right of calibrate.
-    const cal = menu.buttons.find((b) => b.id === 'calibrate');
-    const px = cal.x + cal.w + 8 + cal.w / 2;
-    expect(menu.hitTestUV(px / 1024, 1 - (cal.y + cal.h / 2) / 410)).toBe(null);
+    const [u2, v2] = uvOfButton(menu, 'help');
+    expect(menu.hitTestUV(u2, v2)).toBe('help');
   });
 
   test('the caption line states the service law when nothing is hovered', () => {
@@ -295,5 +293,78 @@ describe('competition rules', () => {
     menu.drawDockCaption();
     expect(lines.join(' ')).toMatch(/16 cm/);
     expect(lines.join(' ')).toMatch(/end line/);
+  });
+});
+
+describe('rules card', () => {
+  function textOf(menu) {
+    const lines = [];
+    const ctx = menu.ctx;
+    const prev = ctx.fillText;
+    ctx.fillText = (t) => lines.push(String(t));
+    menu.draw();
+    ctx.fillText = prev;
+    return lines.join(' | ');
+  }
+
+  test('? opens a screen that replaces the controls with one BACK pill', () => {
+    const menu = new WristMenu();
+    expect(menu.helpOpen).toBe(false);
+    click(menu, 'help');
+    expect(menu.helpOpen).toBe(true);
+    expect(menu.buttons.map((b) => b.id)).toEqual(['help-close']);
+    // The pill chrome is nulled too, or the difficulty/format containers
+    // paint through from the main screen.
+    expect(menu._diffPill).toBe(null);
+    expect(menu._formatPill).toBe(null);
+  });
+
+  test('it states the service law point by point, not as a caption', () => {
+    const menu = new WristMenu();
+    click(menu, 'help');
+    const text = textOf(menu);
+    expect(text).toMatch(/ITTF RULES/);
+    expect(text).toMatch(/SERVICE/);
+    expect(text).toMatch(/RALLY/);
+    expect(text).toMatch(/SCORING/);
+    expect(text).toMatch(/16 cm/);
+    expect(text).toMatch(/end line/);
+    expect(text).toMatch(/First to 11/);
+    // The hover caption belongs to the main screen and must not bleed
+    // through onto the card.
+    expect(text).not.toMatch(/tap \? for all the rules/);
+  });
+
+  test('BACK returns to the controls', () => {
+    const menu = new WristMenu();
+    click(menu, 'help');
+    click(menu, 'help-close');
+    expect(menu.helpOpen).toBe(false);
+    const ids = menu.buttons.map((b) => b.id);
+    expect(ids).toContain('mode-aiMatch');
+    expect(ids).toContain('help');
+    expect(ids).not.toContain('help-close');
+    // Rebuilt, not appended to — the main screen's buttons must appear once.
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  // The card is hand-laid-out on a fixed canvas, so the copy has to stay
+  // inside the geometry. fillText condenses instead of wrapping, which means
+  // an over-long line degrades silently — it just looks squeezed in headset.
+  test('the copy fits the columns it is drawn into', () => {
+    for (const col of RULES_COLUMNS) {
+      expect(col.points.length).toBeLessThanOrEqual(6);
+      for (const line of col.points) {
+        expect(line.length).toBeLessThanOrEqual(34);
+      }
+    }
+  });
+
+  test('closing the menu while reading the card reopens on the controls', () => {
+    const menu = new WristMenu();
+    click(menu, 'help');
+    menu.hide();
+    expect(menu.helpOpen).toBe(false);
+    expect(menu.buttons.map((b) => b.id)).toContain('mode-aiMatch');
   });
 });

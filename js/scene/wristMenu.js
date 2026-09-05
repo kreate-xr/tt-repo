@@ -113,23 +113,70 @@ const DOCK_CAPTIONS = {
   calibrate:  'Calibrate Paddle  —  align the bat with your controller',
   ballColor:  'Ball Color  —  orange or white, both ITTF legal',
   tableColor: 'Table Color  —  blue or green, both ITTF approved',
+  help:       'Rules  —  how the serve, the rally and the score are judged',
 };
 
 // What the caption line says when nothing is hovered, which is most of the
-// time the menu is open.
+// time the menu is open. States the one rule that costs a point on the first
+// serve of the first match, and points at the ? for the rest.
+const SERVE_RULE_CAPTION =
+  'SERVE from behind your end line, toss 16 cm  ·  tap ? for all the rules';
+
+// The rules card behind the ? dock button.
 //
 // The game enforces the service law — struck from behind your end line, above
 // the surface, tossed 16 cm from an open palm, first bounce on your own half
-// — and until now told the player none of that. The fault copy in
-// faultText.js is written but only reaches the dev HUD log, so a player who
-// serves from over the table just loses a point with no idea why. A rule you
-// enforce has to be a rule you stated.
+// — and until now told the player none of it. The fault copy in faultText.js
+// is written but only reaches the dev HUD log, so a player who serves from
+// over the table just loses a point with no idea why. A rule you enforce has
+// to be a rule you stated.
 //
-// One line, and only the serve, deliberately. Everything else in table tennis
-// a player either already knows or discovers harmlessly; the service law is
-// the one that costs points on the first serve of the first match.
-const SERVE_RULE_CAPTION =
-  'ITTF RULES  ·  serve from behind your end line, toss 16 cm from an open palm, your half first';
+// Three columns because the rules fall into three groups a player asks about
+// separately: how do I serve, what ends a rally, how do I win. Every line is
+// what the code actually judges — nothing aspirational, nothing we don't
+// enforce.
+//
+// Hard limits on the copy, both from drawHelp's geometry:
+//   ~34 characters per line. The column's text width is ~257px at 16px, and
+//   fillText's maxWidth CONDENSES rather than wraps, so a line written long
+//   doesn't overflow — it silently squeezes, and a 14% horizontal squeeze on
+//   one bullet in a column of five is more obvious than the extra words are
+//   worth. Shorten the line instead.
+//   6 bullets per column. The sixth ends at y=316 against the BACK pill's
+//   top edge at 356; a seventh collides.
+export const RULES_COLUMNS = Object.freeze([
+  {
+    title: 'SERVICE',
+    points: [
+      'Ball flat on an open palm',
+      'Behind your end line',
+      'Above the table, never below',
+      'Toss it 16 cm straight up, no spin',
+      'Strike it on the way down',
+      'Your half first, then theirs',
+    ],
+  },
+  {
+    title: 'RALLY',
+    points: [
+      'Let it bounce before you hit it',
+      'Hitting it early is a volley',
+      'Landing on your own half loses it',
+      'Don’t touch the net',
+      'Clipping the net mid-rally is fine',
+    ],
+  },
+  {
+    title: 'SCORING',
+    points: [
+      'First to 11, win by 2',
+      'Serve changes every 2 points',
+      'At 10–10, every point',
+      'Net-cord serve that lands = let',
+      'Best of 1, 3 or 5 — your pick',
+    ],
+  },
+]);
 
 // Caption baseline. The band between the mode circles' crosshair ticks
 // (which reach y = CIRCLE_Y + r + 14 = 310) and the top of the exit pill
@@ -328,6 +375,23 @@ const ICONS = {
     ctx.stroke();
     ctx.beginPath(); ctx.arc(cx, cy, rHole, 0, Math.PI * 2); ctx.stroke();
   },
+
+  // Drawn as a glyph rather than as a path. Every other icon here is a
+  // shape with no typographic equivalent; a question mark is a letterform,
+  // and hand-pathing one at 35px only makes it worse than the font's.
+  help(ctx, cx, cy, s, color) {
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.arc(cx, cy, s * 0.42, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = color;
+    ctx.font = `700 ${Math.round(s * 0.58)}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // +1px: the glyph's optical centre sits above its box centre.
+    ctx.fillText('?', cx, cy + 1);
+    ctx.restore();
+  },
 };
 
 export class WristMenu {
@@ -405,6 +469,13 @@ export class WristMenu {
     this._diffPill = null;
     this._formatPill = null;
 
+    // The rules card is a second SCREEN on the same canvas, not an overlay:
+    // it replaces the button set and the chrome rather than floating over
+    // them. A translucent panel of text on top of a panel of controls is
+    // unreadable in a headset, where the whole thing is already being read
+    // through passthrough.
+    this.helpOpen = false;
+
     this.buttons = [];
     this.layoutButtons();
 
@@ -444,6 +515,24 @@ export class WristMenu {
     this.showProgress  = 0;
     this.pressProgress = 0;
     this.mesh.scale.setScalar(1);
+    // Reopening the menu lands on the main screen. A player who closed it
+    // while reading the rules wants the controls back next time, not the
+    // card they already read.
+    if (this.helpOpen) {
+      this.helpOpen = false;
+      this.layoutButtons();
+    }
+  }
+
+  // Swap screens: relay the buttons out, drop any hover held on a control
+  // that no longer exists, and repaint.
+  setHelpOpen(open) {
+    if (this.helpOpen === open) return;
+    this.helpOpen = open;
+    this.hovered = null;
+    this.hoverProgress = 0;
+    this.layoutButtons();
+    this.draw();
   }
   isVisible() { return this.mesh.visible; }
 
@@ -508,6 +597,27 @@ export class WristMenu {
   }
 
   layoutButtons() {
+    // Rebuilt from scratch: this runs again on every screen change, and an
+    // append-only layout would stack the main screen's buttons behind the
+    // rules card's BACK pill and keep them clickable.
+    this.buttons = [];
+
+    // Rules screen: one BACK pill and nothing else. Nulling the pill chrome
+    // is what keeps the difficulty/format containers from painting through
+    // from the main screen — draw() gates on those fields, not on helpOpen.
+    if (this.helpOpen) {
+      this._diffPill = null;
+      this._formatPill = null;
+      const BACK_W = 110;
+      const BACK_H = 34;
+      this.buttons.push({
+        id: 'help-close', kind: 'exit', label: 'BACK',
+        shape: 'rect', x: (CANVAS_W - BACK_W) / 2, y: CANVAS_H - BACK_H - 20,
+        w: BACK_W, h: BACK_H,
+      });
+      return;
+    }
+
     // --- Top pill row: difficulty + match length ---
     // The drill picker that sat beside the difficulty control is gone; drills
     // are chosen inside the TRAINING menu now. The difficulty control stays
@@ -600,12 +710,14 @@ export class WristMenu {
       id: 'calibrate', kind: 'dock', icon: 'paddle',
       shape: 'rect', x: leftX, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
     });
-    // The competition-rules trophy used to sit here, at leftX + DOCK + GAP.
-    // It is gone: ITTF rules are always on, so the toggle had nothing left to
-    // toggle. That leaves calibrate alone on the left against the two colour
-    // swatches on the right — still one idea per side, and a single button on
-    // the mode row's centreline reads as deliberate in a way the old L of one
-    // against three did not.
+    // The competition-rules trophy used to sit here. It is gone — ITTF rules
+    // are always on, so it had nothing left to toggle — and the slot goes to
+    // the rules card, which keeps the left dock as "how the game plays" and
+    // keeps the pair-per-side balance the layout was built around.
+    this.buttons.push({
+      id: 'help', kind: 'dock', icon: 'help',
+      shape: 'rect', x: leftX + DOCK + DOCK_GAP, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
+    });
     // Both swatch icons render in the CURRENT colour, so each button reports
     // its own state and needs no label. Clicks cycle the *_COLOR_ORDER lists
     // (orange ↔ white ball, blue ↔ green table — all ITTF legal).
@@ -706,12 +818,14 @@ export class WristMenu {
       ctx.restore();
     }
 
+    if (this.helpOpen) this.drawHelp();
+
     // --- Buttons pass ---
     for (const b of this.buttons) {
       this.drawButton(b);
     }
 
-    this.drawDockCaption();
+    if (!this.helpOpen) this.drawDockCaption();
 
     // Poke cursor.
     if (this.pokeCursor) {
@@ -736,6 +850,68 @@ export class WristMenu {
 
     ctx.globalAlpha = 1;
     this.texture.needsUpdate = true;
+  }
+
+  // The rules card. Three columns of short bullets under a title, sized to
+  // the same 1024x410 canvas the main screen uses.
+  //
+  // Column geometry is derived, not hand-placed, so the layout survives an
+  // edit to RULES_COLUMNS: the three columns split the width inside a margin
+  // wide enough to clear the capsule's rounded ends at bullet height.
+  drawHelp() {
+    const ctx = this.ctx;
+    const MARGIN = 58;
+    const colW = (CANVAS_W - MARGIN * 2) / RULES_COLUMNS.length;
+    const TITLE_Y = 52;
+    const HEAD_Y = 108;
+    const FIRST_BULLET_Y = 146;
+    const BULLET_STEP = 34;
+    const DOT_R = 3;
+
+    ctx.save();
+    ctx.textBaseline = 'middle';
+
+    ctx.textAlign = 'center';
+    ctx.fillStyle = ACCENT;
+    ctx.font = `700 24px ${FONT_FAMILY}`;
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
+    ctx.fillText('ITTF RULES', CANVAS_W / 2, TITLE_Y);
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+
+    // Hairline under the title, fading at both ends so it doesn't collide
+    // with the capsule's curve.
+    const rule = ctx.createLinearGradient(MARGIN, 0, CANVAS_W - MARGIN, 0);
+    rule.addColorStop(0, 'rgba(255,255,255,0)');
+    rule.addColorStop(0.5, 'rgba(255,255,255,0.16)');
+    rule.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = rule;
+    ctx.fillRect(MARGIN, TITLE_Y + 24, CANVAS_W - MARGIN * 2, 1);
+
+    RULES_COLUMNS.forEach((col, i) => {
+      const x = MARGIN + colW * i + 18;
+
+      ctx.textAlign = 'left';
+      ctx.fillStyle = COLORS.chromeMuted;
+      ctx.font = `700 14px ${FONT_FAMILY}`;
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '2px';
+      ctx.fillText(col.title, x, HEAD_Y);
+      if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+
+      ctx.font = `500 16px ${FONT_FAMILY}`;
+      col.points.forEach((line, j) => {
+        const y = FIRST_BULLET_Y + j * BULLET_STEP;
+        ctx.fillStyle = ACCENT;
+        ctx.beginPath();
+        ctx.arc(x + DOT_R, y, DOT_R, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = COLORS.chromeText;
+        // maxWidth is a backstop, not the layout: every line in
+        // RULES_COLUMNS is written to fit inside it uncondensed.
+        ctx.fillText(line, x + DOT_R * 2 + 10, y, colW - 46);
+      });
+    });
+
+    ctx.restore();
   }
 
   // One line naming the dock button under the cursor. Drawn after the button
@@ -1031,6 +1207,16 @@ export class WristMenu {
   }
 
   activate(button) {
+    // Screen changes come first: both re-lay the buttons out under us, so
+    // nothing below may hold a reference to the button it was handed.
+    if (button.kind === 'dock' && button.id === 'help') {
+      this.setHelpOpen(true);
+      return;
+    }
+    if (button.id === 'help-close') {
+      this.setHelpOpen(false);
+      return;
+    }
     if (button.kind === 'segment') {
       this.selectedDifficultyIndex = button.index;
       this.draw();
