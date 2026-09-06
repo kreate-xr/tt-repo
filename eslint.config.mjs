@@ -18,10 +18,10 @@ export default [
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',
-      // __APP_VERSION__ is substituted at build time by vite.config.js's
-      // `define`; js/analytics/session.js reads it behind a typeof guard so it
-      // also works under Jest, where no substitution happens.
-      globals: { ...globals.browser, __APP_VERSION__: 'readonly' },
+      // Substituted at build time by vite.config.js's `define`. Both are read
+      // behind a typeof guard (js/analytics/session.js, js/analytics/gtm.js)
+      // so the modules also work under Jest, where nothing is substituted.
+      globals: { ...globals.browser, __APP_VERSION__: 'readonly', __GTM_CONTAINER_ID__: 'readonly' },
     },
     rules: {
       'no-unused-vars': ['error', {

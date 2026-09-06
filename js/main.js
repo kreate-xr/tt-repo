@@ -1,6 +1,7 @@
-// First import in the graph: the GA4 config call should not sit behind
-// three.js evaluating. See js/analytics/ga.js.
-import './analytics/ga.js';
+// First import in the graph: the container bootstrap should not sit behind
+// three.js evaluating. See js/analytics/gtm.js — it is a module rather than
+// the inline snippet because the CSP has no 'unsafe-inline'.
+import './analytics/gtm.js';
 import './scene/sceneSetup.js';
 import { startInGame } from './modes/inGame.js';
 // BETA LAUNCH: desktop mode is off the landing page, so it is not imported

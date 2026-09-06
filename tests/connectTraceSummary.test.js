@@ -15,7 +15,9 @@ import {
 
 describe('getTraceSummary', () => {
   test('collects phases with NO ?trace in the URL', () => {
-    // jsdom's default location has no query string — the production case.
+    // No jsdom in this project, so `location` is undefined and the ?trace
+    // gate is off — which is exactly the production case for a player who
+    // never added the param.
     traceStart('start');
     traceMark('anon auth');
     traceMark('room txn');

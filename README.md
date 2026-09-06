@@ -128,6 +128,23 @@ its own feedback or signup row, the deployed rules are older than this repo and
 the beta is collecting email addresses anyone can fetch. It leaves tagged rows
 behind (the rules deny delete), so point it at the test project.
 
+Web analytics is separate and deliberately thin: a Google Tag Manager
+container, bootstrapped from `js/analytics/gtm.js` and configured with
+`VITE_GTM_CONTAINER_ID`. It is a module rather than GTM's copy-paste snippet
+because that snippet is an inline `<script>` and `firebase.json` ships
+`script-src` with no `'unsafe-inline'` — pasted in, the browser would block the
+bootstrap, `gtm.js` would never load, and the page would look completely fine
+while collecting nothing. **GTM Custom HTML tags are blocked by that same
+CSP**; tags GTM loads from googletagmanager.com (GA4 config and most
+Google-built tags) work.
+
+Consent Mode v2 defaults are pushed before the container is requested — order
+is the whole guarantee, since a default arriving after GTM boots is ignored and
+a cookie has already been written by then. Ad signals are denied everywhere;
+analytics storage is denied across the EEA, UK and Switzerland until an opt-in.
+There is no banner yet, so `grantConsent()` has no caller — until one exists,
+EEA visitors are counted cookielessly rather than not at all.
+
 Points worth knowing before changing any of it:
 
 - **The session doc is written twice** — created at XR session start, updated

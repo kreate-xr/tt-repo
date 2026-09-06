@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite';
+import { defineConfig, loadEnv } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import { createRequire } from 'node:module';
 
@@ -12,10 +12,20 @@ const { version } = createRequire(import.meta.url)('./package.json');
 // mixed-content block when the page opens ws://localhost:8080 for signaling.
 const httpOnly = process.env.DEV_HTTP === '1';
 
-export default defineConfig({
+export default defineConfig(({ mode }) => {
+  // loadEnv reads .env / .env.local the same way import.meta.env would, but at
+  // CONFIG time so the value can go through `define`. js/analytics/gtm.js
+  // cannot read import.meta.env directly: babel-jest cannot transform
+  // import.meta to CJS, so a module that touches it is un-unit-testable — the
+  // constraint js/network/iceConfig.js documents. A define keeps the container
+  // id configurable AND the loader under test.
+  const env = loadEnv(mode, process.cwd(), 'VITE_');
+
+  return {
   plugins: httpOnly ? [] : [basicSsl()],
   define: {
     __APP_VERSION__: JSON.stringify(version),
+    __GTM_CONTAINER_ID__: JSON.stringify(env.VITE_GTM_CONTAINER_ID || ''),
   },
   server: {
     host: true,
@@ -34,4 +44,5 @@ export default defineConfig({
     // appVersion the session doc reports.
     sourcemap: 'hidden',
   },
+  };
 });
