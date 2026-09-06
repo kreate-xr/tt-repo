@@ -138,9 +138,9 @@ service cloud.firestore {
     // is via the Firebase console or the Admin SDK (scripts/query-sessions.mjs),
     // both of which bypass these rules by design.
     //
-    // The uid survives the anonymous → Google upgrade in js/auth/upgrade.js
-    // (linkWithPopup preserves it), so nothing here changes when a player
-    // signs in — the rows they wrote as an anonymous visitor stay theirs.
+    // Identity is the anonymous uid and nothing more — there is no sign-in
+    // (see js/data/submissions.js for why the Google link was dropped), so a
+    // player's rows live and die with that uid.
     //
     // Cleanup: `sessions` needs a Firestore TTL policy on `endedAt`, same
     // caveat as the rooms above — rules stop use, not accumulation.
@@ -222,7 +222,7 @@ service cloud.firestore {
     // spam; App Check is the real fix and is a launch-time item, not a beta one.
     function validSignup() {
       return request.resource.data.keys()
-          .hasOnly(['email', 'method', 'createdAt', 'mergedFrom'])
+          .hasOnly(['email', 'method', 'createdAt'])
         && 'createdAt' in request.resource.data
         && request.resource.data.createdAt == request.time
         && 'email' in request.resource.data
@@ -230,7 +230,7 @@ service cloud.firestore {
         && request.resource.data.email.size() > 3
         && request.resource.data.email.size() <= 254
         && 'method' in request.resource.data
-        && request.resource.data.method in ['google', 'manual'];
+        && request.resource.data.method == 'manual';
     }
 
     match /signups/{uid} {

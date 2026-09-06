@@ -80,7 +80,7 @@ js/
   lobby/            Room codes / LobbyManager over the signaling stack
   ui/               DOM overlay (lobby UI + post-session card on the landing page)
   analytics/        Beta session collector (one Firestore doc per session)
-  auth/             Anonymous -> Google account linking, feedback/signup writes
+  data/             Feedback + early-access signup writes
 tests/              Jest suites (jsdom; three.js mapped to its CJS build)
 public/             Static assets copied verbatim into dist/
 vr-assets/          Unreleased VR venue assets, parked for beta — see its README
@@ -103,6 +103,11 @@ sessions/{uid}/runs/{runId}   one doc per play session: funnel milestones,
 feedback/{uid}/items/{id}     rating + optional note
 signups/{uid}                 early-access email, one row per account
 ```
+
+All three live in the **`tabletennis`** named database, not `(default)` —
+`js/network/firebaseClient.js` sets `DATABASE_ID` and `firebase.json` must
+agree, or `firebase deploy --only firestore:rules` sends the rules to a
+database nothing reads and every write comes back permission-denied.
 
 None of them is readable from the client — `allow read: if false`, deliberately,
 so a player's feedback and email are not fetchable by anyone who can open the
@@ -134,17 +139,21 @@ Points worth knowing before changing any of it:
   round trip stalled on a stranger's network.
 - **`connectTrace` now collects unconditionally**; `?trace` gates only the
   console output. Nobody adds a query param before hitting a bug.
-- **Anonymous uid survives the Google upgrade.** `linkWithPopup` preserves it,
-  so rows written before sign-in stay attached and the rules need no special
-  case.
+- **There is no sign-in.** An earlier cut linked the anonymous account with
+  `linkWithPopup`, which preserved the uid but pulled in an auth-handler
+  iframe, a third-party-cookie dependency on `authDomain`, a CSP `frame-src`,
+  and a merge path — a lot of failure modes in front of "tell me when it
+  launches", none of them ever proven in the Quest browser. A typed address
+  needs none of it. The row is still keyed by the anonymous uid, so it still
+  joins to that player's sessions and feedback.
 - **Stack traces need the local sourcemaps.** `vite build` emits them
   (`sourcemap: 'hidden'`) but `firebase.json` keeps `**/*.map` out of the
   deploy — symbolicate against your own `dist/` for the `appVersion` the
   session doc reports.
 
 Setup this depends on: a production Firebase project (not `sportyxr-test`), the
-Google provider enabled in Identity Platform, `VITE_FIREBASE_AUTH_DOMAIN`
-pointed at the Hosting domain, and a Firestore TTL policy on `sessions`.
+`tabletennis` database existing in it with these rules deployed, and a
+Firestore TTL policy on `sessions`.
 
 ## Beta scope
 

@@ -28,6 +28,10 @@ import {
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously } from 'firebase/auth';
 
+// Must match js/network/firebaseClient.js. A named database, not '(default)':
+// rules deployed to the wrong one leave every write permission-denied.
+const DATABASE_ID = 'tabletennis';
+
 function loadEnvLocal() {
   let raw;
   try { raw = readFileSync(new URL('../.env.local', import.meta.url), 'utf8'); }
@@ -75,12 +79,7 @@ async function main() {
 
   const projectId = env.VITE_FIREBASE_PROJECT_ID;
   console.log(`\nProject: ${projectId}`);
-  console.log(`Auth domain: ${env.VITE_FIREBASE_AUTH_DOMAIN}`);
-  if (/\.firebaseapp\.com$/.test(env.VITE_FIREBASE_AUTH_DOMAIN || '')) {
-    console.log('  ! authDomain is the default *.firebaseapp.com. Google sign-in from');
-    console.log('    the Quest browser is likely to fail on third-party-cookie blocking —');
-    console.log('    point it at your Hosting domain before testing that flow.');
-  }
+  console.log(`Database: ${DATABASE_ID}`);
 
   const app = initializeApp({
     apiKey: env.VITE_FIREBASE_API_KEY,
@@ -102,7 +101,7 @@ async function main() {
   const uid = user.uid;
   console.log(`Signed in anonymously — uid=${uid.slice(0, 8)}…\n`);
 
-  const db = getFirestore(app);
+  const db = getFirestore(app, DATABASE_ID);
   const runId = `smoke-${Date.now().toString(36)}`;
   const runRef = doc(db, 'sessions', uid, 'runs', runId);
 
@@ -152,6 +151,12 @@ async function main() {
     method: 'manual',
     createdAt: serverTimestamp(),
   }));
+  await expectDenied("method 'google' is refused (sign-in was removed)",
+    () => setDoc(doc(db, 'signups', `${uid}-x`), {
+      email: 'smoke-test@example.invalid',
+      method: 'google',
+      createdAt: serverTimestamp(),
+    }));
   await expectDenied('a second signup is refused (already on the list)',
     () => setDoc(signupRef, {
       email: 'smoke-test2@example.invalid',
@@ -163,8 +168,9 @@ async function main() {
   console.log('');
   if (failures) {
     console.error(`${failures} check(s) failed.\n`);
-    console.error('If writes were refused: deploy the rules —');
+    console.error(`If writes were refused: deploy the rules to the '${DATABASE_ID}' database —`);
     console.error('  firebase deploy --only firestore:rules');
+    console.error(`  (firebase.json must say "database": "${DATABASE_ID}")`);
     console.error('If reads were ALLOWED: the deployed rules are older than this repo.\n');
     process.exit(3);
   }

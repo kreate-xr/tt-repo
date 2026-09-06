@@ -41,6 +41,19 @@ function readConfig() {
   return cfg;
 }
 
+// Named Firestore database. NOT '(default)' — this project has a dedicated
+// database for the game, and every collection (signaling rooms, sessions,
+// feedback, signups) lives in it.
+//
+// Two things must agree with this constant or nothing works:
+//   - firebase.json's `firestore.database`, which decides where
+//     `firebase deploy --only firestore:rules` sends the rules
+//   - the database actually existing in the project
+// A mismatch does not fail loudly at startup; it surfaces as
+// permission-denied on the first write, because an undeployed database has no
+// rules. scripts/check-beta-collections.mjs is the fast way to confirm.
+export const DATABASE_ID = 'tabletennis';
+
 let app = null;
 let db = null;
 let auth = null;
@@ -50,7 +63,7 @@ export function initFirebase() {
   if (app) return { app, db, auth };
   const config = readConfig();
   app = getApps().length ? getApps()[0] : initializeApp(config);
-  db = getFirestore(app);
+  db = getFirestore(app, DATABASE_ID);
   auth = getAuth(app);
   return { app, db, auth };
 }
@@ -60,13 +73,6 @@ export function getDb() {
   return db;
 }
 
-// The Auth handle itself, for js/auth/upgrade.js — linkWithPopup needs the
-// instance, not just the current user. Everything else should keep going
-// through ensureAnonymousAuth() below.
-export function getAuth_() {
-  if (!auth) initFirebase();
-  return auth;
-}
 
 // Idempotent anonymous sign-in — the SignalingClient calls this before any
 // Firestore read/write so security rules can require request.auth != null.

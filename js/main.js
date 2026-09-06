@@ -1,3 +1,6 @@
+// First import in the graph: the GA4 config call should not sit behind
+// three.js evaluating. See js/analytics/ga.js.
+import './analytics/ga.js';
 import './scene/sceneSetup.js';
 import { startInGame } from './modes/inGame.js';
 // BETA LAUNCH: desktop mode is off the landing page, so it is not imported

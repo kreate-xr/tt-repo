@@ -414,7 +414,7 @@ describe('feedback/{uid}/items/{itemId}', () => {
 describe('signups/{uid}', () => {
   const signup = (extra = {}) => ({
     email: 'player@example.com',
-    method: 'google',
+    method: 'manual',
     createdAt: serverTimestamp(),
     ...extra,
   });
@@ -435,9 +435,13 @@ describe('signups/{uid}', () => {
     await assertFails(updateDoc(doc(db(HOST), `signups/${HOST}`), { email: 'new@b.co' }));
   });
 
-  test('mergedFrom is accepted — the credential-already-in-use breadcrumb', async () => {
-    await assertSucceeds(setDoc(doc(db(HOST), `signups/${HOST}`),
+  test('an extra field is refused — there is no sign-in metadata to carry', async () => {
+    await assertFails(setDoc(doc(db(HOST), `signups/${HOST}`),
       signup({ mergedFrom: 'old-anon-uid' })));
+  });
+
+  test("the only method is 'manual' — Google sign-in was removed", async () => {
+    await assertFails(setDoc(doc(db(HOST), `signups/${HOST}`), signup({ method: 'google' })));
   });
 
   test('an unknown method is refused', async () => {

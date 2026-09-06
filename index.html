@@ -477,64 +477,110 @@
 
     .join-row { display: flex; gap: 10px; }
 
-    /* ── Post-session card ────────────────────────────────────────────────
-       Shown by js/ui/overlay.js when an XR session ends. Sits inside the hero
-       copy column, above the fold, so it is the first thing in view when the
-       overlay comes back. */
-    .post-card {
-      position: relative;
-      margin: 20px 0 4px;
-      padding: 22px 24px;
-      max-width: 460px;
-      border: 1px solid var(--line);
-      border-radius: 18px;
-      background: var(--surface);
-      box-shadow: var(--shadow-card, 0 10px 30px rgba(31, 35, 68, 0.10));
-      text-align: left;
+    /* ── Post-session modal ───────────────────────────────────────────────
+       Shown by js/ui/postSession.js when an XR session ends. Sits above the
+       landing overlay (z-index 10) so it cannot be scrolled past. Sized in vw
+       / vh with a max, so it works on a phone-width browser and on a Quest
+       panel without a media query per breakpoint. */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(15, 18, 34, 0.55);
+      backdrop-filter: blur(4px);
+      -webkit-backdrop-filter: blur(4px);
+      animation: modal-fade 0.18s ease-out;
     }
-    .post-dismiss {
-      position: absolute; top: 10px; right: 12px;
-      width: 30px; height: 30px;
-      font-size: 1.3rem; line-height: 1;
-      border: none; border-radius: 8px;
-      background: transparent; color: #a6adc8; cursor: pointer;
-    }
-    .post-dismiss:hover { background: #f1f3fb; color: var(--ink); }
-    .post-title { font-size: 1.22rem; font-weight: 800; color: var(--ink); }
-    .post-summary { margin-top: 4px; font-size: 0.9rem; color: var(--ink-soft); }
-    .post-summary:empty { display: none; }
-    .post-block { margin-top: 16px; }
-    .post-label, .post-subtitle {
-      display: block;
-      font-size: 0.92rem; font-weight: 700; color: var(--ink);
-    }
-    .post-note, .post-consent {
-      margin-top: 3px;
-      font-size: 0.78rem; color: var(--ink-soft); line-height: 1.45;
-    }
-    .post-consent { margin-top: 8px; }
-    .post-consent a { color: var(--brand-1); }
-    .post-divider { margin-top: 18px; border-top: 1px solid var(--line); }
+    @keyframes modal-fade { from { opacity: 0; } to { opacity: 1; } }
 
-    .rating-row { display: flex; gap: 8px; margin-top: 8px; }
-    .rating-btn {
-      width: 42px; height: 40px;
-      font: inherit; font-weight: 700; font-size: 0.95rem;
-      color: var(--ink-soft);
-      border: 2px solid var(--line); border-radius: 11px;
-      background: #fff; cursor: pointer;
-      transition: border-color 0.15s, color 0.15s, transform 0.12s;
+    .modal {
+      position: relative;
+      width: min(100%, 440px);
+      /* Never taller than the viewport: on a short window the dialog scrolls
+         inside itself rather than pushing its own buttons off-screen. */
+      max-height: min(88vh, 720px);
+      overflow-y: auto;
+      padding: 26px 26px 22px;
+      background: var(--surface);
+      border-radius: 20px;
+      box-shadow: 0 24px 60px rgba(15, 18, 34, 0.30);
+      animation: modal-rise 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
     }
-    .rating-btn:hover { transform: translateY(-1px); border-color: #c9d0ea; }
+    @keyframes modal-rise {
+      from { opacity: 0; transform: translateY(12px) scale(0.98); }
+      to   { opacity: 1; transform: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .modal-backdrop, .modal { animation: none; }
+    }
+
+    .modal-close {
+      position: absolute; top: 12px; right: 14px;
+      width: 32px; height: 32px;
+      display: grid; place-items: center;
+      font-size: 1.4rem; line-height: 1;
+      border: none; border-radius: 9px;
+      background: transparent; color: #9aa2c0; cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+    }
+    .modal-close:hover { background: #f1f3fb; color: var(--ink); }
+
+    .modal-head { padding-right: 32px; }
+    .modal-title { font-size: 1.3rem; font-weight: 800; color: var(--ink); }
+    .modal-sub {
+      margin-top: 5px;
+      font-size: 0.88rem; font-weight: 600; color: var(--brand-1);
+    }
+    .modal-sub:empty { display: none; }
+
+    .modal-section { margin-top: 20px; }
+    .modal-section.bordered { margin-top: 22px; padding-top: 20px; border-top: 1px solid var(--line); }
+
+    .field-label {
+      display: block;
+      font-size: 0.94rem; font-weight: 700; color: var(--ink);
+    }
+    .field-label.sr-gap { margin-top: 18px; }
+    .field-note {
+      margin-top: 4px;
+      font-size: 0.79rem; color: var(--ink-soft); line-height: 1.5;
+    }
+    .field-note.consent { margin-top: 9px; }
+    .field-note a { color: var(--brand-1); }
+
+    /* Five equal columns — they stay tappable down to ~300px of dialog width
+       without wrapping, which a fixed button width would not. */
+    .rating-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .rating-btn {
+      display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 9px 0 7px;
+      font: inherit;
+      border: 2px solid var(--line); border-radius: 13px;
+      background: #fff; cursor: pointer;
+      transition: border-color 0.15s, background 0.15s, transform 0.12s;
+    }
+    .rating-btn:hover { transform: translateY(-2px); border-color: #c9d0ea; }
+    .rating-face { font-size: 1.35rem; line-height: 1; filter: grayscale(1); opacity: 0.55; transition: filter 0.15s, opacity 0.15s; }
+    .rating-num { font-size: 0.72rem; font-weight: 700; color: var(--ink-soft); }
     .rating-btn[aria-checked="true"] {
       border-color: var(--brand-1);
-      color: var(--brand-1);
-      background: rgba(79, 70, 229, 0.07);
+      background: rgba(79, 70, 229, 0.08);
     }
+    .rating-btn[aria-checked="true"] .rating-face { filter: none; opacity: 1; }
+    .rating-btn[aria-checked="true"] .rating-num { color: var(--brand-1); }
 
-    .post-textarea, .post-input {
-      margin-top: 10px;
+    .field {
       width: 100%;
+      margin-top: 9px;
       padding: 11px 13px;
       font: inherit; font-size: 0.92rem;
       color: var(--ink);
@@ -543,48 +589,46 @@
       outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .post-textarea { resize: vertical; min-height: 62px; }
-    .post-input { margin-top: 0; flex: 1; min-width: 0; }
-    .post-textarea:focus, .post-input:focus {
-      border-color: var(--brand-1);
-      box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12);
+    textarea.field { resize: vertical; min-height: 66px; }
+    .field:focus { border-color: var(--brand-1); box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12); }
+    .field::placeholder { color: #a6adc8; }
+
+    /* Input + button share a row until the dialog gets narrow, then stack so
+       neither is squeezed below a usable width. */
+    .field-row { display: flex; gap: 9px; align-items: stretch; margin-top: 9px; }
+    .field-row .field { margin-top: 0; flex: 1 1 auto; min-width: 0; }
+    .field-row .btn { flex: 0 0 auto; }
+    @media (max-width: 380px) {
+      .field-row { flex-direction: column; }
+      .field-row .btn { width: 100%; }
     }
 
-    .post-btn {
-      margin-top: 10px;
+    .btn {
       padding: 11px 22px;
-      font: inherit; font-size: 0.94rem; font-weight: 700;
-      border-radius: 12px; cursor: pointer;
+      font: inherit; font-size: 0.93rem; font-weight: 700;
+      border-radius: 12px; cursor: pointer; white-space: nowrap;
       transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
     }
-    .post-btn:disabled { opacity: 0.55; cursor: default; transform: none; }
-    .post-btn.primary {
-      width: 100%;
+    .btn:disabled { opacity: 0.5; cursor: default; transform: none; }
+    .btn-block { width: 100%; margin-top: 10px; }
+    .btn-primary {
       border: none;
-      background: var(--brand-grad);
-      color: #fff;
+      background: var(--brand-grad); color: #fff;
       box-shadow: var(--shadow-cta);
     }
-    .post-btn.primary:hover:not(:disabled) { transform: translateY(-2px); }
-    .post-btn.ghost {
+    .btn-primary:hover:not(:disabled) { transform: translateY(-2px); }
+    .btn-ghost {
       border: 2px solid var(--brand-1);
-      background: transparent;
-      color: var(--brand-1);
+      background: transparent; color: var(--brand-1);
     }
-    .post-btn.ghost:hover:not(:disabled) { background: rgba(79, 70, 229, 0.07); }
-    .join-row .post-btn { margin-top: 0; }
+    .btn-ghost:hover:not(:disabled) { background: rgba(79, 70, 229, 0.07); }
 
-    .post-or {
-      margin: 12px 0 10px;
-      font-size: 0.78rem; font-weight: 700; color: #a6adc8;
-      text-align: center; text-transform: uppercase; letter-spacing: 0.08em;
-    }
-    .post-status {
-      margin-top: 12px;
+    .modal-status {
+      margin-top: 14px;
       font-size: 0.86rem; font-weight: 600; color: var(--brand-1);
       min-height: 1.2em;
     }
-    .post-status.error { color: #dc2626; }
+    .modal-status.error { color: #dc2626; }
 
     #room-code-input {
       padding: 12px 14px;
@@ -733,56 +777,6 @@
           </div>
 
           <div id="status"></div>
-
-          <!-- Post-session card. Hidden until an XR session ENDS, then shown
-               in place of nothing: js/modes/inGame.js used to just restore the
-               overlay, dropping the player back on this hero with no
-               acknowledgement they had played at all. That moment — just
-               finished a match, headset still on, 2D keyboard available — is
-               the only one where asking anything converts.
-
-               Feedback first, then the early-access ask: a one-tap rating is a
-               small commitment, and it earns the bigger one. Both are optional
-               and the card is dismissable. -->
-          <div id="post-session" class="post-card" hidden>
-            <button type="button" id="post-dismiss" class="post-dismiss" aria-label="Dismiss">&times;</button>
-            <h2 class="post-title">Nice session!</h2>
-            <p class="post-summary" id="post-summary"></p>
-
-            <div class="post-block">
-              <label class="post-label" for="post-feedback">How was it? (optional)</label>
-              <div class="rating-row" id="post-rating" role="radiogroup" aria-label="Rate this session">
-                <button type="button" class="rating-btn" data-rating="1" role="radio" aria-checked="false" aria-label="1 out of 5">1</button>
-                <button type="button" class="rating-btn" data-rating="2" role="radio" aria-checked="false" aria-label="2 out of 5">2</button>
-                <button type="button" class="rating-btn" data-rating="3" role="radio" aria-checked="false" aria-label="3 out of 5">3</button>
-                <button type="button" class="rating-btn" data-rating="4" role="radio" aria-checked="false" aria-label="4 out of 5">4</button>
-                <button type="button" class="rating-btn" data-rating="5" role="radio" aria-checked="false" aria-label="5 out of 5">5</button>
-              </div>
-              <textarea id="post-feedback" class="post-textarea" rows="3" maxlength="2000"
-                        placeholder="Anything broken, confusing, or great? (optional)"></textarea>
-              <button type="button" id="post-feedback-send" class="post-btn ghost">Send feedback</button>
-            </div>
-
-            <div class="post-divider"></div>
-
-            <div class="post-block" id="post-signup">
-              <h3 class="post-subtitle">Get early access</h3>
-              <p class="post-note">We'll email you once when the full version is ready. Nothing else.</p>
-              <button type="button" id="post-google" class="post-btn primary">Continue with Google</button>
-              <div class="post-or">or</div>
-              <div class="join-row">
-                <input id="post-email" type="email" class="post-input" inputmode="email"
-                       autocomplete="email" placeholder="you@example.com">
-                <button type="button" id="post-email-send" class="post-btn ghost">Join</button>
-              </div>
-              <p class="post-consent">
-                By joining you agree we may email you about the launch. See our
-                <a href="/privacy.html" target="_blank" rel="noopener">privacy notice</a>.
-              </p>
-            </div>
-
-            <div id="post-status" class="post-status"></div>
-          </div>
         </div>
 
         <div class="hero-art" aria-hidden="true">
@@ -872,6 +866,69 @@
   </div>
 
   <!-- Loading Screen -->
+  <!-- Post-session dialog. A MODAL, and a sibling of #overlay rather than a
+       block inside the hero: js/modes/inGame.js used to end a session by just
+       restoring the landing page, which dropped the player back at whatever
+       scroll position they left from with no acknowledgement they had played.
+       A card buried in the hero inherited that problem — it could open below
+       the fold. A centred modal cannot be missed and cannot be scrolled past.
+
+       Feedback first, then the email ask: a one-tap rating is a small
+       commitment and it earns the bigger one. Both optional; Escape, the
+       backdrop and the × all close it. -->
+  <div id="post-session" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="post-title">
+      <button type="button" id="post-dismiss" class="modal-close" aria-label="Close">&times;</button>
+
+      <header class="modal-head">
+        <h2 class="modal-title" id="post-title">Nice session!</h2>
+        <p class="modal-sub" id="post-summary"></p>
+      </header>
+
+      <section class="modal-section">
+        <h3 class="field-label">How was it?</h3>
+        <div class="rating-row" id="post-rating" role="radiogroup" aria-label="Rate this session">
+          <button type="button" class="rating-btn" data-rating="1" role="radio" aria-checked="false" aria-label="1 out of 5 — bad">
+            <span class="rating-face">😖</span><span class="rating-num">1</span>
+          </button>
+          <button type="button" class="rating-btn" data-rating="2" role="radio" aria-checked="false" aria-label="2 out of 5">
+            <span class="rating-face">🙁</span><span class="rating-num">2</span>
+          </button>
+          <button type="button" class="rating-btn" data-rating="3" role="radio" aria-checked="false" aria-label="3 out of 5">
+            <span class="rating-face">😐</span><span class="rating-num">3</span>
+          </button>
+          <button type="button" class="rating-btn" data-rating="4" role="radio" aria-checked="false" aria-label="4 out of 5">
+            <span class="rating-face">🙂</span><span class="rating-num">4</span>
+          </button>
+          <button type="button" class="rating-btn" data-rating="5" role="radio" aria-checked="false" aria-label="5 out of 5 — great">
+            <span class="rating-face">🤩</span><span class="rating-num">5</span>
+          </button>
+        </div>
+
+        <label class="field-label sr-gap" for="post-feedback">Anything we should know?</label>
+        <textarea id="post-feedback" class="field" rows="3" maxlength="2000"
+                  placeholder="Broken, confusing, or great — all useful."></textarea>
+        <button type="button" id="post-feedback-send" class="btn btn-ghost btn-block">Send feedback</button>
+      </section>
+
+      <section class="modal-section bordered" id="post-signup">
+        <h3 class="field-label">Get early access</h3>
+        <p class="field-note">One email when the full version is ready. Nothing else, ever.</p>
+        <div class="field-row">
+          <input id="post-email" type="email" class="field" inputmode="email"
+                 autocomplete="email" placeholder="you@example.com">
+          <button type="button" id="post-email-send" class="btn btn-primary">Join</button>
+        </div>
+        <p class="field-note consent">
+          By joining you agree we may email you about the launch. See our
+          <a href="/privacy.html" target="_blank" rel="noopener">privacy notice</a>.
+        </p>
+      </section>
+
+      <p id="post-status" class="modal-status" role="status" aria-live="polite"></p>
+    </div>
+  </div>
+
   <div id="loading">
     <div class="spinner"></div>
     <p>Loading models...</p>

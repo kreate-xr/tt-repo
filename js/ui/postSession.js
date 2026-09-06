@@ -1,17 +1,22 @@
-// The post-session card: feedback, then the early-access ask.
+// The post-session dialog: feedback, then the early-access ask.
 //
 // js/modes/inGame.js used to end an XR session by simply restoring the
 // overlay — same hero, same scroll position, no acknowledgement the player had
 // played at all. That is the one moment in the whole app where asking for
 // anything works: the match just ended, the headset is still on, and the flat
-// panel has a real keyboard behind it. This fills that slot.
+// panel has a real keyboard behind it.
 //
-// Ordering is deliberate. Feedback comes first because a one-tap rating is a
-// small commitment, and having just told us what they think is what earns the
-// bigger ask underneath it. Everything is optional and the card dismisses.
+// A MODAL rather than a card in the page. An in-hero card inherited the exact
+// problem it was meant to fix — the overlay is restored at whatever scroll
+// position the player left from, so the card could open below the fold and be
+// missed entirely. A centred dialog cannot be scrolled past.
 //
-// All Firebase work is lazy-imported through js/auth/upgrade.js, so a player
-// who never opens this card never pays for the SDK.
+// Ordering is deliberate: a one-tap rating is a small commitment, and having
+// just told us what they think is what earns the bigger ask underneath it.
+// Everything is optional, and Escape / the backdrop / the × all close it.
+//
+// Firestore is lazy-imported through js/data/submissions.js, so a player who
+// never sends anything never pays for the SDK.
 
 import { getMatchSummary } from '../analytics/session.js';
 
@@ -20,10 +25,12 @@ let rating = null;
 let signedUp = false;
 // Tapping a rating submits it, but a player picking 4 by going 1-2-3-4 taps
 // four times. Without a debounce that is four rows for one opinion, and the
-// rules allow create-only so they cannot be collapsed afterwards. One row,
-// the last value.
+// rules are create-only so they cannot be collapsed afterwards. One row, the
+// last value.
 let ratingTimer = null;
 const RATING_DEBOUNCE_MS = 900;
+// Whatever had focus before the dialog opened, so closing puts it back.
+let lastFocused = null;
 
 function $(id) { return document.getElementById(id); }
 
@@ -68,7 +75,7 @@ async function submitFeedback({ silentIfEmpty = false } = {}) {
   }
   if (els.feedbackSend) els.feedbackSend.disabled = true;
   try {
-    const { saveFeedback } = await import('../auth/upgrade.js');
+    const { saveFeedback } = await import('../data/submissions.js');
     await saveFeedback({
       rating,
       text,
@@ -86,41 +93,10 @@ async function submitFeedback({ silentIfEmpty = false } = {}) {
   }
 }
 
-async function joinWithGoogle() {
-  if (signedUp) return;
-  els.google.disabled = true;
-  setStatus('Opening Google sign-in…');
-  try {
-    const { linkGoogle, saveSignup, friendlyAuthError } = await import('../auth/upgrade.js');
-    let result;
-    try {
-      result = await linkGoogle();
-    } catch (err) {
-      setStatus(friendlyAuthError(err), true);
-      return;
-    }
-    if (!result.email) {
-      // A Google account with no address on the token — rare, but the signup
-      // row requires one, so fall the player through to typing it.
-      setStatus('Signed in, but we could not read your email — enter it below.', true);
-      return;
-    }
-    await saveSignup(result.email, 'google', result.previousUid || null);
-    signedUp = true;
-    setStatus(`You're on the list — ${result.email}`);
-    hideSignupAsk();
-  } catch (err) {
-    console.warn('[signup] google path failed:', (err && err.code) || (err && err.message));
-    setStatus('Could not complete sign-in — try the email option.', true);
-  } finally {
-    els.google.disabled = false;
-  }
-}
-
 async function joinWithEmail() {
   if (signedUp) return;
   const address = els.email.value.trim();
-  const { isValidEmail, saveSignup } = await import('../auth/upgrade.js');
+  const { isValidEmail, saveSignup } = await import('../data/submissions.js');
   if (!isValidEmail(address)) {
     setStatus('That does not look like an email address.', true);
     els.email.focus();
@@ -129,20 +105,20 @@ async function joinWithEmail() {
   els.emailSend.disabled = true;
   setStatus('Adding you…');
   try {
-    await saveSignup(address, 'manual');
+    await saveSignup(address);
     signedUp = true;
     setStatus("You're on the list — thanks!");
     hideSignupAsk();
   } catch (err) {
     const code = (err && err.code) || '';
-    // The rules allow create only, so a second submit from the same account
-    // is denied. That is "already on the list", not a failure.
+    // The rules allow create only, so a second submit from the same account is
+    // denied. That is "already on the list", not a failure.
     if (code === 'permission-denied') {
       signedUp = true;
       setStatus("You're already on the list.");
       hideSignupAsk();
     } else {
-      console.warn('[signup] email path failed:', code || (err && err.message));
+      console.warn('[signup] not saved:', code || (err && err.message));
       setStatus('Could not add you just now — sorry.', true);
     }
   } finally {
@@ -150,22 +126,33 @@ async function joinWithEmail() {
   }
 }
 
-// Leaves the status line visible (it carries the confirmation) but takes away
-// the buttons and the field, so a second submit is not even offered.
+// Leaves the status line visible (it carries the confirmation) but takes the
+// field away, so a second submit is not even offered.
 function hideSignupAsk() {
   if (!els) return;
-  if (els.google) els.google.hidden = true;
-  if (els.or) els.or.hidden = true;
   if (els.emailRow) els.emailRow.hidden = true;
   if (els.consent) els.consent.hidden = true;
 }
 
-function hide() {
-  if (els && els.card) els.card.hidden = true;
+function onKeydown(e) {
+  if (e.key === 'Escape') hide();
+}
+
+export function hide() {
+  if (!els || !els.card || els.card.hidden) return;
+  els.card.hidden = true;
+  document.removeEventListener('keydown', onKeydown);
+  // The landing page under the dialog is itself a scroll container; releasing
+  // it here pairs with the lock in showPostSession.
+  document.body.style.overflow = '';
+  if (lastFocused && lastFocused.focus) {
+    try { lastFocused.focus(); } catch { /* element may be gone */ }
+  }
+  lastFocused = null;
 }
 
 /**
- * Show the card. Called from js/modes/inGame.js's XR 'end' handler, right
+ * Show the dialog. Called from js/modes/inGame.js's XR 'end' handler, right
  * after the overlay is restored.
  */
 export function showPostSession() {
@@ -174,7 +161,7 @@ export function showPostSession() {
   if (els.summary) els.summary.textContent = summaryLine(stats);
 
   // PER-SESSION RESET. Leaving XR and going back in is normal, and without
-  // this the card reopens carrying the previous session's state: the old
+  // this the dialog reopens carrying the previous session's state: the old
   // rating still lit and the old note still in the box. Because tapping a
   // rating submits immediately, that stale note would then be sent a second
   // time, attached to THIS match's context — a duplicate row saying something
@@ -185,12 +172,19 @@ export function showPostSession() {
   if (els.feedback) els.feedback.value = '';
 
   // signedUp is account-level rather than per-session: once they are on the
-  // list, stop asking. Hides the whole block so the heading does not sit
-  // above nothing.
+  // list, stop asking. Hides the whole block so the heading does not sit above
+  // an empty space.
   if (els.signup) els.signup.hidden = signedUp;
 
   setStatus('');
+  lastFocused = document.activeElement;
   els.card.hidden = false;
+  document.body.style.overflow = 'hidden';
+  document.addEventListener('keydown', onKeydown);
+  // Focus the dialog itself rather than the first control: landing on the
+  // rating buttons would let a stray Enter submit a score the player never
+  // chose.
+  if (els.dialog && els.dialog.focus) els.dialog.focus();
 }
 
 /** Idempotent DOM wiring. Safe to call when the markup is absent. */
@@ -199,29 +193,34 @@ export function wirePostSession() {
   if (!card || els) return;
   els = {
     card,
+    dialog: card.querySelector('.modal'),
     dismiss: $('post-dismiss'),
     summary: $('post-summary'),
     ratingBtns: Array.from(card.querySelectorAll('.rating-btn')),
     feedback: $('post-feedback'),
     feedbackSend: $('post-feedback-send'),
-    google: $('post-google'),
     email: $('post-email'),
     emailSend: $('post-email-send'),
-    emailRow: card.querySelector('.join-row'),
-    or: card.querySelector('.post-or'),
+    emailRow: card.querySelector('.field-row'),
     signup: $('post-signup'),
-    consent: card.querySelector('.post-consent'),
+    consent: card.querySelector('.consent'),
     status: $('post-status'),
   };
+
+  // Focusable so showPostSession can move focus into the dialog without
+  // landing on a control, and so screen readers announce it on open.
+  if (els.dialog) els.dialog.tabIndex = -1;
 
   for (const b of els.ratingBtns) {
     b.addEventListener('click', () => setRating(Number(b.dataset.rating)));
   }
   if (els.feedbackSend) els.feedbackSend.addEventListener('click', () => submitFeedback());
-  if (els.google) els.google.addEventListener('click', joinWithGoogle);
   if (els.emailSend) els.emailSend.addEventListener('click', joinWithEmail);
   if (els.email) {
     els.email.addEventListener('keydown', (e) => { if (e.key === 'Enter') joinWithEmail(); });
   }
   if (els.dismiss) els.dismiss.addEventListener('click', hide);
+  // Backdrop click, but only the backdrop itself — a click that started inside
+  // the dialog and drifted out (selecting text, say) must not close it.
+  card.addEventListener('mousedown', (e) => { if (e.target === card) hide(); });
 }
