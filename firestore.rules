@@ -124,5 +124,118 @@ service cloud.firestore {
         allow update, delete: if false;
       }
     }
+
+    // ── Beta instrumentation ────────────────────────────────────────────────
+    //
+    // Three write-only collections behind the same anonymous-auth gate as the
+    // rooms above. Ownership is encoded in the PATH ({uid} segment), so every
+    // rule is one comparison against request.auth.uid and there is no way to
+    // address another player's document at all.
+    //
+    // Every one of them denies `read` outright — including to the author. The
+    // client never needs its own analytics back, and a player's feedback text
+    // or email must not be fetchable by anyone who can open the app. Reading
+    // is via the Firebase console or the Admin SDK (scripts/query-sessions.mjs),
+    // both of which bypass these rules by design.
+    //
+    // The uid survives the anonymous → Google upgrade in js/auth/upgrade.js
+    // (linkWithPopup preserves it), so nothing here changes when a player
+    // signs in — the rows they wrote as an anonymous visitor stay theirs.
+    //
+    // Cleanup: `sessions` needs a Firestore TTL policy on `endedAt`, same
+    // caveat as the rooms above — rules stop use, not accumulation.
+
+    function owns(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+
+    // Bounds mirror the constants in js/analytics/session.js — keep in step.
+    // NOTE ON THE `in` GUARDS BELOW. Reading a key that is absent from a map
+    // is an EVALUATION ERROR in rules, not a false — and an evaluation error
+    // reaches the client as the same permission-denied a clean `false` does,
+    // so it hides which condition actually rejected the write. Every required
+    // field is therefore presence-checked before it is read.
+    function validRunCreate() {
+      return request.resource.data.keys().hasOnly(
+          ['startedAt', 'endedAt', 'xrMode', 'ua', 'screen', 'appVersion',
+           'durationMs', 'milestones', 'net', 'errors'])
+        && 'startedAt' in request.resource.data
+        && request.resource.data.startedAt == request.time
+        && 'xrMode' in request.resource.data
+        && request.resource.data.xrMode is string
+        && request.resource.data.xrMode.size() < 32
+        && (!('ua' in request.resource.data)
+            || (request.resource.data.ua is string
+                && request.resource.data.ua.size() <= 300))
+        && (!('errors' in request.resource.data)
+            || (request.resource.data.errors is list
+                && request.resource.data.errors.size() <= 20));
+    }
+
+    // The single end-of-session merge. Restricted to the fields that write
+    // makes, so a create cannot be laundered into an arbitrary document.
+    function validRunUpdate() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['endedAt', 'durationMs', 'milestones', 'net', 'match',
+                    'training', 'errors'])
+        && 'endedAt' in request.resource.data
+        && request.resource.data.endedAt == request.time
+        && 'durationMs' in request.resource.data
+        && request.resource.data.durationMs is int
+        && 'milestones' in request.resource.data
+        && request.resource.data.milestones is map
+        && (!('errors' in request.resource.data)
+            || (request.resource.data.errors is list
+                && request.resource.data.errors.size() <= 20));
+    }
+
+    match /sessions/{uid}/runs/{runId} {
+      allow create: if owns(uid) && validRunCreate();
+      allow update: if owns(uid) && validRunUpdate();
+      allow read, delete: if false;
+    }
+
+    function validFeedback() {
+      return request.resource.data.keys()
+          .hasOnly(['rating', 'text', 'context', 'createdAt'])
+        && 'createdAt' in request.resource.data
+        && request.resource.data.createdAt == request.time
+        && (!('rating' in request.resource.data)
+            || (request.resource.data.rating is int
+                && request.resource.data.rating >= 1
+                && request.resource.data.rating <= 5))
+        && (!('text' in request.resource.data)
+            || (request.resource.data.text is string
+                && request.resource.data.text.size() <= 2000))
+        && (!('context' in request.resource.data)
+            || request.resource.data.context is map);
+    }
+
+    match /feedback/{uid}/items/{itemId} {
+      allow create: if owns(uid) && validFeedback();
+      allow read, update, delete: if false;
+    }
+
+    // One row per account. The doc id IS the uid, so an anonymous account can
+    // register interest exactly once — the only rate limit rules can express.
+    // Anonymous accounts are free to mint, so a determined actor can still
+    // spam; App Check is the real fix and is a launch-time item, not a beta one.
+    function validSignup() {
+      return request.resource.data.keys()
+          .hasOnly(['email', 'method', 'createdAt', 'mergedFrom'])
+        && 'createdAt' in request.resource.data
+        && request.resource.data.createdAt == request.time
+        && 'email' in request.resource.data
+        && request.resource.data.email is string
+        && request.resource.data.email.size() > 3
+        && request.resource.data.email.size() <= 254
+        && 'method' in request.resource.data
+        && request.resource.data.method in ['google', 'manual'];
+    }
+
+    match /signups/{uid} {
+      allow create: if owns(uid) && validSignup();
+      allow read, update, delete: if false;
+    }
   }
 }

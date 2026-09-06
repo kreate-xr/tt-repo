@@ -21,26 +21,80 @@ const ENABLED = (() => {
   catch { return false; }
 })();
 
+// Console output is what ?trace gates. COLLECTION is unconditional: a failed
+// join on a stranger's Wi-Fi is exactly the case nobody thought to add ?trace
+// to, and the arrays cost a handful of small objects per attempt. The session
+// doc reads them back through getTraceSummary().
 const marks = [];
 let t0 = null;
 
-export function traceStart(label = 'start') {
+// Work that happens BEFORE any attempt exists — the lazy lobby-chunk import,
+// Firebase SDK construction, the speculative anonymous-auth warm. traceMark
+// no-ops while t0 is null, so without this channel none of it is recordable,
+// and it is exactly the part that differs between a cold first join and a
+// warm one. Absolute performance.now(), page-lifetime (never cleared per
+// attempt), dumped as its own table at traceEnd.
+const bootMarks = [];
+
+export function traceBoot(label, detail) {
+  const atMs = performance.now();
+  bootMarks.push({ label, atMs, detail });
   if (!ENABLED) return;
+  console.info(`[connect] @${atMs.toFixed(0)}ms (boot) ${label}${detail ? `  ${detail}` : ''}`);
+}
+
+export function traceStart(label = 'start') {
   t0 = performance.now();
   marks.length = 0;
   traceMark(label);
 }
 
 export function traceMark(label, detail) {
-  if (!ENABLED || t0 === null) return; // disabled, or no attempt in flight
+  if (t0 === null) return; // no attempt in flight
   const atMs = performance.now() - t0;
   marks.push({ label, atMs, detail });
+  if (!ENABLED) return;
   console.info(`[connect] +${atMs.toFixed(0)}ms  ${label}${detail ? `  ${detail}` : ''}`);
 }
 
+// Phase deltas as DATA, for js/analytics/session.js to attach to the session
+// doc when a multiplayer connect fails. Safe to call at any point — mid-attempt
+// (t0 still set) or after traceEnd, which leaves `marks` intact until the next
+// traceStart. Rounded to whole ms; the sub-ms precision is noise over Wi-Fi and
+// a shorter doc is a cheaper write.
+export function getTraceSummary() {
+  return {
+    boot: bootMarks.map((m) => ({
+      phase: m.label,
+      atMs: Math.round(m.atMs),
+      ...(m.detail ? { detail: String(m.detail) } : {}),
+    })),
+    phases: marks.map((m, i) => ({
+      phase: m.label,
+      sinceStartMs: Math.round(m.atMs),
+      deltaMs: Math.round(m.atMs - (i ? marks[i - 1].atMs : 0)),
+      ...(m.detail ? { detail: String(m.detail) } : {}),
+    })),
+    totalMs: marks.length ? Math.round(marks[marks.length - 1].atMs) : 0,
+  };
+}
+
 export function traceEnd(label = 'connected') {
-  if (!ENABLED || t0 === null) return;
+  if (t0 === null) return;
   traceMark(label);
+  if (!ENABLED) { t0 = null; return; }
+  // Boot table first: a negative msBeforeStart means the phase was still
+  // running after the button press, i.e. the player waited on it.
+  if (bootMarks.length) {
+    const bootRows = bootMarks.map((m) => ({
+      phase: m.label,
+      msBeforeStart: Math.round(t0 - m.atMs),
+      detail: m.detail || '',
+    }));
+    console.info('[connect] boot phases (before the button press)');
+    if (console.table) console.table(bootRows);
+    else console.info(bootRows);
+  }
   const rows = marks.map((m, i) => ({
     phase: m.label,
     sinceStartMs: Math.round(m.atMs),

@@ -182,9 +182,28 @@ const LAUNCH_SEARCH_ITERS = 6;
 // intermediate/pro rally shots, concentrated in the high-spin/high-pace ones).
 //
 // PASS-2 (the gate that counts): the verified, drag+Magnus-integrated flight
-// must clear by this much or the solution is rejected. 1 cm covers the
-// rollout's interpolation error across the net slab at smash pace.
-const NET_CLEARANCE_MARGIN_M = 0.01;
+// must clear by this much or the solution is rejected.
+//
+// 1 cm was enough to cover the rollout's own interpolation error across the
+// net slab, and nothing else — which made this gate a pure model check with
+// no budget for EXECUTION error. That was fine only as long as execution was
+// assumed perfect. It isn't: the FSM delivers the plan through a keyframed
+// trajectory, and until the phase-spacing fix in interception.js the paddle
+// arrived at 0.884× the solved contact speed, which cost ~4 cm of clearance.
+// A gate that accepts a 1 cm skim has nothing left to give.
+//
+// The correction loop makes this worse than it sounds: it optimises LANDING
+// ERROR and only checks clearance as a veto, so it actively walks accepted
+// solutions back down toward whatever this floor allows. Raising the floor is
+// what stops the AI aiming at the top of the cord — which is what a real
+// player does too, for exactly this reason.
+//
+// 3 cm measured against the realistic-contact envelope (150 contacts × 36
+// target cells): intermediate/pro feasibility 92.6% → 91.6%, beginner
+// 68.4% → 67.8%. The lost 1% degrades through the FSM's soften ladder, which
+// keeps the tactical target and drops pace — not through the centre-block
+// safe fallback — so it costs placement identity nothing.
+const NET_CLEARANCE_MARGIN_M = 0.03;
 // PASS-1 (drag-free closed form): demand extra headroom over the pass-2 gate,
 // because drag and topspin Magnus both steepen the real arc below the
 // parabola — a trajectory that clears on paper can still cross under the

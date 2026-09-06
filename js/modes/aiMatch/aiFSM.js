@@ -221,7 +221,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
     return (MOVEMENT_SPEED_MPS[difficulty] || MOVEMENT_SPEED_MPS.beginner) * styleMult;
   }
 
-  // Plan the 8-keyframe interception trajectory toward `contactPos`. Called
+  // Plan the keyframed interception trajectory toward `contactPos`. Called
   // once when the target arrives, and again mid-approach when the spin read
   // completes and the AI has to correct off its first (spin-blind) read.
   // Leaves any existing trajectory untouched if the new plan can't be built,
@@ -692,7 +692,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       console.log(`[AI FSM] target received: shotType=${intent.shotType}${disguiseNote} speed=${speed.toFixed(2)} spin=${spin.toFixed(2)}`);
     }
 
-    // V2 §section_2: plan the 8-keyframe interception trajectory now (once
+    // V2 §section_2: plan the keyframed interception trajectory now (once
     // per rally). MOVING/COMMITTED/SWINGING just interpolate keyframes;
     // no per-frame trajectory recomputation. Plan only when solver is
     // feasible — without a known terminal velocity the quintic can't be
@@ -832,7 +832,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
         }
         if (intent.trajectory) {
           // V2 §section_2: trajectory-driven paddle motion. Interpolate
-          // 8-keyframe plan for position + face. Snap (no rate-limited
+          // keyframed plan for position + face. Snap (no rate-limited
           // driveTowardPose) because the trajectory IS the speed plan —
           // the planner already enforced peak ≤ cap × 1.1.
           const elapsed = nowMs - intent.trajectoryPlannedAtMs;
@@ -877,7 +877,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
 
       case STATES.SWINGING: {
         // V2 §section_2: trajectory-driven swing when planned. The
-        // 8-keyframe plan already produces the correct paddle velocity
+        // keyframed plan already produces the correct paddle velocity
         // through the contact point (terminal velocity = solver's
         // computed paddleV by construction of the quintic). Fallback to
         // the old windup-strike heuristic only when solver was

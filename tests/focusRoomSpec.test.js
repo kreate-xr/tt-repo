@@ -2,11 +2,12 @@
 //
 // What matters here is the scoreboard-anchor contract (identical shape and
 // formula to arena.js getBackWallAnchor so createScoreboard({anchor}) works
-// unchanged) and the clearance guarantees: barriers clear of the table,
-// panels clear of the ceiling, scoreboard clear of the wall top.
+// unchanged) and the clearance guarantees: panels clear of the ceiling,
+// scoreboard clear of the wall top, and the branding mark clear of the
+// scoreboard it now shares the back wall with.
 
 const {
-  ROOM, COURT, BARRIER, BARRIER_LOGO, LIGHT_PANELS, computeFocusRoomLayout,
+  ROOM, LIGHT_PANELS, WALL_MARK, computeFocusRoomLayout,
 } = require('../js/scene/focusRoomSpec.js');
 
 // tableBox as models.js derives it from the Table.glb edge anchors.
@@ -45,58 +46,8 @@ test('the wall-mounted scoreboard fits on the back wall with clearance', () => {
   const layout = computeFocusRoomLayout(TABLE_BOX);
   const a = layout.backWallAnchor;
   expect(a.y + SCOREBOARD_H / 2).toBeLessThan(ROOM.HEIGHT_Y);
-  expect(a.y - SCOREBOARD_H / 2).toBeGreaterThan(BARRIER.HEIGHT);
+  expect(a.y - SCOREBOARD_H / 2).toBeGreaterThan(0);
   expect(SCOREBOARD_W).toBeLessThan(a.wallWidth);
-});
-
-test('barrier segments ring the court: inside the room, clear of the table', () => {
-  const layout = computeFocusRoomLayout(TABLE_BOX);
-  expect(layout.barrierSegments.length).toBeGreaterThanOrEqual(10);
-  const halfW = ROOM.WIDTH_X / 2;
-  for (const seg of layout.barrierSegments) {
-    // Inside the room footprint.
-    expect(Math.abs(seg.x - layout.center.x)).toBeLessThan(halfW);
-    expect(seg.z).toBeGreaterThan(layout.backWallInnerZ);
-    expect(seg.z).toBeLessThan(layout.frontWallInnerZ);
-    // Clear of the table: either well outside its X span or beyond a
-    // baseline in Z (side rows sit ~2 m out; end rows ~2 m past baselines).
-    const outsideX = Math.abs(seg.x) >= COURT.HALF_X - 1e-9;
-    const outsideZ = seg.z <= TABLE_BOX.min.z - 1.0 || seg.z >= TABLE_BOX.max.z + 1.0;
-    expect(outsideX || outsideZ).toBe(true);
-  }
-});
-
-test('every barrier gets a branding decal, facing the court', () => {
-  const layout = computeFocusRoomLayout(TABLE_BOX);
-  const { barrierSegments: segs, barrierLogos: logos, center } = layout;
-  expect(logos.length).toBe(segs.length);
-  const gap = BARRIER.THICK / 2 + BARRIER_LOGO.OFFSET;
-  logos.forEach((logo, i) => {
-    const seg = segs[i];
-    // The decal's own normal, (sin, cos) of its rotY — which is the
-    // direction it was pushed off the panel face.
-    const nx = Math.sin(logo.rotY);
-    const nz = Math.cos(logo.rotY);
-    // Faces the court center, never out at the wall behind it.
-    const toCenter = (center.x - seg.x) * nx + (center.z - seg.z) * nz;
-    expect(toCenter).toBeGreaterThan(0);
-    // Clear of the panel face by the full gap, along that same normal.
-    expect(logo.x).toBeCloseTo(seg.x + nx * gap);
-    expect(logo.z).toBeCloseTo(seg.z + nz * gap);
-    expect(gap).toBeGreaterThan(BARRIER.THICK / 2);
-    // Centered on the panel it prints onto.
-    expect(logo.y).toBeCloseTo(BARRIER.HEIGHT / 2);
-  });
-});
-
-test('the printed mark fits inside the barrier panel it sits on', () => {
-  // Worst case is the height ceiling binding — the mark still has to clear
-  // the panel top (where the stripe cap wraps) and the floor.
-  const halfH = BARRIER_LOGO.MAX_HEIGHT / 2;
-  expect(BARRIER.HEIGHT / 2 + halfH).toBeLessThan(BARRIER.HEIGHT - 0.05);
-  expect(BARRIER.HEIGHT / 2 - halfH).toBeGreaterThan(0.05);
-  // And the width has to leave real panel either side of the print.
-  expect(BARRIER_LOGO.WIDTH).toBeLessThan(BARRIER.SEG_W - 0.2);
 });
 
 test('light panels hang below the ceiling and inside the room', () => {
@@ -115,16 +66,30 @@ test('light panels hang below the ceiling and inside the room', () => {
   expect(layout.panelSlots.filter((p) => p.isCenter).length).toBe(1);
 });
 
-test('barrier stripe cap has real clearance on every axis (anti z-fight)', () => {
-  // The stripe caps the barrier panel; a coplanar or near-coplanar face
-  // pair z-fights into a glittery shimmer at distance. Each overhang must
-  // be several millimeters, not zero-or-epsilon.
-  expect(BARRIER.STRIPE_LIP).toBeGreaterThanOrEqual(0.004);
-  expect(BARRIER.STRIPE_WRAP).toBeGreaterThanOrEqual(0.008);
-  expect(BARRIER.STRIPE_END).toBeGreaterThanOrEqual(0.008);
-  // And the lipped stripe must still fully hide the panel's top face:
-  // stripe bottom must sit below the panel top.
-  expect(BARRIER.STRIPE_H - BARRIER.STRIPE_LIP).toBeGreaterThan(0.01);
+test('the back-wall mark clears the scoreboard below and the ceiling above', () => {
+  // The mark and the scoreboard share the back wall. The board spans
+  // a.y +/- SCOREBOARD_H/2; the mark sits above it, and both have to stay
+  // inside the room. Height is derived from the asset's measured aspect at
+  // load, so the ceiling here is what the builder clamps to.
+  const layout = computeFocusRoomLayout(TABLE_BOX);
+  const boardTop = layout.backWallAnchor.y + SCOREBOARD_H / 2;
+  const markBottom = WALL_MARK.BACK_Y - WALL_MARK.MAX_HEIGHT_M / 2;
+  const markTop = WALL_MARK.BACK_Y + WALL_MARK.MAX_HEIGHT_M / 2;
+  expect(markBottom).toBeGreaterThan(boardTop);
+  // Clear of the cornice, which hangs from the ceiling.
+  expect(markTop).toBeLessThan(ROOM.HEIGHT_Y - ROOM.CORNICE_H - 0.02);
+});
+
+test('the front-wall mark sits on a clear wall, above the accent stripe', () => {
+  const markBottom = WALL_MARK.FRONT_Y - WALL_MARK.MAX_HEIGHT_M / 2;
+  const markTop = WALL_MARK.FRONT_Y + WALL_MARK.MAX_HEIGHT_M / 2;
+  const stripeTop = ROOM.ACCENT_STRIPE_Y + ROOM.ACCENT_STRIPE_H / 2;
+  expect(markBottom).toBeGreaterThan(stripeTop);
+  expect(markTop).toBeLessThan(ROOM.HEIGHT_Y - ROOM.CORNICE_H - 0.02);
+  // Both marks must fit across the wall they are printed on.
+  expect(WALL_MARK.WIDTH_M).toBeLessThan(ROOM.WIDTH_X);
+  // Off the wall face, or it z-fights into a shimmer at distance.
+  expect(WALL_MARK.OFFSET).toBeGreaterThan(0);
 });
 
 test('null tableBox yields null (mirrors createArena guard)', () => {

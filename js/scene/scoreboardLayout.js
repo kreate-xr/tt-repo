@@ -208,69 +208,83 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   // to the VS glyph even with the dot appended.
   const NAME_MAX_W = 380;
 
-  drawAvatar(ctx, blueCx - 250, nameY, '#1d5cff');
-  ctx.font = `bold 60px ${FONT}`;
-  ctx.fillStyle = '#ffffff';
-  ctx.textAlign = 'left';
-  const blueName = ellipsize(ctx, state.playerName, NAME_MAX_W);
-  ctx.fillText(blueName, blueCx - 165, nameY);
-  if (state.currentServer === 'player') {
-    const nw = ctx.measureText(blueName).width;
-    drawServeDot(ctx, blueCx - 165 + nw + 44, nameY, BLUE_BRIGHT);
-  }
+  // The banner (drawn last, below) owns the whole head block while it is up:
+  // its box spans 210…480, which is exactly where the names, the VS glyph, the
+  // badge and the score digits live. Everything in that band is skipped rather
+  // than painted-then-covered — the box is narrower and shorter than some of
+  // that ink, so covering left half-names and digit bottoms sticking out past
+  // the gold border. Below 480 (games tally, history, stats) draws as normal.
+  const bannerUp = !!state.matchOverBanner;
 
-  drawAvatar(ctx, redCx + 250, nameY, '#e11d3c');
-  ctx.textAlign = 'right';
-  const redName = ellipsize(ctx, state.aiName, NAME_MAX_W);
-  ctx.fillText(redName, redCx + 165, nameY);
-  if (state.currentServer === 'ai') {
-    const nw = ctx.measureText(redName).width;
-    drawServeDot(ctx, redCx + 165 - nw - 44, nameY, RED_BRIGHT);
+  if (!bannerUp) {
+    drawAvatar(ctx, blueCx - 250, nameY, '#1d5cff');
+    ctx.font = `bold 60px ${FONT}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.textAlign = 'left';
+    const blueName = ellipsize(ctx, state.playerName, NAME_MAX_W);
+    ctx.fillText(blueName, blueCx - 165, nameY);
+    if (state.currentServer === 'player') {
+      const nw = ctx.measureText(blueName).width;
+      drawServeDot(ctx, blueCx - 165 + nw + 44, nameY, BLUE_BRIGHT);
+    }
+
+    drawAvatar(ctx, redCx + 250, nameY, '#e11d3c');
+    ctx.textAlign = 'right';
+    const redName = ellipsize(ctx, state.aiName, NAME_MAX_W);
+    ctx.fillText(redName, redCx + 165, nameY);
+    if (state.currentServer === 'ai') {
+      const nw = ctx.measureText(redName).width;
+      drawServeDot(ctx, redCx + 165 - nw - 44, nameY, RED_BRIGHT);
+    }
   }
 
   // Big current-game scores, zero-padded to two digits like the broadcast mock.
   ctx.textAlign = 'center';
-  ctx.font = `bold 270px ${FONT}`;
-  ctx.fillStyle = '#ffffff';
-  ctx.shadowColor = 'rgba(0,0,0,0.6)';
-  ctx.shadowBlur = 18;
-  ctx.shadowOffsetY = 8;
-  ctx.fillText(pad2(state.playerScore), blueCx, 425);
-  ctx.fillText(pad2(state.aiScore), redCx, 425);
-  clearShadow(ctx);
+  if (!bannerUp) {
+    ctx.font = `bold 270px ${FONT}`;
+    ctx.fillStyle = '#ffffff';
+    ctx.shadowColor = 'rgba(0,0,0,0.6)';
+    ctx.shadowBlur = 18;
+    ctx.shadowOffsetY = 8;
+    ctx.fillText(pad2(state.playerScore), blueCx, 425);
+    ctx.fillText(pad2(state.aiScore), redCx, 425);
+    clearShadow(ctx);
+  }
 
   // --- Center column: VS + best-of badge ------------------------------------
   const cx = w / 2;
-  ctx.font = `italic 900 110px ${FONT}`;
-  const vsGrad = ctx.createLinearGradient(cx, 190, cx, 290);
-  vsGrad.addColorStop(0, '#ffffff');
-  vsGrad.addColorStop(1, '#8a94ad');
-  ctx.fillStyle = vsGrad;
-  ctx.fillText('VS', cx, 240);
+  if (!bannerUp) {
+    ctx.font = `italic 900 110px ${FONT}`;
+    const vsGrad = ctx.createLinearGradient(cx, 190, cx, 290);
+    vsGrad.addColorStop(0, '#ffffff');
+    vsGrad.addColorStop(1, '#8a94ad');
+    ctx.fillStyle = vsGrad;
+    ctx.fillText('VS', cx, 240);
 
-  // The badge shows "BEST OF n" normally, but flips to a tension callout —
-  // DEUCE / GAME POINT / MATCH POINT — whenever one is live. The static
-  // best-of info is the least valuable thing on the board at those moments.
-  const callout = computeCallout(state);
-  const badgeText = callout ? callout.text : `BEST OF ${state.bestOf}`;
-  ctx.font = `bold 40px ${FONT}`;
-  // Width from measured text + 3px/char tracking; floor at the classic 280.
-  const badgeW = Math.max(
-    280, ctx.measureText(badgeText).width + 3 * badgeText.length + 84,
-  );
-  roundRect(ctx, cx - badgeW / 2, 340, badgeW, 76, 16);
-  ctx.fillStyle = '#141c33';
-  ctx.fill();
-  ctx.strokeStyle = callout ? callout.color : 'rgba(255,255,255,0.14)';
-  ctx.lineWidth = callout ? 4 : 2;
-  if (callout) {
-    ctx.shadowColor = callout.color;
-    ctx.shadowBlur = 20;
+    // The badge shows "BEST OF n" normally, but flips to a tension callout —
+    // DEUCE / GAME POINT / MATCH POINT — whenever one is live. The static
+    // best-of info is the least valuable thing on the board at those moments.
+    const callout = computeCallout(state);
+    const badgeText = callout ? callout.text : `BEST OF ${state.bestOf}`;
+    ctx.font = `bold 40px ${FONT}`;
+    // Width from measured text + 3px/char tracking; floor at the classic 280.
+    const badgeW = Math.max(
+      280, ctx.measureText(badgeText).width + 3 * badgeText.length + 84,
+    );
+    roundRect(ctx, cx - badgeW / 2, 340, badgeW, 76, 16);
+    ctx.fillStyle = '#141c33';
+    ctx.fill();
+    ctx.strokeStyle = callout ? callout.color : 'rgba(255,255,255,0.14)';
+    ctx.lineWidth = callout ? 4 : 2;
+    if (callout) {
+      ctx.shadowColor = callout.color;
+      ctx.shadowBlur = 20;
+    }
+    ctx.stroke();
+    clearShadow(ctx);
+    ctx.fillStyle = callout ? callout.color : '#dbe2f4';
+    withLetterSpacing(ctx, '3px', () => ctx.fillText(badgeText, cx, 380));
   }
-  ctx.stroke();
-  clearShadow(ctx);
-  ctx.fillStyle = callout ? callout.color : '#dbe2f4';
-  withLetterSpacing(ctx, '3px', () => ctx.fillText(badgeText, cx, 380));
 
   // Games-won tally under the badge — the headline "how far into the match
   // are we" number the history row only implies. Pointless in a single-game
@@ -355,16 +369,17 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   ctx.fillStyle = accent;
   ctx.fillRect(ROW_X0, 1108, ROW_X1 - ROW_X0, 8);
 
-  // --- Match-over banner (masks the score area) ------------------------------------
-  if (state.matchOverBanner) {
+  // --- Banner (replaces the head block) --------------------------------------------
+  // Between-games announcements only ("GAME 2 TO YOU 11-7"). The match result
+  // is NOT bannered here any more — it goes on the end-of-match report card,
+  // which is raised the instant the match ends; see js/scene/matchReportLayout.js.
+  if (bannerUp) {
     // The box grows to the text, then the text shrinks to whatever box it
     // got. Both halves are needed: the banner was a fixed 1448px box with a
-    // fixed 150px headline, which only ever fitted the AI match's "YOU WIN!"
-    // (717px). Multiplayer's strings are far longer — "OPPONENT WINS THE
-    // MATCH 3-1" measures 2428px, so it overran the gold border by ~490px a
-    // side AND ran off both edges of the 2048px canvas with its first and
-    // last characters clipped away. Every multiplayer match-end and
-    // game-break banner was drawn that way.
+    // fixed 150px headline, which only ever fitted a short string like "YOU
+    // WIN!" (717px). Multiplayer's are far longer — "GAME 2 TO OPPONENT
+    // 11-7" style strings overran the gold border and ran off both edges of
+    // the 2048px canvas with their first and last characters clipped away.
     const text = String(state.matchOverBanner);
     const PAD = 48;
     ctx.font = `bold 150px ${FONT}`;

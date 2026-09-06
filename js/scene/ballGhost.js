@@ -66,8 +66,11 @@ export function createBallGhost(scene, ballMesh, tableSurfaceY, tableBox) {
  * about the table plane (y_ghost = 2*tableY - y_ball) so the reflection
  * lives an equal distance under the felt. XZ is unchanged.
  */
-export function updateBallGhost(ballPos) {
+export function updateBallGhost(ballPos, alpha = 1) {
   if (!_ghost || !_tableBox) return;
+  // `alpha` is the ball's retirement fade (see despawnBall) — the reflection
+  // goes with the thing it reflects.
+  if (alpha <= 0) { _ghost.visible = false; return; }
 
   const heightOverTable = ballPos.y - _tableY;
   if (heightOverTable < 0 || heightOverTable > GHOST_MAX_HEIGHT) {
@@ -85,6 +88,7 @@ export function updateBallGhost(ballPos) {
   // Color copy per frame while visible; the ball material's Color object
   // reference does not change on swap (setBallColor mutates in place).
   if (_syncedColor) _ghost.material.color.copy(_syncedColor);
+  _ghost.material.opacity = GHOST_OPACITY * alpha;
   _ghost.visible = true;
 }
 

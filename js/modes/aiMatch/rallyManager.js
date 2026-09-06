@@ -50,7 +50,7 @@
 import * as THREE from 'three';
 import { spawnBallAt, despawnBall } from '../../physics/ball.js';
 import { tableBox, tableSurfaceY, ballModel } from '../../scene/models.js';
-import { GRAVITY } from '../../physics/constants.js';
+import { GRAVITY, BALL_FADE_OUT_MS } from '../../physics/constants.js';
 import { hudLog } from '../../scene/hud.js';
 import { createRallyRules } from '../rallyRules.js';
 
@@ -82,11 +82,23 @@ const DEFAULT_CONFIG = Object.freeze({
 // who serves next without feeling rushed. Was 1200ms — too short to breathe.
 const NEXT_SERVE_DELAY_MS = 2500;
 
-// Once a point (or let) is decided, the old ball is removed after this beat.
-// Long enough for the player to SEE the deciding event (the second bounce,
-// the ball sailing long); short enough that nobody keeps rallying a dead
-// ball into the next serve window and mistakes it for live play.
-const POINT_END_DESPAWN_MS = 700;
+// Once a point (or let) is decided, the old ball is FORCED off the table
+// after this beat. This is a backstop, not the normal exit: the decided
+// point's ball is left alone to finish what it was doing — drop off the
+// edge, bounce out on the floor, dribble down off the net cord — and the
+// dead-ball damping in the physics layer (DEAD_BALL_COR_SCALE) settles it in
+// a few hops, at which point it retires itself through the stuck-ball path
+// and this timer finds nothing to do.
+//
+// Was 700 ms, which was shorter than the ending it was supposed to let the
+// player watch: the ball blinked out mid-bounce or mid-arc off the table,
+// then the table sat empty for the remaining 1.8 s of the serve delay. The
+// deciding event is exactly the thing you want to see play out, and on a net
+// cord or a double bounce it is still in motion at 700 ms.
+//
+// Sized against NEXT_SERVE_DELAY_MS: this plus the ball's fade must finish
+// before the next serve, so the table is always clear when it arrives.
+const POINT_END_DESPAWN_MS = 2000;
 
 // Receiver-readiness poll, and the cap on how long the serve will wait.
 //
@@ -149,23 +161,33 @@ export function createRallyManager({
   let nextServeTimer = null;
   let despawnTimer = null;
 
-  // Remove the dead ball a beat after the point/let is decided, so play
-  // visibly stops between points (one ball at a time, no phantom rallies).
+  // Mark the ball dead the moment the point/let is decided, and force it off
+  // the table if it is still moving when the serve window comes round.
   // Called by both finishRally and callLet immediately after they clear
   // rallyInProgress, which makes it the one place that always marks the ball
   // dead — the flag onPaddleHitInternal uses to ignore swings at a corpse.
+  //
+  // Two stages, because despawnBall dissolves a moving ball rather than
+  // cutting it (BALL_FADE_OUT_MS) and a ball you can still see is a ball
+  // someone can still swing at: ballDead has to outlast the pixels, not the
+  // timer. Clearing it on the ball's real disappearance rather than at the
+  // next serve keeps the dead window exactly as long as the dead BALL — a
+  // rally started by a paddle hit alone (headless callers, and the player's
+  // own serve stroke) still works the moment the table is clear.
+  //
+  // The second setTimeout reuses `despawnTimer` so there is still one handle
+  // to cancel in resetRallyState and dispose.
   function scheduleBallDespawn() {
     ballDead = true;
     if (despawnTimer) clearTimeout(despawnTimer);
     despawnTimer = setTimeout(() => {
-      despawnTimer = null;
-      // The corpse is gone, so there is nothing left to swing at and nothing
-      // left to ignore. Clearing here rather than at the next serve keeps the
-      // dead window exactly as long as the dead BALL — a rally started by a
-      // paddle hit alone (headless callers, and the player's own serve
-      // stroke) still works the moment the table is clear.
-      ballDead = false;
+      // No-op if the ball already settled and retired itself, which is the
+      // common case; otherwise this starts the fade.
       despawnBall();
+      despawnTimer = setTimeout(() => {
+        despawnTimer = null;
+        ballDead = false;
+      }, BALL_FADE_OUT_MS);
     }, POINT_END_DESPAWN_MS);
   }
 

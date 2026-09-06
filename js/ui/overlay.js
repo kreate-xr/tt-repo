@@ -1,11 +1,15 @@
 // Start-screen wiring. Two flows:
-//   - Solo: Enter MR / Desktop Preview → straight into XR
+//   - Solo: click a venue button (Mixed Reality / Focus Room) → straight
+//     into XR. The venue IS the entry point; there is no second Enter step.
+//     The Desktop Preview escape hatch is commented out for the beta launch
+//     (below, and in index.html).
 //   - Multiplayer: Create Room / Join Room → lobby negotiates a peer
-//     connection BEFORE entering XR, then both peers click Enter MR with the
+//     connection BEFORE entering XR, then both peers click a venue with the
 //     live NetworkManager handed through.
 
 import { friendlyLobbyError } from '../lobby/lobbyErrors.js';
 import { loadBestOf, saveBestOf, matchLengthLabel } from '../modes/matchFormat.js';
+import { mark, recordJoinFailure } from '../analytics/session.js';
 
 // LobbyManager drags in the signaling/WebRTC stack including the Firebase
 // SDK (~1 MB of parse on the Quest CPU) — lazy-loaded on the first
@@ -13,10 +17,9 @@ import { loadBestOf, saveBestOf, matchLengthLabel } from '../modes/matchFormat.j
 function loadLobbyManager() {
   return import('../lobby/LobbyManager.js');
 }
-import { XR_MODES, XR_MODE_STORAGE_KEY, resolveStoredMode } from './xrModes.js';
+import { XR_MODES } from './xrModes.js';
 
-export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, startDesktop }) {
-  const enterMRBtn = document.getElementById('enter-mr');
+export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, startDesktop */ }) {
   const createRoomBtn = document.getElementById('create-room');
   const joinRoomBtn = document.getElementById('join-room');
   const roomCodeInput = document.getElementById('room-code-input');
@@ -41,61 +44,54 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
   // so an abandoned attempt can never clobber the one that replaced it.
   let lobbySession = 0;
 
-  // XR mode toggle: 'ar' (passthrough MR, default) vs 'vr-focus' (the
-  // procedural Focus Room venue — js/scene/focusRoom.js). WebXR session type
-  // is fixed at request time so this is pre-session. Persisted so a
-  // returning player doesn't have to re-pick.
+  // XR venue buttons: 'ar' (passthrough MR) and 'vr-focus' (the procedural
+  // Focus Room venue — js/scene/focusRoom.js). Each button IS the entry
+  // point: one click requests that session type. WebXR fixes the session
+  // type at request time, which is why the venue is chosen out here rather
+  // than from inside a running session.
   //
-  // BETA LAUNCH: the GLB venues ('vr' stadium / 'vr-tt') remain disabled —
-  // a stored pre-beta value for either resolves to 'ar' WITHOUT being
-  // rewritten (see resolveStoredMode), so that choice comes back if the
-  // full venue picker returns.
-  let xrMode = 'ar';
-  try {
-    xrMode = resolveStoredMode(localStorage.getItem(XR_MODE_STORAGE_KEY));
-  } catch { // localStorage disabled — stick with default
-  }
-
-  const modeToggleWrap = document.createElement('div');
-  modeToggleWrap.id = 'xr-mode-toggle';
-  modeToggleWrap.style.cssText = `
-    display: flex; gap: 10px; flex-wrap: wrap;
-  `;
-  const modeBtns = XR_MODES.map((m) => {
-    const b = document.createElement('button');
-    b.type = 'button';
-    b.dataset.mode = m.id;
-    b.innerHTML = `<div style="font-weight:700">${m.label}</div><div style="font-size:0.75rem;opacity:0.75">${m.sub}</div>`;
-    b.style.cssText = `
-      padding: 9px 18px; border-radius: 12px; cursor: pointer;
-      background: #fff; color: #4b5268; transition: all 0.15s;
-      border: 2px solid #e6e9f4; font-family: inherit; text-align: center;
-      box-shadow: 0 4px 12px rgba(38,43,82,0.06);
-    `;
-    b.addEventListener('click', () => {
-      xrMode = m.id;
-      try { localStorage.setItem(XR_MODE_STORAGE_KEY, m.id); } catch {}
-      refreshModeBtns();
-    });
+  // BETA LAUNCH: the GLB venues ('vr' stadium / 'vr-tt') are absent from
+  // XR_MODES, so no button is built for them.
+  const modeSlot = document.getElementById('xr-mode-slot');
+  const venueBtns = XR_MODES.map((m) => {
+    let b = modeSlot ? modeSlot.querySelector(`button[data-mode="${m.id}"]`) : null;
+    if (!b) {
+      // Markup without this venue's button — build it, so a drifted
+      // index.html can never leave a shipped mode with no way in.
+      b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'enter-venue';
+      b.dataset.mode = m.id;
+      const text = document.createElement('span');
+      text.className = 'venue-text';
+      for (const [cls, val] of [['venue-label', m.label], ['venue-sub', m.sub]]) {
+        const span = document.createElement('span');
+        span.className = cls;
+        span.textContent = val;
+        text.append(span);
+      }
+      b.append(text);
+      (modeSlot || document.body).append(b);
+    }
+    // The visible label is just the venue name; the full call to action is
+    // the accessible one.
+    b.setAttribute('aria-label', m.cta);
+    b.addEventListener('click', () => enterVenue(m, b));
     return b;
   });
-  modeToggleWrap.append(...modeBtns);
-  // The landing page provides a dedicated slot; fall back to inserting
-  // before the Enter button for older markup.
-  const modeSlot = document.getElementById('xr-mode-slot');
-  if (modeSlot) modeSlot.append(modeToggleWrap);
-  else enterMRBtn.before(modeToggleWrap);
-  function refreshModeBtns() {
-    for (const b of modeBtns) {
-      const active = b.dataset.mode === xrMode;
-      b.style.borderColor = active ? '#4f46e5' : '#e6e9f4';
-      b.style.background  = active ? 'rgba(79,70,229,0.08)' : '#fff';
-      b.style.color       = active ? '#4f46e5' : '#4b5268';
+
+  // Both venues ship disabled in the markup. Arming them here is the whole
+  // "not until the page is ready" rule: wireOverlay runs at the end of
+  // main.js, i.e. only once the scene and in-game module graph has been
+  // imported, so a click can never land on a half-loaded app.
+  let entryGateOpen = false;
+  function setEntryEnabled(enabled, hint) {
+    entryGateOpen = enabled;
+    for (const b of venueBtns) {
+      b.disabled = !enabled || entering;
+      b.title = enabled ? '' : (hint || '');
     }
-    const activeMode = XR_MODES.find((m) => m.id === xrMode);
-    enterMRBtn.textContent = activeMode ? activeMode.cta : 'Enter Mixed Reality';
   }
-  refreshModeBtns();
 
   function setMpStatus(text, isError = false) {
     if (!mpStatusEl) return;
@@ -103,23 +99,38 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     mpStatusEl.style.color = isError ? '#dc2626' : '#4f46e5';
   }
 
-  function setEnterMrEnabled(enabled, hint) {
-    enterMRBtn.disabled = !enabled;
-    enterMRBtn.title = enabled ? '' : (hint || '');
-  }
-
-  enterMRBtn.addEventListener('click', () => {
+  // Entry is not instant — on a re-entry startInGame deliberately waits out
+  // the previous session's runtime teardown before asking for a new one, and
+  // then downloads assets. Without feedback that reads as a dead button, and
+  // the extra clicks it invites are exactly what used to collide with the
+  // session request. Both venues stay disabled for the duration; the start
+  // screen is hidden long before this resolves, so the restore lands out of
+  // sight.
+  let entering = false;
+  function enterVenue(mode, btn) {
+    if (entering || !entryGateOpen) return;
     // If a lobby negotiation is in flight but hasn't produced a NetworkManager
-    // yet, entering MR would silently drop into solo mode. Block the click.
+    // yet, entering XR would silently drop into solo mode. Block the click.
     if (lobby && !pendingNetworkManager) {
       setMpStatus('Still connecting to your opponent — wait for the ✓ Connected message (or click Create/Join again to start over).', true);
       return;
     }
-    startInGame({
+    entering = true;
+    const labelEl = btn.querySelector('.venue-label');
+    const label = labelEl ? labelEl.textContent : '';
+    if (labelEl) labelEl.textContent = 'Starting…';
+    for (const b of venueBtns) b.disabled = true;
+    const restore = (err) => {
+      if (err) console.error('startInGame failed:', err);
+      entering = false;
+      if (labelEl) labelEl.textContent = label;
+      for (const b of venueBtns) b.disabled = !entryGateOpen;
+    };
+    const entry = startInGame({
       overlay,
       loadingScreen,
       statusEl,
-      xrMode,
+      xrMode: mode.id,
       multiplayer: pendingNetworkManager
         ? {
             networkManager: pendingNetworkManager,
@@ -129,22 +140,37 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
           }
         : null,
     });
-  });
-
-  let enterDesktopBtn = document.getElementById('enter-desktop');
-  if (!enterDesktopBtn) {
-    enterDesktopBtn = document.createElement('button');
-    enterDesktopBtn.id = 'enter-desktop';
-    enterDesktopBtn.textContent = 'Desktop Preview';
-    enterDesktopBtn.style.cssText = `
-      margin-top: 12px; padding: 12px 36px; font-size: 1rem;
-      border: 2px solid rgba(255,255,255,0.2); border-radius: 12px;
-      background: transparent; color: #aaa; cursor: pointer;
-      transition: all 0.2s;
-    `;
-    enterMRBtn.after(enterDesktopBtn);
+    // startInGame resolves once the session is live (not when it ends), so the
+    // buttons are armed again by the time the player is back on this screen.
+    Promise.resolve(entry).then(() => restore(), restore);
   }
-  enterDesktopBtn.addEventListener('click', () => startDesktop({ overlay, loadingScreen, statusEl }));
+
+  setEntryEnabled(true);
+  // The funnel's second step: modules are loaded and the venue buttons are
+  // live. A big gap between pageLoad and this one is a bundle problem; a big
+  // drop-off AFTER it is a "player looked at the page and left" problem.
+  mark('entryArmed');
+
+  // BETA LAUNCH: no Desktop Preview on the landing page — the two venue
+  // buttons above are the whole choice. This block also *created* the button when the
+  // markup lacked it, so it has to stay off for the markup change to hold.
+  // Re-enable together with the button in index.html (and the startDesktop
+  // param in the signature above).
+  //
+  // let enterDesktopBtn = document.getElementById('enter-desktop');
+  // if (!enterDesktopBtn) {
+  //   enterDesktopBtn = document.createElement('button');
+  //   enterDesktopBtn.id = 'enter-desktop';
+  //   enterDesktopBtn.textContent = 'Desktop Preview';
+  //   enterDesktopBtn.style.cssText = `
+  //     margin-top: 12px; padding: 12px 36px; font-size: 1rem;
+  //     border: 2px solid rgba(255,255,255,0.2); border-radius: 12px;
+  //     background: transparent; color: #aaa; cursor: pointer;
+  //     transition: all 0.2s;
+  //   `;
+  //   modeSlot.append(enterDesktopBtn);
+  // }
+  // enterDesktopBtn.addEventListener('click', () => startDesktop({ overlay, loadingScreen, statusEl }));
 
   function wireHelloEcho(nm, role) {
     nm.on('eventMessage', (msg) => {
@@ -172,8 +198,8 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     pendingNetworkManager = nm;
     wireHelloEcho(nm, role);
     nm.sendEvent({ type: 'HELLO', from: role });
-    setMpStatus(`✓ Opponent connected! Click “${enterMRBtn.textContent}” — start playing once you're both in.`);
-    setEnterMrEnabled(true);
+    setMpStatus(`✓ Opponent connected! Click ${XR_MODES.map((m) => `“${m.label}”`).join(' or ')} — start playing once you're both in.`);
+    setEntryEnabled(true);
   }
 
   async function handleCreate() {
@@ -182,7 +208,7 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     // Latch the format for this room before the first await — resetLobby just
     // cleared it, and from here on it is what the guest will be playing.
     hostBestOf = bestOfSelect ? saveBestOf(bestOfSelect.value) : loadBestOf();
-    setEnterMrEnabled(false, 'Waiting for opponent…');
+    setEntryEnabled(false, 'Waiting for opponent…');
     setMpStatus('Creating room…');
     try {
       const { LobbyManager } = await loadLobbyManager();
@@ -204,9 +230,11 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     } catch (err) {
       if (lobbySession !== mySession) return; // failure from an attempt we already abandoned
       console.error('createRoom failed:', err);
+      // The one failure we cannot reproduce and the player will never report.
+      recordJoinFailure('host', err);
       setMpStatus(friendlyLobbyError(err, ''), true);
       await resetLobby();
-      setEnterMrEnabled(true);
+      setEntryEnabled(true);
     }
   }
 
@@ -218,7 +246,7 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     }
     await resetLobby();
     const mySession = lobbySession;
-    setEnterMrEnabled(false, 'Connecting to host…');
+    setEntryEnabled(false, 'Connecting to host…');
     setMpStatus(`Joining ${code}…`);
     try {
       const { LobbyManager } = await loadLobbyManager();
@@ -230,9 +258,10 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame, sta
     } catch (err) {
       if (lobbySession !== mySession) return;
       console.error('joinRoom failed:', err);
+      recordJoinFailure('guest', err);
       setMpStatus(friendlyLobbyError(err, code), true);
       await resetLobby();
-      setEnterMrEnabled(true);
+      setEntryEnabled(true);
     }
   }
 

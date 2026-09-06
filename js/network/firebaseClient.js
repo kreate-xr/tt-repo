@@ -16,8 +16,9 @@
 // Anonymous-auth gate. Never use open rules in production.
 
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { getAuth, signInAnonymously } from 'firebase/auth';
+import { traceBoot } from './connectTrace.js';
 
 function readConfig() {
   const env = (typeof import.meta !== 'undefined' && import.meta.env) || {};
@@ -59,6 +60,14 @@ export function getDb() {
   return db;
 }
 
+// The Auth handle itself, for js/auth/upgrade.js — linkWithPopup needs the
+// instance, not just the current user. Everything else should keep going
+// through ensureAnonymousAuth() below.
+export function getAuth_() {
+  if (!auth) initFirebase();
+  return auth;
+}
+
 // Idempotent anonymous sign-in — the SignalingClient calls this before any
 // Firestore read/write so security rules can require request.auth != null.
 export function ensureAnonymousAuth() {
@@ -74,4 +83,52 @@ export function ensureAnonymousAuth() {
       throw err;
     });
   return signedInPromise;
+}
+
+// Speculative warm-up, called when the player opens the multiplayer lobby
+// rather than when they press CREATE/JOIN.
+//
+// WHY. Everything this touches is cold on the first attempt and all of it sits
+// on the critical path of SignalingClient.connect(): initializeApp +
+// getFirestore + getAuth, a full HTTPS round trip to identitytoolkit for the
+// anonymous sign-in, then the first Firestore round trip, which is what
+// actually opens the backend channel. On Quest Wi-Fi that is seconds, and
+// every promise continuation in the chain is queued behind a rendered frame —
+// so it costs more in a VR venue, which has far less per-frame slack than an
+// MR passthrough scene, than it does in MR. Paying it while the player is
+// still choosing CREATE vs JOIN (or typing six characters on the in-XR
+// keyboard) takes it out of the wait they actually feel.
+//
+// Never rejects: a warm that doesn't work leaves the cold path exactly as it
+// was, and ensureAnonymousAuth already drops its own memo on failure.
+let warmed = false;
+
+export function prewarmSignaling() {
+  if (warmed) return Promise.resolve();
+  warmed = true;
+  // readConfig() throws SYNCHRONOUSLY on a missing VITE_FIREBASE_*, and
+  // ensureAnonymousAuth reaches it via initFirebase() before it returns a
+  // promise — so this needs try/catch, not just a .catch().
+  try {
+    return ensureAnonymousAuth()
+      // A get on a doc id that can never be a room code: ROOM_CODE_ALPHABET
+      // omits 0 and 1, and codes are 6 chars, not 7. firestore.rules allows
+      // `get: if signedIn()`, so this reads a document that does not exist —
+      // it creates nothing, writes nothing, and consumes no code. Its only
+      // job is to open the Firestore channel.
+      .then(() => getDoc(doc(getDb(), 'rooms', '0warmup')))
+      .then(
+        () => { traceBoot('firebase init + anon auth warm done'); },
+        (err) => {
+          warmed = false; // let a later CREATE/JOIN retry from cold
+          traceBoot('firebase warm FAILED', (err && err.code) || '');
+          console.warn('[multiplayer] signaling warm-up failed (harmless):', err && err.code);
+        }
+      );
+  } catch (err) {
+    warmed = false;
+    traceBoot('firebase warm unavailable', (err && err.message) || '');
+    console.warn('[multiplayer] signaling warm-up unavailable:', err && err.message);
+    return Promise.resolve();
+  }
 }

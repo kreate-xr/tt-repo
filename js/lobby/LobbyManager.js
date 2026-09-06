@@ -20,6 +20,13 @@ import { getDefaultIceServers } from '../network/iceConfig.js';
 import { generateRoomCode } from './roomCodes.js';
 import { traceStart } from '../network/connectTrace.js';
 
+// Re-exported so inGame.js can reach the warm-up through the dynamic import it
+// already makes for this module. It must NOT import firebaseClient.js
+// directly: that module statically imports firebase/app|firestore|auth, so a
+// static import from the main bundle would pull the whole ~368 KB SDK into the
+// entry chunk and undo the code-split this lazy load exists for.
+export { prewarmSignaling } from '../network/firebaseClient.js';
+
 // A generated code that lands on somebody else's live room is re-rolled
 // rather than failing the host outright (SignalingClient throws
 // ROOM_CODE_COLLISION for that case). Bounded, because a misconfigured rules

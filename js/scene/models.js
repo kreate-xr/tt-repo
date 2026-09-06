@@ -9,8 +9,12 @@ import { detectDiscCollision } from '../physics/collisions.js';
 // createBallSeamTexture is only used by the commented-out fallback ball.
 import { compositeSpinMarkings } from './ballTexture.js';
 // import { createBallSeamTexture } from './ballTexture.js';
-import { createBallShadow } from './ballShadow.js';
-import { createBallGhost } from './ballGhost.js';
+// TEMP (headset A/B): both depth cues are disabled at their call sites below,
+// so their imports are commented out too — same convention as the fallback
+// ball texture above and the parked desktop mode in js/main.js. Restore these
+// two lines together with the createBallShadow/createBallGhost calls.
+// import { createBallShadow } from './ballShadow.js';
+// import { createBallGhost } from './ballGhost.js';
 import { refineBallGeometry } from './ballGeometry.js';
 import { ballEnvMap } from './sceneSetup.js';
 import { enhancePaddleMaterial } from './paddleMaterial.js';
@@ -138,6 +142,33 @@ export function setBallColor(colorId) {
     if (!mat) continue;
     mat.color.copy(newColor);
     mat.needsUpdate = true;
+  }
+}
+
+// Ball alpha, for the retirement fade the physics layer runs when a decided
+// point's ball has to be taken off the table while it is still moving (see
+// despawnBall in physics/ball.js). Alpha 1 puts the material back to fully
+// opaque so the next spawn is unaffected.
+//
+// depthWrite deliberately STAYS on while transparent. The ball is a closed
+// convex sphere, so writing depth keeps only the front-most fragments and the
+// fading ball reads as a solid ball getting fainter. Turning depthWrite off —
+// the usual reflex for transparent materials — lets the far hemisphere show
+// through the near one, which at these alphas looks like a rendering fault
+// rather than a fade.
+export function setBallOpacity(alpha) {
+  const a = Math.max(0, Math.min(1, alpha));
+  for (const mesh of _ballMaterialMeshes) {
+    const mat = mesh.material;
+    if (!mat) continue;
+    // `transparent` flips the material between render queues, which costs a
+    // shader recompile; only touch it when it actually changes.
+    const wantTransparent = a < 1;
+    if (mat.transparent !== wantTransparent) {
+      mat.transparent = wantTransparent;
+      mat.needsUpdate = true;
+    }
+    mat.opacity = a;
   }
 }
 
@@ -810,7 +841,8 @@ export async function loadModels(loadingScreen, statusEl) {
       mesh.castShadow = false;
       mesh.receiveShadow = false;
     }
-    const ballMesh = ballMeshes[0];
+    // Only consumer is the parked createBallGhost call below — restore with it.
+    // const ballMesh = ballMeshes[0];
     ballModel.add(ballRoot);
     ballModel.visible = false;
     scene.add(ballModel);

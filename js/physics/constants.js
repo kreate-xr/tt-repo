@@ -236,14 +236,21 @@ export let TABLE_MU = TABLE_MU_REFERENCE;
 //
 // Reference point, the ITTF certification test: a 30 cm drop (impact ≈
 // 2.4 m/s) must rebound ~23 cm, i.e. e ≈ 0.88 at that speed. Median 0.82 with
-// V* = 8 hit that dead on (e(5) ≈ 0.83, e(10) ≈ 0.77 — measured high-speed
-// table data). The default now sits at 0.92, a lively-table feel choice above
-// certification: e(2.4) ≈ 0.98, e(5) ≈ 0.93, e(10) ≈ 0.87. Bounces sit
-// noticeably higher and rallies run longer than on a regulation table. Drop
-// back to 0.82 here (or via the PhysicsTuner panel) for certified behavior.
+// V* = 8 hits that dead on (e(5) ≈ 0.83, e(10) ≈ 0.77 — measured high-speed
+// table data), and that is what we ship: this deck plays like a regulation
+// one, in every mode.
+//
+// It previously sat at 0.92, a lively-table feel choice above certification.
+// The real cost of that was not the median but the COR_MAX clamp: 0.92 + the
+// 0.13 low-speed lift pinned the curve flat at 0.95 for every impact under
+// ~4 m/s, which is most of a rally — so the speed-dependence this curve
+// exists to model was invisible in normal play and only reappeared on hard
+// smashes. At 0.82 the clamp is out of the way and soft drops, drives and
+// slams again bounce measurably differently.
+//
 // The earlier tuning (median 0.75, V* = 4) gave e(2.4) ≈ 0.76 — well under
 // regulation, and it read as "dead table" rather than "weighty ball."
-export let TABLE_RESTITUTION = 0.92;
+export let TABLE_RESTITUTION = 0.82;
 export const TABLE_RESTITUTION_HI_OFFSET = 0.13;   // low-speed lift
 export const TABLE_RESTITUTION_LO_OFFSET = -0.13;  // high-speed loss
 export const TABLE_RESTITUTION_V_STAR    = 8.0;    // m/s transition scale
@@ -336,6 +343,26 @@ export let PADDLE_RESTITUTION = WEIGHTY_BALL_ENABLED ? 0.82 : 0.9;
 export const PADDLE_RESTITUTION_HI_OFFSET = 0.08;   // low-speed lift
 export const PADDLE_RESTITUTION_LO_OFFSET = -0.10;  // high-speed loss
 export const PADDLE_RESTITUTION_V_STAR    = 6.0;    // m/s transition scale
+
+// NO multiplayer-only COR scale. There was one (0.75) for a while, because
+// pace compounds between two humans and does not against the AI — paddleSolver
+// inverts a target landing point through (1 + e), so a livelier face just makes
+// the AI swing softer and its returns arrive at the same planned pace.
+//
+// It was the wrong term. The energy that compounded was entering through the
+// TANGENTIAL friction kick, which impulse.js locks to spin capture via
+// HOLLOW_SPHERE_MOI_FACTOR and which PLAYER_SPIN_GAIN was multiplying by 2.5;
+// PADDLE_CONTACT_SPEED_CAP bounds only the normal component, so that channel
+// was unbounded. Trimming the normal-axis COR to compensate deadened clean
+// drives while leaving the actual amplification untouched.
+//
+// The real asymmetry was that the AI has a biomechanical governor (its windup
+// distance is capped at WINDUP_DISTANCE_MAX_M and its plans are speed-
+// validated) and the player had none: a VR flick costs the same 150 ms no
+// matter what is coming across the net. swingPreparation.js gives the player
+// the same constraint, so the loop damps itself in both modes and the bat is
+// one bat again. Do not reintroduce a per-mode COR — if multiplayer pace still
+// feels wrong, the honest knobs are the preparation ramp thresholds.
 
 // Asymptotic ceiling on effective paddle contact speed fed to the impulse
 // math. Represents the maximum face velocity a human arm can realistically
@@ -567,6 +594,15 @@ export const STATIONARY_TIME = 0.9;     // seconds
 // bounces that matter for aiming, so they stay on the undamped shared math.
 export const DEAD_BALL_BOUNCES = 3;      // bounces since last paddle contact
 export const DEAD_BALL_COR_SCALE = 0.65; // extra v_y loss per dead bounce
+
+// Retirement fade. When a point is decided the ball is left alone to finish
+// its bounce (see POINT_END_DESPAWN_MS in aiMatch/rallyManager.js) — the
+// dead-ball damping above means it usually settles and retires itself long
+// before the next serve. The forced removal is only the backstop for a ball
+// still moving when the serve window arrives, and hiding THAT one in a
+// single frame is the "ball vanishes mid-bounce" artefact this avoids: it
+// dissolves over this window instead, still rolling as it goes.
+export const BALL_FADE_OUT_MS = 250;
 
 // Rolling friction on the table. Applied per frame while the ball is
 // resting on the surface (y at rest, |v_y| tiny). Without this, once a ball

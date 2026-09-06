@@ -5,7 +5,10 @@ const THREE = require('three');
 import {
   planTrajectory,
   interpolateTrajectory,
-  NUM_KEYFRAMES,
+  followThroughMs,
+  NUM_WINDUP_KEYFRAMES,
+  SWING_KEYFRAME_MAX_SPAN_MS,
+  swingKeyframeCount,
   WINDUP_FRACTION,
   SWING_FRACTION,
   _internals,
@@ -14,6 +17,16 @@ import {
 const { quinticAt, quinticDerivAt, slerpVec3 } = _internals;
 
 function v(x, y, z) { return new THREE.Vector3(x, y, z); }
+
+// The keyframe AT the contact instant. The plan now continues past it for the
+// follow-through, so the contact pose is no longer the last sample.
+function contactKeyframe(r, timeBudgetMs) {
+  let best = r.keyframes[0];
+  for (const k of r.keyframes) {
+    if (Math.abs(k.time_ms - timeBudgetMs) < Math.abs(best.time_ms - timeBudgetMs)) best = k;
+  }
+  return best;
+}
 
 function defaultArgs() {
   return {
@@ -30,11 +43,41 @@ function defaultArgs() {
 // --- planTrajectory --------------------------------------------------------
 
 describe('planTrajectory — keyframe shape', () => {
-  test('emits exactly 8 keyframes spanning [0, timeBudgetMs]', () => {
-    const r = planTrajectory(defaultArgs());
-    expect(r.keyframes).toHaveLength(NUM_KEYFRAMES);
+  test('spans [0, timeBudgetMs] plus the follow-through', () => {
+    const args = defaultArgs();
+    const r = planTrajectory(args);
     expect(r.keyframes[0].time_ms).toBeCloseTo(0, 6);
-    expect(r.keyframes[NUM_KEYFRAMES - 1].time_ms).toBeCloseTo(400, 6);
+    expect(contactKeyframe(r, 400).time_ms).toBeCloseTo(400, 6);
+    const ftMs = followThroughMs(
+      args.contactPos, args.contactPaddleVelocity.clone().normalize(),
+      args.contactPaddleVelocity.length(), null);
+    expect(ftMs).toBeGreaterThan(0);
+    expect(r.keyframes[r.keyframes.length - 1].time_ms).toBeCloseTo(400 + ftMs, 6);
+  });
+
+  // The whole point of the phase-aware spacing: the FSM reads paddle velocity
+  // as a per-frame finite difference of a LINEAR interpolation of these
+  // samples, so a swing segment longer than a display frame delivers the
+  // chord average of an accelerating curve instead of its derivative. See the
+  // note at the top of interception.js, and executionGap.test.js.
+  test('swing samples are spaced under a display frame', () => {
+    for (const timeBudgetMs of [150, 250, 400, 700]) {
+      const r = planTrajectory({ ...defaultArgs(), timeBudgetMs });
+      const windupMs = timeBudgetMs * WINDUP_FRACTION;
+      for (let i = 1; i < r.keyframes.length; i++) {
+        if (r.keyframes[i].time_ms <= windupMs) continue;
+        const span = r.keyframes[i].time_ms - r.keyframes[i - 1].time_ms;
+        expect(span).toBeLessThanOrEqual(SWING_KEYFRAME_MAX_SPAN_MS + 1e-9);
+      }
+    }
+  });
+
+  test('windup keeps its coarse spacing — only the swing is densified', () => {
+    const r = planTrajectory(defaultArgs());
+    const windupMs = 400 * WINDUP_FRACTION;
+    const windupSamples = r.keyframes.filter((k) => k.time_ms <= windupMs);
+    expect(windupSamples).toHaveLength(NUM_WINDUP_KEYFRAMES);
+    expect(swingKeyframeCount(400 * SWING_FRACTION)).toBeGreaterThan(NUM_WINDUP_KEYFRAMES);
   });
 
   test('first keyframe pose equals currentPos / currentFaceNormal', () => {
@@ -47,10 +90,10 @@ describe('planTrajectory — keyframe shape', () => {
     expect(r.keyframes[0].faceNormal.length()).toBeCloseTo(1, 5);
   });
 
-  test('last keyframe position equals contactPos and face equals solver normal', () => {
+  test('contact keyframe position equals contactPos and face equals solver normal', () => {
     const args = defaultArgs();
     const r = planTrajectory(args);
-    const last = r.keyframes[NUM_KEYFRAMES - 1];
+    const last = contactKeyframe(r, 400);
     expect(last.position.x).toBeCloseTo(args.contactPos.x, 6);
     expect(last.position.y).toBeCloseTo(args.contactPos.y, 6);
     expect(last.position.z).toBeCloseTo(args.contactPos.z, 6);
@@ -241,7 +284,7 @@ describe('planTrajectory — telegraphLeadMs face reveal', () => {
     for (const telegraphLeadMs of [null, 150, 350]) {
       const args = { ...defaultArgs(), telegraphLeadMs };
       const r = planTrajectory(args);
-      const last = r.keyframes[NUM_KEYFRAMES - 1];
+      const last = contactKeyframe(r, 400);
       expect(last.faceNormal.x).toBeCloseTo(args.contactFaceNormal.x, 4);
       expect(last.faceNormal.y).toBeCloseTo(args.contactFaceNormal.y, 4);
       expect(last.faceNormal.z).toBeCloseTo(args.contactFaceNormal.z, 4);
@@ -261,14 +304,14 @@ describe('planTrajectory — telegraphLeadMs face reveal', () => {
     // the true contact face at least once.
     const contactFace = args.contactFaceNormal;
     let sawDisguise = false;
-    for (const kf of r.keyframes.slice(0, NUM_KEYFRAMES - 1)) {
+    for (const kf of r.keyframes.filter((k) => k.time_ms < 600)) {
       const toDisguise = Math.acos(Math.min(1, kf.faceNormal.dot(disguise)));
       const toContact = Math.acos(Math.min(1, kf.faceNormal.dot(contactFace)));
       if (toDisguise < 0.15 && toDisguise < toContact) sawDisguise = true;
     }
     expect(sawDisguise).toBe(true);
     // And the wrist snap lands on the truth.
-    const last = r.keyframes[NUM_KEYFRAMES - 1];
+    const last = contactKeyframe(r, 600);
     expect(last.faceNormal.x).toBeCloseTo(contactFace.x, 4);
     expect(last.faceNormal.y).toBeCloseTo(contactFace.y, 4);
     expect(last.faceNormal.z).toBeCloseTo(contactFace.z, 4);
@@ -318,8 +361,7 @@ describe('planTrajectory — stays above the table on upward strikes', () => {
       }
     }
     // The clamp must not disturb the contact itself (it is above the felt).
-    const last = r.keyframes[r.keyframes.length - 1];
-    expect(last.position.y).toBeCloseTo(0.92, 6);
+    expect(contactKeyframe(r, 600).position.y).toBeCloseTo(0.92, 6);
   });
 
   test('windup pull-back is capped at a human backswing', () => {
@@ -329,7 +371,10 @@ describe('planTrajectory — stays above the table on upward strikes', () => {
     // the actual planned pull-back from the emitted keyframes instead: no
     // keyframe may sit further than the cap from the contact.
     const CAP_M = 0.85;
-    for (const k of r.keyframes.slice(3)) { // swing-adjacent frames
+    // Swing-phase frames only; the windup bezier starts from currentPos,
+    // which is legitimately further away than the pull-back cap.
+    const windupMs = args.timeBudgetMs * WINDUP_FRACTION;
+    for (const k of r.keyframes.filter((kf) => kf.time_ms >= windupMs)) {
       expect(k.position.distanceTo(args.contactPos)).toBeLessThanOrEqual(CAP_M + 0.15);
     }
   });

@@ -81,8 +81,9 @@ export function createBallShadow(scene, tableSurfaceY, tableBox = null) {
  * depth reference across the full trajectory. Call once per physics/render
  * tick, AFTER the ball's position for this frame has been integrated.
  */
-export function updateBallShadow(ballPos) {
+export function updateBallShadow(ballPos, alpha = 1) {
   if (!_blob) return;
+  if (alpha <= 0) { _blob.visible = false; return; }
 
   // Below the table: hide. Being *below* usually means the ball has passed
   // the edge and dropped — no shadow makes sense.
@@ -110,7 +111,11 @@ export function updateBallShadow(ballPos) {
   const scale = Math.min(1 + h * GROW_PER_METRE, MAX_SCALE);
 
   _blob.position.set(ballPos.x, _tableY + 0.001, ballPos.z);
-  _blob.material.opacity = opacity;
+  // `alpha` is the ball's own retirement fade (see despawnBall). The blob is
+  // the ball's ground-contact cue, so it has to dissolve with it — left at
+  // full strength it would sit on the table for a beat after the ball itself
+  // had gone, which reads as a stain rather than a shadow.
+  _blob.material.opacity = opacity * alpha;
   _blob.scale.setScalar(scale);
   _blob.visible = true;
 }

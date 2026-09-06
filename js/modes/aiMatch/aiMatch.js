@@ -49,6 +49,7 @@ import { createFailureHandler } from './failureHandler.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
 import { createMatchReport } from '../../scene/matchReport.js';
 import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
+import { mark, setMatchSummary } from '../../analytics/session.js';
 // BETA LAUNCH: stadium venue disabled (see js/ui/overlay.js) — these imports
 // are commented out so the stadium/crowd modules are tree-shaken out of the
 // shipped bundle. Restore together with the mount block further down.
@@ -311,6 +312,9 @@ export function createAIMatchDrill({
       // Same contact, richer bookkeeping: the end-of-match report also wants
       // the spin mix and (via the point verdicts) how many of these landed.
       statTracker.recordShot({ outSpeed: info.outSpeed, spinType: info.spinType });
+      // Funnel: the first paddle contact is the first moment we know the
+      // player got past loading and is actually playing.
+      mark('firstRally');
       const rolloutResult = shotAdapter.getLastRollout();
       // Spin-blind read for the AI's initial approach — see READ_LATENCY_MS
       // in aiFSM. Passing it is optional; the FSM falls back to the true
@@ -601,9 +605,6 @@ export function createAIMatchDrill({
   // canvas + texture upload doesn't land on the frame that also runs the
   // celebration lighting and crowd audio.
   const report = createMatchReport();
-  // Let the match-point celebration land before the card covers the table.
-  const REPORT_DELAY_MS = 3500;
-  let reportTimer = null;
   // Flips when the card first goes up. Gates the drill's `panel` getter (see
   // the return block) so the panel only exists once there is a match to report.
   let matchDone = false;
@@ -753,9 +754,10 @@ export function createAIMatchDrill({
     // history row is complete by now.
     clearInterval(clockTimer);
     updateBoards({ elapsedMs: performance.now() - matchStartMs });
-    const banner = e.winner === 'player' ? 'YOU WIN!' : 'AI WINS';
-    if (scoreboard) scoreboard.setMatchOverBanner(banner);
-    if (stadiumScoreboard) stadiumScoreboard.setMatchOverBanner(banner);
+    // The win message is NOT bannered across the scoreboard any more — it
+    // masked the live score with a box shorter than the 270px digits, so the
+    // numbers poked out under it. The result belongs on the report card
+    // (showReport's title), which is where the player looks next anyway.
     // Full-arena celebration: sustained roar on the winner's side + polite
     // applause on the loser's side (see crowdAudio.playMatchWon).
     if (crowdAudio) crowdAudio.playMatchWon(e.winner);
@@ -771,14 +773,12 @@ export function createAIMatchDrill({
     }
     // Match's over — retire the serve cue.
     if (serveArrow) serveArrow.hide();
-    // End-of-match card. Delayed so the celebration (crowd roar, lighting
-    // sweep, the winning point still on the table) gets its moment before a
-    // panel lands in front of the player's face.
+    // End-of-match card, immediately: with the scoreboard banner gone this is
+    // the only place the result is announced, so it goes up on the same frame
+    // the match ends rather than after a delay that read as a hang. The
+    // celebration (crowd roar, lighting sweep) plays on behind it.
     statTracker.stop();
-    reportTimer = setTimeout(() => {
-      reportTimer = null;
-      showReport(e);
-    }, REPORT_DELAY_MS);
+    showReport(e);
   });
 
   // Populate and raise the end-of-match card.
@@ -787,7 +787,10 @@ export function createAIMatchDrill({
       player: g.playerScore, opponent: g.aiScore,
     }));
     const s = statTracker.getStats();
+    setMatchSummary(s);
     report.setModel({
+      // The headline the scoreboard banner used to carry.
+      title: e.winner === 'player' ? 'YOU WIN!' : 'AI WINS',
       playerName: 'YOU',
       opponentName: 'AI',
       playerGames: e.playerGames,
@@ -906,7 +909,6 @@ export function createAIMatchDrill({
     failureHandler.dispose();
     rallyManager.dispose();
     clearInterval(clockTimer);
-    if (reportTimer) { clearTimeout(reportTimer); reportTimer = null; }
     report.dispose();
     if (scoreboard) scoreboard.dispose();
     if (stadiumScoreboard) stadiumScoreboard.dispose();

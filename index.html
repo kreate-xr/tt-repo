@@ -20,8 +20,16 @@
   <link rel="preload" href="/sounds/Paddle_Hit_Self.wav" as="fetch" crossorigin>
   <link rel="preload" href="/sounds/Paddle_Hit_Opponent.wav" as="fetch" crossorigin>
   <!-- Create/Join talks to Firestore for signaling — skip the cold
-       DNS+TLS handshake on the first click. -->
+       DNS+TLS handshake on the first click. identitytoolkit is the
+       accounts:signUp host for a first-time anonymous sign-in, securetoken the
+       refresh host a returning player hits instead; signInAnonymously is the
+       FIRST request of the handshake, before any Firestore traffic. Chromium
+       drops unused preconnected sockets after ~10s, so these only help the 2D
+       start screen — the in-XR lobby is covered by prewarmSignaling() instead.
+       All three are already allowed by the CSP's https://*.googleapis.com. -->
   <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
+  <link rel="preconnect" href="https://securetoken.googleapis.com" crossorigin>
   <!-- og:url / twitter:site are omitted on purpose: the production domain
        isn't final yet. Crawlers fall back to the request URL. -->
   <meta property="og:type" content="website">
@@ -33,6 +41,10 @@
   <meta name="twitter:card" content="summary_large_image">
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    /* A class that sets `display` beats the UA sheet's [hidden] rule — and
+       .join-row is display:flex, so el.hidden alone would not hide the email
+       row after a successful signup. This makes the attribute authoritative. */
+    [hidden] { display: none !important; }
 
     :root {
       --ink: #0f1222;
@@ -148,7 +160,7 @@
 
     .hero-bg {
       background:
-        linear-gradient(90deg, rgba(244, 246, 253, 0.92) 0%, rgba(244, 246, 253, 0.55) 30%, rgba(244, 246, 253, 0) 55%),
+        linear-gradient(90deg, var(--page) 0%, var(--page) 30%, rgba(244, 246, 253, 0.82) 46%, rgba(244, 246, 253, 0) 74%),
         linear-gradient(180deg, rgba(244, 246, 253, 0) 80%, var(--page) 100%),
         url('/bg.webp') no-repeat right center / cover;
     }
@@ -164,6 +176,8 @@
       margin: 0 auto;
     }
 
+    .hero-copy { max-width: 540px; }
+
     .badge {
       display: inline-flex;
       align-items: center;
@@ -173,10 +187,10 @@
       border: 1px solid var(--line);
       border-radius: 999px;
       box-shadow: var(--shadow-card);
-      font-size: 0.9rem;
+      font-size: 0.84rem;
       color: var(--ink-soft);
       font-weight: 600;
-      margin-bottom: 26px;
+      margin-bottom: 22px;
     }
     .badge .chip {
       display: inline-flex;
@@ -192,11 +206,11 @@
     .badge .chip svg { width: 15px; height: 15px; }
 
     .hero h1 {
-      font-size: clamp(2.4rem, 5.2vw, 4.1rem);
-      line-height: 1.06;
+      font-size: clamp(2rem, 4vw, 3.2rem);
+      line-height: 1.08;
       letter-spacing: -0.03em;
       font-weight: 800;
-      margin-bottom: 18px;
+      margin-bottom: 22px;
     }
     .hero h1 .grad {
       background: var(--brand-grad);
@@ -205,54 +219,60 @@
       -webkit-text-fill-color: transparent;
     }
 
-    .hero .sub {
-      color: var(--ink-soft);
-      font-size: 1.08rem;
-      line-height: 1.6;
-      max-width: 46ch;
-      margin-bottom: 24px;
-    }
-
-    /* Slot for JS-injected pre-session options */
-    #xr-mode-slot { margin-bottom: 18px; }
-
     .hero-actions {
       display: flex;
       flex-wrap: wrap;
-      align-items: center;
+      align-items: stretch;
       gap: 14px;
     }
 
-    #enter-mr {
+    .enter-venue {
       display: inline-flex;
       align-items: center;
       gap: 10px;
-      padding: 15px 28px;
-      font-size: 1.05rem;
-      border: none;
+      padding: 11px 18px;
+      border: 1px solid var(--line);
       border-radius: 16px;
-      background: var(--brand-grad);
-      color: #fff;
-      font-weight: 700;
+      background: var(--surface);
+      color: var(--ink);
+      font-family: inherit;
+      text-align: left;
       cursor: pointer;
-      box-shadow: var(--shadow-cta);
-      transition: transform 0.15s, box-shadow 0.15s;
+      box-shadow: var(--shadow-card);
+      transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
     }
-    #enter-mr::before {
+    .enter-venue::before {
       content: '';
-      width: 20px; height: 14px; flex: none;
+      width: 19px; height: 13px; flex: none;
       background: currentColor;
       -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 16'%3E%3Cpath d='M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z'/%3E%3C/svg%3E") no-repeat center / contain;
               mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 16'%3E%3Cpath d='M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z'/%3E%3C/svg%3E") no-repeat center / contain;
     }
-    #enter-mr:hover { transform: translateY(-2px); box-shadow: 0 18px 36px rgba(87, 70, 230, 0.42); }
-    #enter-mr:disabled {
+    .enter-venue .venue-text { display: flex; flex-direction: column; gap: 2px; }
+    .enter-venue .venue-label { font-size: 0.95rem; font-weight: 700; line-height: 1.2; }
+    .enter-venue .venue-sub { font-size: 0.76rem; font-weight: 500; opacity: 0.72; }
+    .enter-venue:hover:not(:disabled) { transform: translateY(-2px); border-color: #c9cff0; }
+
+    /* 'ar' is the headline venue — it carries the brand gradient. */
+    .enter-venue.primary {
+      border-color: transparent;
+      background: var(--brand-grad);
+      color: #fff;
+      box-shadow: var(--shadow-cta);
+    }
+    .enter-venue.primary:hover:not(:disabled) { box-shadow: 0 18px 36px rgba(87, 70, 230, 0.42); }
+
+    /* Both venues ship disabled and are armed by js/ui/overlay.js once the
+       app's modules are loaded — see the markup below. */
+    .enter-venue:disabled {
       opacity: 0.45;
       cursor: not-allowed;
       transform: none;
       box-shadow: none;
     }
 
+    /* Desktop Preview button — hidden for the beta launch (markup commented
+       out above); styles kept so re-enabling it is a one-line change.
     #enter-desktop {
       display: inline-flex;
       align-items: center;
@@ -274,6 +294,7 @@
       background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='none' stroke='%234f46e5' stroke-width='2'/%3E%3Cpath d='M10 8.2v7.6l6-3.8z' fill='%234f46e5'/%3E%3C/svg%3E") no-repeat center / contain;
     }
     #enter-desktop:hover { transform: translateY(-2px); border-color: #c9cff0; }
+    */
 
     #status {
       margin-top: 16px;
@@ -456,6 +477,115 @@
 
     .join-row { display: flex; gap: 10px; }
 
+    /* ── Post-session card ────────────────────────────────────────────────
+       Shown by js/ui/overlay.js when an XR session ends. Sits inside the hero
+       copy column, above the fold, so it is the first thing in view when the
+       overlay comes back. */
+    .post-card {
+      position: relative;
+      margin: 20px 0 4px;
+      padding: 22px 24px;
+      max-width: 460px;
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: var(--surface);
+      box-shadow: var(--shadow-card, 0 10px 30px rgba(31, 35, 68, 0.10));
+      text-align: left;
+    }
+    .post-dismiss {
+      position: absolute; top: 10px; right: 12px;
+      width: 30px; height: 30px;
+      font-size: 1.3rem; line-height: 1;
+      border: none; border-radius: 8px;
+      background: transparent; color: #a6adc8; cursor: pointer;
+    }
+    .post-dismiss:hover { background: #f1f3fb; color: var(--ink); }
+    .post-title { font-size: 1.22rem; font-weight: 800; color: var(--ink); }
+    .post-summary { margin-top: 4px; font-size: 0.9rem; color: var(--ink-soft); }
+    .post-summary:empty { display: none; }
+    .post-block { margin-top: 16px; }
+    .post-label, .post-subtitle {
+      display: block;
+      font-size: 0.92rem; font-weight: 700; color: var(--ink);
+    }
+    .post-note, .post-consent {
+      margin-top: 3px;
+      font-size: 0.78rem; color: var(--ink-soft); line-height: 1.45;
+    }
+    .post-consent { margin-top: 8px; }
+    .post-consent a { color: var(--brand-1); }
+    .post-divider { margin-top: 18px; border-top: 1px solid var(--line); }
+
+    .rating-row { display: flex; gap: 8px; margin-top: 8px; }
+    .rating-btn {
+      width: 42px; height: 40px;
+      font: inherit; font-weight: 700; font-size: 0.95rem;
+      color: var(--ink-soft);
+      border: 2px solid var(--line); border-radius: 11px;
+      background: #fff; cursor: pointer;
+      transition: border-color 0.15s, color 0.15s, transform 0.12s;
+    }
+    .rating-btn:hover { transform: translateY(-1px); border-color: #c9d0ea; }
+    .rating-btn[aria-checked="true"] {
+      border-color: var(--brand-1);
+      color: var(--brand-1);
+      background: rgba(79, 70, 229, 0.07);
+    }
+
+    .post-textarea, .post-input {
+      margin-top: 10px;
+      width: 100%;
+      padding: 11px 13px;
+      font: inherit; font-size: 0.92rem;
+      color: var(--ink);
+      border: 2px solid var(--line); border-radius: 12px;
+      background: #fff;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .post-textarea { resize: vertical; min-height: 62px; }
+    .post-input { margin-top: 0; flex: 1; min-width: 0; }
+    .post-textarea:focus, .post-input:focus {
+      border-color: var(--brand-1);
+      box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12);
+    }
+
+    .post-btn {
+      margin-top: 10px;
+      padding: 11px 22px;
+      font: inherit; font-size: 0.94rem; font-weight: 700;
+      border-radius: 12px; cursor: pointer;
+      transition: transform 0.15s, box-shadow 0.15s, background 0.15s;
+    }
+    .post-btn:disabled { opacity: 0.55; cursor: default; transform: none; }
+    .post-btn.primary {
+      width: 100%;
+      border: none;
+      background: var(--brand-grad);
+      color: #fff;
+      box-shadow: var(--shadow-cta);
+    }
+    .post-btn.primary:hover:not(:disabled) { transform: translateY(-2px); }
+    .post-btn.ghost {
+      border: 2px solid var(--brand-1);
+      background: transparent;
+      color: var(--brand-1);
+    }
+    .post-btn.ghost:hover:not(:disabled) { background: rgba(79, 70, 229, 0.07); }
+    .join-row .post-btn { margin-top: 0; }
+
+    .post-or {
+      margin: 12px 0 10px;
+      font-size: 0.78rem; font-weight: 700; color: #a6adc8;
+      text-align: center; text-transform: uppercase; letter-spacing: 0.08em;
+    }
+    .post-status {
+      margin-top: 12px;
+      font-size: 0.86rem; font-weight: 600; color: var(--brand-1);
+      min-height: 1.2em;
+    }
+    .post-status.error { color: #dc2626; }
+
     #room-code-input {
       padding: 12px 14px;
       width: 150px;
@@ -577,16 +707,82 @@
 
           <h1>Table Tennis,<br><span class="grad">Anytime, Anywhere.</span></h1>
 
-          <p class="sub">Step up to the table in mixed reality — play in your own room or battle a friend online. No installs, just your headset and your browser.</p>
+          <!-- The two venues ARE the entry buttons: one click requests that
+               WebXR session type. They ship disabled so an early click can't
+               land before the app's modules are in; js/ui/overlay.js wires
+               and enables them (data-mode must match an id in
+               js/ui/xrModes.js).
 
-          <div id="xr-mode-slot"></div>
-
-          <div class="hero-actions">
-            <button id="enter-mr">Enter Mixed Reality</button>
-            <button id="enter-desktop">Desktop Preview</button>
+               BETA LAUNCH: desktop preview is off the landing page — these
+               two headset venues are the only choices players get. Uncomment
+               to bring the flat-screen preview back (see js/ui/overlay.js).
+               <button id="enter-desktop">Desktop Preview</button> -->
+          <div id="xr-mode-slot" class="hero-actions">
+            <button type="button" class="enter-venue primary" data-mode="ar" disabled>
+              <span class="venue-text">
+                <span class="venue-label">Mixed Reality</span>
+                <span class="venue-sub">play in your room</span>
+              </span>
+            </button>
+            <button type="button" class="enter-venue" data-mode="vr-focus" disabled>
+              <span class="venue-text">
+                <span class="venue-label">Focus Room</span>
+                <span class="venue-sub">distraction-free VR</span>
+              </span>
+            </button>
           </div>
 
           <div id="status"></div>
+
+          <!-- Post-session card. Hidden until an XR session ENDS, then shown
+               in place of nothing: js/modes/inGame.js used to just restore the
+               overlay, dropping the player back on this hero with no
+               acknowledgement they had played at all. That moment — just
+               finished a match, headset still on, 2D keyboard available — is
+               the only one where asking anything converts.
+
+               Feedback first, then the early-access ask: a one-tap rating is a
+               small commitment, and it earns the bigger one. Both are optional
+               and the card is dismissable. -->
+          <div id="post-session" class="post-card" hidden>
+            <button type="button" id="post-dismiss" class="post-dismiss" aria-label="Dismiss">&times;</button>
+            <h2 class="post-title">Nice session!</h2>
+            <p class="post-summary" id="post-summary"></p>
+
+            <div class="post-block">
+              <label class="post-label" for="post-feedback">How was it? (optional)</label>
+              <div class="rating-row" id="post-rating" role="radiogroup" aria-label="Rate this session">
+                <button type="button" class="rating-btn" data-rating="1" role="radio" aria-checked="false" aria-label="1 out of 5">1</button>
+                <button type="button" class="rating-btn" data-rating="2" role="radio" aria-checked="false" aria-label="2 out of 5">2</button>
+                <button type="button" class="rating-btn" data-rating="3" role="radio" aria-checked="false" aria-label="3 out of 5">3</button>
+                <button type="button" class="rating-btn" data-rating="4" role="radio" aria-checked="false" aria-label="4 out of 5">4</button>
+                <button type="button" class="rating-btn" data-rating="5" role="radio" aria-checked="false" aria-label="5 out of 5">5</button>
+              </div>
+              <textarea id="post-feedback" class="post-textarea" rows="3" maxlength="2000"
+                        placeholder="Anything broken, confusing, or great? (optional)"></textarea>
+              <button type="button" id="post-feedback-send" class="post-btn ghost">Send feedback</button>
+            </div>
+
+            <div class="post-divider"></div>
+
+            <div class="post-block">
+              <h3 class="post-subtitle">Get early access</h3>
+              <p class="post-note">We'll email you once when the full version is ready. Nothing else.</p>
+              <button type="button" id="post-google" class="post-btn primary">Continue with Google</button>
+              <div class="post-or">or</div>
+              <div class="join-row">
+                <input id="post-email" type="email" class="post-input" inputmode="email"
+                       autocomplete="email" placeholder="you@example.com">
+                <button type="button" id="post-email-send" class="post-btn ghost">Join</button>
+              </div>
+              <p class="post-consent">
+                By joining you agree we may email you about the launch. See our
+                <a href="/privacy.html" target="_blank" rel="noopener">privacy notice</a>.
+              </p>
+            </div>
+
+            <div id="post-status" class="post-status"></div>
+          </div>
         </div>
 
         <div class="hero-art" aria-hidden="true">
@@ -669,7 +865,10 @@
       </section>
     </main>
 
-    <div class="footer">SportyXR — play table tennis instantly in your browser with WebXR.</div>
+    <div class="footer">
+      SportyXR — play table tennis instantly in your browser with WebXR.
+      &middot; <a href="/privacy.html">Privacy</a>
+    </div>
   </div>
 
   <!-- Loading Screen -->

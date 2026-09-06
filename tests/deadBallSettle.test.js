@@ -40,6 +40,7 @@ jest.mock('../js/scene/models.js', () => {
     setBallSquash: () => {},
     updateBallSquashAmount: () => {},
     resetBallSquash: () => {},
+    setBallOpacity: () => {},
   };
 });
 jest.mock('../js/scene/audio.js', () => ({
@@ -84,12 +85,19 @@ describe('dead-ball settle on the table', () => {
     simulate(4);
 
     expect(impacts.length).toBeGreaterThanOrEqual(4);
-    // Live bounces: only the COR curve (≈0.95 at these speeds) plus drag
-    // across the hop (measured ≈0.85 end to end).
-    expect(impacts[1] / impacts[0]).toBeGreaterThan(0.8);
-    // Dead bounces: the extra DEAD_BALL_COR_SCALE shows up in the following
-    // impact (0.95 · 0.65 ≈ 0.62).
-    expect(impacts[3] / impacts[2]).toBeLessThan(0.75);
+    // Live bounces: the COR curve alone, plus drag across the hop. The
+    // absolute value tracks TABLE_RESTITUTION (0.76 at the certified 0.82
+    // median, 0.85 at the old lively 0.92), so this bound stays loose on
+    // purpose — what the test is actually about is the STEP below.
+    const liveRatio = impacts[1] / impacts[0];
+    const deadRatio = impacts[3] / impacts[2];
+    expect(liveRatio).toBeGreaterThan(0.7);
+    // Dead bounces: the extra DEAD_BALL_COR_SCALE (0.65) shows up in the
+    // following impact. Asserted RELATIVE to the live ratio, not as an
+    // absolute — retuning the table COR moves both ratios together, and an
+    // absolute threshold here silently stops testing the damp at all once it
+    // drifts past it. The damp must be present and roughly the scale factor.
+    expect(deadRatio).toBeLessThan(liveRatio * 0.8);
   });
 
   test('an unplayed ball bouncing on the table is lost (comes to rest) within a few seconds', () => {

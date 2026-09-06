@@ -116,3 +116,59 @@ test('dispose removes the group and releases geometries and materials', () => {
   for (const s of geoSpies) expect(s).toHaveBeenCalled();
   for (const s of matSpies) expect(s).toHaveBeenCalled();
 });
+
+test('ceiling fixtures read as recessed lamps against the dark ceiling', () => {
+  const { ROOM, LIGHT_PANELS } = require('../js/scene/focusRoomSpec.js');
+  // A recessed troffer reads by a three-step falloff: the lamp, the lit
+  // reflector framing it, then the ceiling. The reveal must therefore sit
+  // strictly BETWEEN the panel and the ceiling on EVERY channel — darker than
+  // the lamp so it does not merge into it, lighter than the ceiling so the
+  // frame is not swallowed by it. It was the other way round while the ceiling
+  // was milky white and unlit panels could only read as a shadow gap; the
+  // ceiling going back to dark flips this with it. The frame also has to
+  // actually extend past the panel, or there is no frame.
+  // Compared by LUMA, not per channel: these are lit surfaces judged by how
+  // bright they read, and a chromatic value can legitimately sit below a
+  // neutral one on a single channel while reading brighter overall.
+  const luma = (hex) => 0.2126 * ((hex >> 16) & 0xff)
+    + 0.7152 * ((hex >> 8) & 0xff) + 0.0722 * (hex & 0xff);
+  expect(luma(LIGHT_PANELS.REVEAL_COLOR)).toBeGreaterThan(luma(ROOM.CEILING_COLOR));
+  expect(luma(LIGHT_PANELS.REVEAL_COLOR)).toBeLessThan(luma(LIGHT_PANELS.COLOR));
+  expect(LIGHT_PANELS.REVEAL_MARGIN).toBeGreaterThan(0);
+});
+
+test('one recess reveal per panel, clear of the ceiling and the panel tops', () => {
+  const { mod } = loadFocusRoom();
+  const { ROOM, LIGHT_PANELS } = require('../js/scene/focusRoomSpec.js');
+  const room = mod.createFocusRoom();
+
+  const revealW = LIGHT_PANELS.W + 2 * LIGHT_PANELS.REVEAL_MARGIN;
+  let reveals = null;
+  room.group.traverse((o) => {
+    if (o.isInstancedMesh && o.geometry.parameters
+        && Math.abs(o.geometry.parameters.width - revealW) < 1e-9) reveals = o;
+  });
+  expect(reveals).not.toBeNull();
+
+  // One per fixture position.
+  const { computeFocusRoomLayout } = require('../js/scene/focusRoomSpec.js');
+  const layout = computeFocusRoomLayout(TABLE_BOX);
+  expect(reveals.count).toBe(layout.panelSlots.length);
+
+  // Slung under the ceiling plane and above the panel tops — a face coplanar
+  // with either z-fights into a shimmer directly overhead.
+  const ceilingY = ROOM.HEIGHT_Y - 0.01;
+  const panelTop = layout.panelY + LIGHT_PANELS.THICK / 2;
+  const THREE = require('three');
+  const m = new THREE.Matrix4();
+  const pos = new THREE.Vector3();
+  const scl = new THREE.Vector3();
+  const quat = new THREE.Quaternion();
+  for (let i = 0; i < reveals.count; i++) {
+    reveals.getMatrixAt(i, m);
+    m.decompose(pos, quat, scl);
+    expect(pos.y + LIGHT_PANELS.REVEAL_THICK / 2).toBeLessThan(ceilingY);
+    expect(pos.y - LIGHT_PANELS.REVEAL_THICK / 2).toBeGreaterThan(panelTop);
+  }
+  room.dispose();
+});

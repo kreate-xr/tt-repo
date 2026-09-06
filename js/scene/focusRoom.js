@@ -1,8 +1,14 @@
 // Procedural "Focus Room" — a distraction-free tournament practice hall
 // built entirely in code: dark matte walls so the white ball keeps its
 // silhouette, tournament-navy sport floor with a contrasting court border,
-// surround barriers ringing the court, emissive ceiling light panels, and a
-// back wall the existing scoreboard wall-mounts onto.
+// emissive ceiling light panels, and a back wall the existing scoreboard
+// wall-mounts onto.
+//
+// The court used to be ringed by ITTF surround barriers carrying the SportyXR
+// mark on every panel. They were purely decorative — nothing in physics ever
+// referenced them — and 14 copies of one wordmark at 1.4 m intervals read as
+// tiling, so the ring is gone and the mark moved to the end walls. The floor's
+// navy court border is now what marks the court.
 //
 // Deliberately NOT an ARENA_VARIANTS entry in arena.js: that module is a
 // GLB pipeline (GLTFLoader + DRACO, download caches, async ready) and stays
@@ -11,21 +17,55 @@
 // createArena() so every consumer (inGame.js factoryArgs, aiMatch.js,
 // session-end cleanup) works unchanged.
 //
-// Lighting contract (see sceneSetup.js / arena.js): every mesh here ALSO
-// enables ARENA_LIGHT_LAYER while KEEPING layer 0 — mesh-layer isolation is
-// unreliable under the WebXR ArrayCamera, and the bright arena rig lives on
-// layer 3 so it can never touch gameplay meshes. No lights are added here
-// at all; the "luminaires" are unlit meshes, same trick as the stadium's
-// fixtures (real SpotLights tanked Quest frame rate and strobed the ball's
-// specular — arenaLighting.js header).
+// Lighting contract. No lights are added here at all, and none can be:
+// three.js has no per-mesh light masking. In WebGLRenderer the only layer
+// test involving a light is `object.layers.test(camera.layers)` in
+// projectObject() — a light either joins the frame's single global light
+// state or is dropped entirely; it is never filtered per mesh. So a light
+// added for this room would also light the ball, paddle and table, and the
+// old "arena rig on layer 3" was not isolation — the camera never enabled
+// layer 3, so those six lights were silently dropped every frame and the
+// room was lit by hemiLight alone.
+//
+// This room therefore lights itself: every material sets `emissive` to its
+// own color at ROOM.SELF_LIT intensity, which is an ambient term scoped to
+// these materials and unreachable by gameplay meshes. On top of that the
+// meshes still keep ARENA_LIGHT_LAYER enabled alongside layer 0 (arena.js
+// marks venue geometry the same way, and tests assert it).
+//
+// Screen values this produces, under hemiLight @2.2 + NeutralToneMapping.
+// A surface's value depends on which way it FACES: the hemisphere gives an
+// up-facing plane its full sky term, a horizontal wall the half mix, and a
+// down-facing plane only the dark ground term. So the ceiling and the floor
+// are NOT comparable by albedo — only by what they land on:
+//   walls          rgb(0,0,0)       luma   0   (horizontal, true void)
+//   ceiling        rgb(73,79,95)    luma  79   (down-facing)
+//   floor base     rgb(135,143,156) luma 142   (up-facing; wood map ~luma 135)
+//   wall stripe    rgb(70,122,205)  luma 117   court border rgb(76,131,217)
+//   cornice soffit rgb(62,114,191)  luma 109
+//   recess reveal  rgb(126,123,118) luma 123
+//   light panels   rgb(229,232,240) luma 232   (unlit, the cap is ~251)
+// The ladder that matters overhead: panels 232 over a ceiling at 79, with the
+// reveal at 123 between them, so a fixture reads as lamp / reflector / dark
+// ceiling. The ball is seen against that 79, which is the point of it.
+// Barriers were listed here once; the court surround is gone and the floor
+// border band is all that marks the court now.
+//
+// The "luminaires" stay unlit meshes, same trick as the stadium's fixtures
+// (real SpotLights tanked Quest frame rate and strobed the ball's specular
+// — arenaLighting.js header).
 
 import * as THREE from 'three';
 import { scene, ARENA_LIGHT_LAYER } from './sceneSetup.js';
 import { tableBox } from './models.js';
 import {
-  ROOM, COURT, BARRIER, BARRIER_LOGO, LIGHT_PANELS, computeFocusRoomLayout,
+  ROOM, COURT, LIGHT_PANELS, SIDE_WALL_ART, WALL_MARK,
+  computeFocusRoomLayout,
 } from './focusRoomSpec.js';
 import { loadBrandLogoTexture } from './brandLogo.js';
+import { createWoodFloorTexture } from './woodFloor.js';
+import { createWallPanelTexture } from './wallPanels.js';
+import { loadSideWallArt } from './sideWallArt.js';
 
 export function createFocusRoom() {
   if (!tableBox) {
@@ -53,12 +93,24 @@ export function createFocusRoom() {
   }
 
   // --- Wall shell: interior of an inverted box. BackSide flips normals in
-  // the shader, so the interior faces light correctly under the layer-3
-  // hemisphere/ambient fill.
+  // the shader, so the interior faces light correctly under the hemisphere
+  // fill.
+  //
+  // The walls are black — they are the ground the side-wall graphic is
+  // printed on. wallPanels.js paints the wood's floor bounce back over the
+  // bottom of them so the floor does not appear to end in midair. Null with
+  // no canvas, and then the plain black shell stands.
+  const wallTexture = createWallPanelTexture();
+  const wallTone = wallTexture ? 0xffffff : ROOM.WALL_COLOR;
   const wallMat = new THREE.MeshStandardMaterial({
-    color: ROOM.WALL_COLOR, roughness: ROOM.WALL_ROUGHNESS, metalness: 0,
+    color: wallTone, roughness: ROOM.WALL_ROUGHNESS, metalness: 0,
     side: THREE.BackSide,
+    emissive: wallTone, emissiveIntensity: ROOM.SELF_LIT,
+    map: wallTexture, emissiveMap: wallTexture,
   });
+  // No per-face UV work: the wall texture is a vertical gradient with no
+  // horizontal structure, so every face sampling its own 0..1 square lands on
+  // the same column whatever that wall's length.
   const shell = track(new THREE.Mesh(
     new THREE.BoxGeometry(ROOM.WIDTH_X, ROOM.HEIGHT_Y, ROOM.LENGTH_Z), wallMat));
   shell.position.set(center.x, ROOM.HEIGHT_Y / 2, center.z);
@@ -70,8 +122,22 @@ export function createFocusRoom() {
   // only, so the decal stack (shell face < floor < court border) resolves
   // stably while the visual floor stays at y≈0 — it must, because the
   // physics ball bounces at y=0 and a raised floor would swallow it.
+  //
+  // Wood boards (woodFloor.js). The texture carries the whole look, so
+  // color/emissive drop to white and let it through unmultiplied — the
+  // board tones in WOOD are already albedos on the same footing as
+  // ROOM.WALL_COLOR. `map` and `emissiveMap` are the SAME texture for the
+  // same reason the brand mark uses both: emissive is what lifts this room
+  // out of the near-black it was rendering in, and a flat emissive color
+  // under a textured albedo would wash the grain straight back out.
+  // Returns null with no canvas (jest's node environment, or a page that
+  // has run out of 2D contexts) — then the flat FLOOR_COLOR floor stands.
+  const woodTexture = createWoodFloorTexture(ROOM.WIDTH_X, ROOM.LENGTH_Z);
+  const floorTone = woodTexture ? 0xffffff : ROOM.FLOOR_COLOR;
   const floorMat = new THREE.MeshStandardMaterial({
-    color: ROOM.FLOOR_COLOR, roughness: ROOM.FLOOR_ROUGHNESS, metalness: 0,
+    color: floorTone, roughness: ROOM.FLOOR_ROUGHNESS, metalness: 0,
+    emissive: floorTone, emissiveIntensity: ROOM.SELF_LIT,
+    map: woodTexture, emissiveMap: woodTexture,
     polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
   });
   const floor = track(new THREE.Mesh(
@@ -81,8 +147,11 @@ export function createFocusRoom() {
 
   // --- Ceiling plane, 1 cm below the shell top, slightly lighter than the
   // walls so "up" reads distinct without drawing the eye.
+  // The ceiling plane faces down, so the hemisphere gives it only its dark
+  // ground term — without the self-lit term it renders pure black.
   const ceilMat = new THREE.MeshStandardMaterial({
     color: ROOM.CEILING_COLOR, roughness: ROOM.WALL_ROUGHNESS, metalness: 0,
+    emissive: ROOM.CEILING_COLOR, emissiveIntensity: ROOM.SELF_LIT,
   });
   const ceiling = track(new THREE.Mesh(
     new THREE.PlaneGeometry(ROOM.WIDTH_X, ROOM.LENGTH_Z), ceilMat));
@@ -112,124 +181,132 @@ export function createFocusRoom() {
   // the border band never shimmers against it at grazing angles.
   const borderMat = new THREE.MeshStandardMaterial({
     color: ROOM.ACCENT_COLOR, roughness: ROOM.FLOOR_ROUGHNESS, metalness: 0,
+    emissive: ROOM.ACCENT_COLOR, emissiveIntensity: ROOM.SELF_LIT,
     polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
   });
   const border = track(new THREE.Mesh(new THREE.ShapeGeometry(borderShape), borderMat));
   border.rotation.x = -Math.PI / 2;
   border.position.set(center.x, 0.006, center.z);
 
-  // --- Surround barriers: one InstancedMesh for the panels, one for the
-  // pale top stripe that makes them read at a glance in peripheral vision.
-  const segs = layout.barrierSegments;
-  const barrierMat = new THREE.MeshStandardMaterial({
-    color: BARRIER.COLOR, roughness: 0.9, metalness: 0,
-  });
-  const barriers = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(BARRIER.SEG_W, BARRIER.HEIGHT, BARRIER.THICK),
-    barrierMat, segs.length);
-  const stripeMat = new THREE.MeshStandardMaterial({
-    color: BARRIER.STRIPE_COLOR, roughness: 0.8, metalness: 0,
-  });
-  // Cap geometry: wider, deeper, AND lipped above the panel (see
-  // BARRIER.STRIPE_* in focusRoomSpec.js) so no stripe face is ever
-  // coplanar with a panel face — coplanar top/end faces z-fight into a
-  // glittery shimmer on the barrier line at distance.
-  const stripes = new THREE.InstancedMesh(
-    new THREE.BoxGeometry(
-      BARRIER.SEG_W + BARRIER.STRIPE_END,
-      BARRIER.STRIPE_H,
-      BARRIER.THICK + BARRIER.STRIPE_WRAP),
-    stripeMat, segs.length);
+  // Scratch objects reused by every InstancedMesh below — composing matrices
+  // in place keeps room construction allocation-free.
   const _m = new THREE.Matrix4();
   const _q = new THREE.Quaternion();
-  const _e = new THREE.Euler();
   const _p = new THREE.Vector3();
   const _s = new THREE.Vector3(1, 1, 1);
-  segs.forEach((seg, i) => {
-    _q.setFromEuler(_e.set(0, seg.rotY, 0));
-    _m.compose(_p.set(seg.x, BARRIER.HEIGHT / 2, seg.z), _q, _s);
-    barriers.setMatrixAt(i, _m);
-    _m.compose(
-      _p.set(seg.x, BARRIER.HEIGHT - BARRIER.STRIPE_H / 2 + BARRIER.STRIPE_LIP, seg.z),
-      _q, _s);
-    stripes.setMatrixAt(i, _m);
-  });
-  track(barriers);
-  track(stripes);
 
-  // --- Venue branding: the SportyXR mark printed on the court-facing face
-  // of every barrier panel — where a real tournament puts its title
-  // sponsor. One InstancedMesh of unit quads sharing one alpha-cutout
-  // texture, so the whole ring is a single draw call.
+  // --- Venue branding: the SportyXR mark on the two END walls — the back
+  // wall behind the AI and the front wall behind the player.
   //
-  // The quads are built now but sized later: the mark's aspect ratio is a
-  // measured property of the trimmed asset (brandLogo.js) and is not
-  // knowable until it decodes. So they start hidden with identity
-  // matrices, and the load callback composes the real transforms. The room
-  // itself never waits — `ready` stays resolved and the venue is complete
-  // and playable with or without the mark.
-  const logoSlots = layout.barrierLogos;
-  const logoMat = new THREE.MeshStandardMaterial({
-    roughness: 0.9, metalness: 0,
-    transparent: true,
-    // alphaTest drops the fully-clear background before the depth test, so
-    // a decal quad never occludes what is behind it. The transparent path
-    // is kept on top of that purely so the ink EDGES stay smooth — a pure
-    // cutout goes crunchy on lettering this thin at this distance.
-    alphaTest: 0.05,
-    // A print sits ON the panel, not in front of it. Same decal-stack
-    // reasoning as the floor/court-border pair above: the 6 mm physical
-    // gap alone lands in depth-buffer noise when the barrier line is
-    // viewed edge-on from the serve position.
-    polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
-  });
-  const logoMesh = new THREE.InstancedMesh(
-    new THREE.PlaneGeometry(1, 1), logoMat, logoSlots.length);
-  logoMesh.visible = false;
-  track(logoMesh);
-
+  // It used to be printed on the court-surround barriers, one mark per panel.
+  // With 14 panels ringing the court that was the same wordmark repeated at
+  // 1.4 m intervals, which reads as tiling rather than as branding; the
+  // barriers themselves are gone now (see the room header) and the mark moved
+  // to where a venue actually puts its name.
+  //
+  // Async, and the room never waits on it: `ready` stays resolved and the
+  // venue is complete and playable with or without the mark. The load can
+  // land after the player has left, hence the `disposed` check.
   let logoTexture = null;
   loadBrandLogoTexture().then((logo) => {
     if (!logo) return;
     if (disposed) { logo.texture.dispose(); return; }
     logoTexture = logo.texture;
-    logoMat.map = logoTexture;
-    logoMat.needsUpdate = true;
 
-    // Fit to WIDTH, but if that overflows the height ceiling, back the
-    // width off too — scaling one axis alone would squash the wordmark.
-    let w = BARRIER_LOGO.WIDTH;
+    // Fit to WIDTH, but if that overflows the height ceiling, back the width
+    // off too — scaling one axis alone would squash the wordmark.
+    let w = WALL_MARK.WIDTH_M;
     let h = w / logo.aspect;
-    if (h > BARRIER_LOGO.MAX_HEIGHT) {
-      h = BARRIER_LOGO.MAX_HEIGHT;
+    if (h > WALL_MARK.MAX_HEIGHT_M) {
+      h = WALL_MARK.MAX_HEIGHT_M;
       w = h * logo.aspect;
     }
 
-    const lm = new THREE.Matrix4();
-    const lq = new THREE.Quaternion();
-    const le = new THREE.Euler();
-    const lp = new THREE.Vector3();
-    const ls = new THREE.Vector3(w, h, 1);
-    logoSlots.forEach((slot, i) => {
-      lq.setFromEuler(le.set(0, slot.rotY, 0));
-      lm.compose(lp.set(slot.x, slot.y, slot.z), lq, ls);
-      logoMesh.setMatrixAt(i, lm);
+    const markMat = new THREE.MeshStandardMaterial({
+      map: logoTexture, emissiveMap: logoTexture,
+      // The mark is white ink on transparent (brandLogo.js recolors it), so
+      // TONE is what stops it burning out against a black wall; the same
+      // value on emissive keeps it on the room's self-lit footing.
+      color: WALL_MARK.TONE, emissive: WALL_MARK.TONE,
+      emissiveIntensity: ROOM.SELF_LIT,
+      roughness: 0.9, metalness: 0,
+      // Ink, not a soft glow — unlike the side-wall art this WANTS a cutout,
+      // so the transparent surround never occludes what is behind it. The
+      // transparent path on top of it keeps the letter edges smooth.
+      transparent: true, alphaTest: 0.05,
+      polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1,
     });
-    logoMesh.instanceMatrix.needsUpdate = true;
-    // Instance matrices do not invalidate the bounding sphere. Without
-    // this the sphere stays the one implied by the identity matrices the
-    // quads were built with — a speck at the origin — and the whole ring
-    // gets frustum-culled the moment you look at a barrier.
-    logoMesh.computeBoundingSphere();
-    logoMesh.visible = true;
-    console.log(`[focusRoom] branding: mark on ${logoSlots.length} barrier panels`);
+    const markGeo = new THREE.PlaneGeometry(w, h);
+
+    // Back wall (-Z, behind the AI). A PlaneGeometry already faces +Z, which
+    // is into the room from here, so it needs no rotation. Sits ABOVE the
+    // scoreboard, which wall-mounts on this same wall.
+    const back = track(new THREE.Mesh(markGeo, markMat));
+    back.position.set(center.x, WALL_MARK.BACK_Y, layout.backWallInnerZ + WALL_MARK.OFFSET);
+
+    // Front wall (+Z, behind the player). Turned to face -Z, into the room.
+    const front = track(new THREE.Mesh(markGeo, markMat));
+    front.position.set(center.x, WALL_MARK.FRONT_Y, layout.frontWallInnerZ - WALL_MARK.OFFSET);
+    front.rotation.y = Math.PI;
+
+    console.log(`[focusRoom] branding: ${w.toFixed(2)}x${h.toFixed(2)} m mark on the front and back walls`);
   });
+
+  // --- Side-wall graphics: the player poster on the LEFT wall (-X) and the
+  // FOCUS / PRACTICE / IMPROVE / REPEAT piece on the RIGHT (+X). The player
+  // faces -Z, so forward x up puts their right toward +X.
+  //
+  // Async like the barrier mark, and for the same reason: the room is
+  // complete and playable with or without them, `ready` never waits, and a
+  // load can land after the player has already left the venue — hence the
+  // `disposed` check before anything is added to a group that may be gone.
+  const artTextures = [];
+  for (const wall of SIDE_WALL_ART.WALLS) {
+    loadSideWallArt(wall.URL).then((art) => {
+      if (!art) return;
+      if (disposed) { art.texture.dispose(); return; }
+      artTextures.push(art.texture);
+
+      const w = wall.WIDTH_M;
+      // From the asset's MEASURED aspect — swapping in art of a different
+      // shape must resize the quad, never stretch the picture.
+      const h = w / art.aspect;
+      const artMat = new THREE.MeshStandardMaterial({
+        map: art.texture, emissiveMap: art.texture,
+        // TONE scales the art down so it reads as a lit print instead of a
+        // light source; the SAME value on emissive keeps it on the room's
+        // self-lit footing (see the floor for why both maps are one texture).
+        color: SIDE_WALL_ART.TONE, emissive: SIDE_WALL_ART.TONE,
+        emissiveIntensity: ROOM.SELF_LIT,
+        roughness: 0.9, metalness: 0,
+        // Straight alpha blending, and deliberately NO alphaTest: both assets
+        // are feathered to zero alpha at their edges so they melt into the
+        // black wall, and any cutout threshold would slice that glow back
+        // into a hard rectangle. depthWrite off is the usual companion — the
+        // quad writes no depth, so it cannot fight the wall behind it, and
+        // the 2 cm standoff keeps the depth TEST unambiguous.
+        transparent: true, depthWrite: false,
+      });
+
+      // A PlaneGeometry faces +Z. +90 deg about Y sends that to +X, the
+      // inward normal of the LEFT (-X) wall; -90 deg to -X for the RIGHT.
+      const isLeft = wall.side === 'left';
+      const panel = track(new THREE.Mesh(new THREE.PlaneGeometry(w, h), artMat));
+      panel.position.set(
+        center.x + (isLeft ? -1 : 1) * (ROOM.WIDTH_X / 2 - SIDE_WALL_ART.OFFSET),
+        wall.CENTER_Y,
+        center.z);
+      panel.rotation.y = isLeft ? Math.PI / 2 : -Math.PI / 2;
+      console.log(`[focusRoom] ${wall.side}-wall graphic: ${w.toFixed(2)}x${h.toFixed(2)} m`);
+    });
+  }
 
   // --- Wall accent stripe: one thin band per wall at a constant height —
   // a quiet horizon line that keeps the dark walls from reading as a void.
   // Axis-aligned, so per-instance non-uniform scale does the work.
   const accentMat = new THREE.MeshStandardMaterial({
     color: ROOM.ACCENT_COLOR, roughness: 0.85, metalness: 0,
+    emissive: ROOM.ACCENT_COLOR, emissiveIntensity: ROOM.SELF_LIT,
   });
   const accent = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), accentMat, 4);
   const halfW = ROOM.WIDTH_X / 2;
@@ -249,6 +326,52 @@ export function createFocusRoom() {
   });
   _s.set(1, 1, 1);
   track(accent);
+
+  // --- Edge trim: four vertical corner posts and a cornice band per wall.
+  //
+  // These are the room's only edges. See ROOM.TRIM_COLOR for why a black
+  // room needs them: with no shading of its own, nothing marks where one
+  // wall stops and the next starts, and the venue reads as a black
+  // rectangle rather than a space with corners and a far end.
+  //
+  // A second InstancedMesh rather than more instances on `accent`, because
+  // InstancedMesh's per-instance color multiplies `color` but NOT `emissive`
+  // — and emissive is what lights every surface in this room — so two
+  // self-lit colors genuinely need two materials.
+  const trimMat = new THREE.MeshStandardMaterial({
+    color: ROOM.TRIM_COLOR, roughness: 0.85, metalness: 0,
+    emissive: ROOM.TRIM_COLOR, emissiveIntensity: ROOM.SELF_LIT,
+  });
+  const trim = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), trimMat, 8);
+  // Stood off both wall faces it meets, so no face is ever coplanar with a
+  // wall — the same z-fight reasoning as the barrier stripe cap.
+  const trimInset = ROOM.TRIM_W / 2 + 0.004;
+  // Tucked under the ceiling plane (which sits 1 cm below the shell top).
+  const corniceY = ROOM.HEIGHT_Y - 0.02 - ROOM.CORNICE_H / 2;
+  const zBack = layout.backWallInnerZ + trimInset;
+  const zFront = layout.frontWallInnerZ - trimInset;
+  const xLeft = center.x - halfW + trimInset;
+  const xRight = center.x + halfW - trimInset;
+  const trimParts = [
+    // Corner posts, floor to ceiling. They run the full height and let the
+    // floor and ceiling planes clip them, so both ends read as a junction.
+    { x: xLeft, y: ROOM.HEIGHT_Y / 2, z: zBack, sx: ROOM.TRIM_W, sy: ROOM.HEIGHT_Y, sz: ROOM.TRIM_W },
+    { x: xRight, y: ROOM.HEIGHT_Y / 2, z: zBack, sx: ROOM.TRIM_W, sy: ROOM.HEIGHT_Y, sz: ROOM.TRIM_W },
+    { x: xLeft, y: ROOM.HEIGHT_Y / 2, z: zFront, sx: ROOM.TRIM_W, sy: ROOM.HEIGHT_Y, sz: ROOM.TRIM_W },
+    { x: xRight, y: ROOM.HEIGHT_Y / 2, z: zFront, sx: ROOM.TRIM_W, sy: ROOM.HEIGHT_Y, sz: ROOM.TRIM_W },
+    // Cornice, one band per wall.
+    { x: center.x, y: corniceY, z: zBack, sx: ROOM.WIDTH_X - 0.04, sy: ROOM.CORNICE_H, sz: 0.014 },
+    { x: center.x, y: corniceY, z: zFront, sx: ROOM.WIDTH_X - 0.04, sy: ROOM.CORNICE_H, sz: 0.014 },
+    { x: xLeft, y: corniceY, z: center.z, sx: 0.014, sy: ROOM.CORNICE_H, sz: ROOM.LENGTH_Z - 0.04 },
+    { x: xRight, y: corniceY, z: center.z, sx: 0.014, sy: ROOM.CORNICE_H, sz: ROOM.LENGTH_Z - 0.04 },
+  ];
+  _q.identity();
+  trimParts.forEach((t, i) => {
+    _m.compose(_p.set(t.x, t.y, t.z), _q, _s.set(t.sx, t.sy, t.sz));
+    trim.setMatrixAt(i, _m);
+  });
+  _s.set(1, 1, 1);
+  track(trim);
 
   // --- Ceiling light panels. Unlit (MeshBasicMaterial) so they read as
   // self-illuminating at zero lighting cost. Named after arenaLighting.js
@@ -271,13 +394,39 @@ export function createFocusRoom() {
   });
   track(ring);
 
+  // --- Recess reveals: a mid-value frame tucked in the gap between each
+  // panel and the ceiling, giving every fixture the lamp / reflector / dark
+  // ceiling falloff a recessed troffer actually has (see
+  // LIGHT_PANELS.REVEAL_COLOR). Deliberately NOT part of `fixtures` —
+  // arenaLighting pulses those on celebrations, and a reflector that pulsed
+  // in lockstep with the lamp inside it would read as one flat slab.
+  const revealGeo = new THREE.BoxGeometry(
+    LIGHT_PANELS.W + 2 * LIGHT_PANELS.REVEAL_MARGIN,
+    LIGHT_PANELS.REVEAL_THICK,
+    LIGHT_PANELS.D + 2 * LIGHT_PANELS.REVEAL_MARGIN);
+  const revealMat = new THREE.MeshStandardMaterial({
+    color: LIGHT_PANELS.REVEAL_COLOR, roughness: 0.9, metalness: 0,
+    emissive: LIGHT_PANELS.REVEAL_COLOR, emissiveIntensity: ROOM.SELF_LIT,
+  });
+  const reveals = new THREE.InstancedMesh(
+    revealGeo, revealMat, layout.panelSlots.length);
+  // Slung just under the ceiling plane, clear of BOTH it and the panel tops —
+  // a face coplanar with either would z-fight into a shimmer overhead.
+  const revealY = ROOM.HEIGHT_Y - 0.01 - 0.002 - LIGHT_PANELS.REVEAL_THICK / 2;
+  _q.identity();
+  layout.panelSlots.forEach((slot, i) => {
+    _m.compose(_p.set(slot.x, revealY, slot.z), _q, _s);
+    reveals.setMatrixAt(i, _m);
+  });
+  track(reveals);
+
   const fixtures = [
     { name: 'CenterLightBox', mesh: centerPanel },
     { name: 'CeilingRing', mesh: ring },
   ];
 
   scene.add(group);
-  console.log(`[focusRoom] built — ${segs.length} barrier segments, ${ringSlots.length + 1} light panels, back wall z=${layout.backWallInnerZ.toFixed(2)}`);
+  console.log(`[focusRoom] built — ${ringSlots.length + 1} light panels, back wall z=${layout.backWallInnerZ.toFixed(2)}`);
 
   function show() { group.visible = true; }
   function hide() { group.visible = false; }
@@ -295,10 +444,14 @@ export function createFocusRoom() {
         if (obj.material) obj.material.dispose();
       }
     });
-    // Material.dispose() does not release its maps, and this texture is
-    // owned by this room — brandLogo.js caches the decoded canvas but
-    // hands every caller its own CanvasTexture for exactly this reason.
+    // Material.dispose() does not release its maps, and these textures are
+    // owned by this room — brandLogo.js and woodFloor.js both cache the
+    // painted canvas but hand every caller its own CanvasTexture for
+    // exactly this reason.
     if (logoTexture) logoTexture.dispose();
+    if (woodTexture) woodTexture.dispose();
+    if (wallTexture) wallTexture.dispose();
+    for (const tex of artTextures) tex.dispose();
   }
 
   return {

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import {
   ballModel, tableBox, netBox, tableSurfaceY, ballRadius,
   paddleHitRadius, paddleFaceOffset, paddleFaceNormalLocal, getDebugHelpers,
-  setBallSquash, updateBallSquashAmount, resetBallSquash,
+  setBallSquash, updateBallSquashAmount, resetBallSquash, setBallOpacity,
 } from '../scene/models.js';
 import { playBounceSound, playPaddleHitSound, playPaddleEdgeSound, updateSwingWhoosh, updateBallRoll } from '../scene/audio.js';
 import { updateBallShadow, resetBallShadow } from '../scene/ballShadow.js';
@@ -14,6 +14,7 @@ import { pulseActive as hapticsPulseActive, pulseImpact as hapticsPulseImpact, p
 import { shouldSuppressContact as trackingShouldSuppressContact } from '../xr/trackingLossGuard.js';
 import { recordHit as recordContactLogHit } from '../xr/contactLog.js';
 import { integrateFlightStep, applyTableBounce } from './rollout.js';
+import { SwingTracker, preparationGain } from './swingPreparation.js';
 import {
   SPIN_CAPTURE_GAIN, PLAYER_SPIN_GAIN,
   NET_NORMAL_RESTITUTION, NET_TANGENT_DAMP, NET_SPIN_DAMP,
@@ -23,7 +24,7 @@ import {
   FLOOR_LEVEL_Y, FLOOR_RESTITUTION, FLOOR_FRICTION, FLOOR_SPIN_DAMP,
   TABLE_EDGE_SPIN_DAMP, TABLE_EDGE_COR_SCALE,
   STATIONARY_VEL, STATIONARY_TIME,
-  DEAD_BALL_BOUNCES, DEAD_BALL_COR_SCALE,
+  DEAD_BALL_BOUNCES, DEAD_BALL_COR_SCALE, BALL_FADE_OUT_MS,
   ROLLING_FRICTION, ROLLING_VY_THRESHOLD,
   SQUASH_DURATION, SQUASH_AMOUNT,
   HAPTIC_FLOOR, HAPTIC_MAX_SPEED, HAPTIC_DURATION_MIN_MS, HAPTIC_DURATION_MAX_MS,
@@ -78,6 +79,12 @@ let _paddleSampleIdx = 0;
 let _paddleSampleCount = 0;
 const _rawPaddleVel = new THREE.Vector3();
 const _rawPaddleAng = new THREE.Vector3();
+
+// Rolling history of the paddle face centre, used at contact to measure how
+// much stroke the player actually invested (see swingPreparation.js). Fed
+// every frame from the SAME velFaceCenter the velocity finite-difference
+// uses, so "how fast" and "how far" are measured off one pose source.
+const _swingTracker = new SwingTracker();
 
 function _medianComp(a, b, c) {
   return Math.max(Math.min(a, b), Math.min(Math.max(a, b), c));
@@ -321,15 +328,34 @@ export function resetPaddleTracking() {
   // after resume isn't filtered against a stale v from before the disconnect.
   _paddleSampleIdx = 0;
   _paddleSampleCount = 0;
+  // Same reason: stroke history from before a disconnect must not be read as
+  // preparation for the first swing after it.
+  _swingTracker.reset();
 }
 
-// Silently remove the live ball. Used by match flow when the point has been
-// DECIDED but the old ball is still rolling/bouncing: play must visibly stop
-// so the player isn't rallying a dead ball into the next serve window. Emits
-// no ballLost — the rally is already resolved and a stale lost event would
-// double-book it.
-export function despawnBall() {
-  if (!ballModel) return;
+// Seconds left in the retirement fade; 0 when no fade is running.
+let fadeOutRemaining = 0;
+
+// Put the ball back to fully opaque and cancel any running fade. Every path
+// that makes the ball invisible goes through here (or through hideBallNow),
+// so a fade can never leak its alpha onto the next spawn.
+//
+// Unconditional on purpose. Gating it on `fadeOutRemaining > 0` looks like
+// the obvious saving and is wrong: at the end of a fade the counter has
+// already gone to zero, so the one call that most needs to restore alpha —
+// hideBallNow, closing out the fade — would skip it, and the next spawn
+// would put a nearly invisible ball on the table with nothing to ever write
+// its opacity back. setBallOpacity is a couple of uniform writes and only
+// dirties the material when `transparent` actually flips.
+function clearBallFade() {
+  fadeOutRemaining = 0;
+  setBallOpacity(1);
+}
+
+// The end of a retirement fade, and the immediate-removal path when there is
+// no fade to run.
+function hideBallNow() {
+  clearBallFade();
   ballModel.visible = false;
   ballVelocity.set(0, 0, 0);
   ballAngularVelocity.set(0, 0, 0);
@@ -338,8 +364,33 @@ export function despawnBall() {
   resetBallGhost();
 }
 
+// Retire the live ball. Used by match flow when the point has been DECIDED
+// but the old ball is still rolling/bouncing and the next serve is due: play
+// must visibly stop so the player isn't rallying a dead ball into the serve
+// window. Emits no ballLost — the rally is already resolved and a stale lost
+// event would double-book it.
+//
+// This is a BACKSTOP, not the usual way a dead ball leaves. Callers let the
+// decided point's ball finish its bounce (DEAD_BALL_COR_SCALE kills it in a
+// few hops), and most of the time it settles and retires itself through the
+// floor/stuck paths in tickPhysics before this is ever reached. What arrives
+// here is the ball still in motion at the deadline — and cutting THAT one
+// out in a single frame is the "ball vanishes mid-bounce" artefact. So it
+// dissolves over BALL_FADE_OUT_MS instead, still integrating (and still
+// bouncing audibly) the whole way down.
+export function despawnBall() {
+  if (!ballModel || !ballModel.visible) return;
+  if (BALL_FADE_OUT_MS <= 0) { hideBallNow(); return; }
+  if (fadeOutRemaining > 0) return;   // already dissolving
+  fadeOutRemaining = BALL_FADE_OUT_MS / 1000;
+}
+
 export function spawnBallAt(pos, velocity, angularVelocity) {
   if (!ballModel) return;
+  // A spawn during a retirement fade (serve came early, or a mode restarted)
+  // must not inherit its alpha — the new ball would arrive half-transparent
+  // and never recover, since nothing else writes opacity.
+  clearBallFade();
   ballModel.position.copy(pos);
   ballModel.scale.set(1, 1, 1);
   ballModel.quaternion.set(0, 0, 0, 1);
@@ -432,7 +483,25 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
     // the edge branch on purpose: the wood-blade model and the input gap are
     // unrelated effects, so an edge strike keeps its halved grip and still
     // gets the same compensation for a slow swing.
-    if (ctx.origin === 'player') spinCaptureGain *= PLAYER_SPIN_GAIN;
+    // Earned, not granted. PLAYER_SPIN_GAIN is the CEILING; what a contact
+    // actually gets is scaled by how much stroke went into it, so the gain
+    // (and the linear friction kick locked to it by HOLLOW_SPHERE_MOI_FACTOR)
+    // can only be had by a player who had the time to swing. This is the
+    // biomechanical governor the AI has always had via its capped windup
+    // distance — see swingPreparation.js for why its absence made pace
+    // compound between two humans but not against the AI.
+    //
+    // Direction is the paddle's own velocity at contact: the stroke axis is
+    // whatever the player is actually swinging along, so a brush, a drive and
+    // a lunge are all measured on their own terms rather than against the
+    // table.
+    let swingTravel = 0;
+    if (ctx.origin === 'player') {
+      swingTravel = ctx.velocity
+        ? _swingTracker.strokeTravel(ctx.velocity.x, ctx.velocity.y, ctx.velocity.z)
+        : 0;
+      spinCaptureGain *= preparationGain(swingTravel, PLAYER_SPIN_GAIN);
+    }
 
     // Impulse + spin capture — extracted into a shared pure helper so the
     // AI's paddleSolver can run the same math against synthetic inputs
@@ -595,6 +664,9 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
 
     emit('paddleHit', {
       origin: ctx.origin, swingSpeed, impactSpeed, spinType, spinMag, deltaOmega,
+      // Stroke travel (m) along the swing axis that earned this contact's
+      // spin compensation. 0 for AI contacts, which have no input gap.
+      swingTravel,
       // Outgoing ball speed (m/s) after the impulse — what a broadcast
       // "shot speed" readout shows. impactSpeed is only the normal-axis
       // approach speed, so it under-reads real shot pace.
@@ -704,6 +776,12 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       haveVelPrevQuat = hadRawPose;
       rawSampled = true;
     }
+
+    // Stroke history. Sampled unconditionally (not inside the haveVelPrev
+    // branch below) so the ring stays continuous across the first frame after
+    // a resume — strokeTravel needs the walk-back to be gap-free, and a
+    // missing frame there would read as a turnaround and truncate the stroke.
+    _swingTracker.sample(clockTime, velFaceCenter.x, velFaceCenter.y, velFaceCenter.z);
 
     if (haveVelPrev && dt > 0) {
       // Raw per-frame delta, then median-of-3 filtered into paddleVelocity.
@@ -1208,6 +1286,7 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
 
     if (ballOwned) {
       if (ballModel.position.y < FLOOR_Y) {
+        clearBallFade();
         ballModel.visible = false;
         ballVelocity.set(0, 0, 0);
         ballAngularVelocity.set(0, 0, 0);
@@ -1219,6 +1298,7 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
         if (speed < STATIONARY_VEL) {
           stationaryTime += dt;
           if (stationaryTime >= STATIONARY_TIME) {
+            clearBallFade();
             ballModel.visible = false;
             ballVelocity.set(0, 0, 0);
             ballAngularVelocity.set(0, 0, 0);
@@ -1247,12 +1327,34 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       }
     }
 
+    // Retirement fade — see despawnBall. Ticked here, after the frame's
+    // collisions, so a dissolving ball keeps bouncing and rolling normally
+    // (and keeps making the sounds for it) instead of freezing the instant
+    // the point's deadline passes. Runs for the network non-owner too: the
+    // enclosing block is the one place both integration paths converge.
+    let ballAlpha = 1;
+    if (fadeOutRemaining > 0) {
+      fadeOutRemaining -= dt;
+      if (fadeOutRemaining <= 0) {
+        // hideBallNow already reset the shadow and ghost; alpha 0 keeps the
+        // calls below from immediately re-showing them at the corpse's
+        // last position.
+        hideBallNow();
+        ballAlpha = 0;
+      } else {
+        ballAlpha = fadeOutRemaining / (BALL_FADE_OUT_MS / 1000);
+        setBallOpacity(ballAlpha);
+      }
+    }
+
     // Blob shadow — depth cue for the ball above the table. Follows XZ,
     // fades/shrinks with height. Fed AFTER all collisions have resolved, and
     // works identically for owner and network non-owner because
     // ballModel.position was already written by whichever path is active.
-    updateBallShadow(ballModel.position);
-    updateBallGhost(ballModel.position);
+    // Both take the fade alpha so the ball, its shadow and its reflection
+    // leave together.
+    updateBallShadow(ballModel.position, ballAlpha);
+    updateBallGhost(ballModel.position, ballAlpha);
 
     // Rolling audio — persistent looped noise, spatialized at the ball's
     // world position. Gated on the ball being on a surface (table interior

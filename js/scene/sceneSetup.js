@@ -54,26 +54,44 @@ document.body.appendChild(renderer.domElement);
 // bias, which reads correctly on a matte sphere. All castShadow=false;
 // blob-shadow only (see renderer.shadowMap disable above).
 //
-// LIGHTING LAYER STRATEGY (VR arena mode):
-//   Layer 0 (default): gameplay meshes — ball, paddle, table, wristMenu.
-//   Layer 3 (arena):   arena venue meshes get this layer ENABLED (kept on 0
-//                       too, so the WebXR camera still renders them).
-//   A THREE.Light only illuminates a mesh whose layer mask overlaps the
-//   light's layer mask. In VR arena mode:
-//     • keyLight + rimLight get moved to layer 3 (arena-only). No direct
-//       key hits ball/paddle/table anymore — those show no hotspot / no
-//       specular streak from an overhead directional. They read as
-//       "indirectly lit" while still being visible via hemi.
-//     • hemiLight stays on layer 0 (lights EVERYTHING), and gets boosted
-//       so gameplay still reads without the key contribution.
-//     • arenaKeyLight + arenaFillHemi are dedicated layer-3 lights that
-//       boost arena venue brightness without leaking onto gameplay.
-//   In AR/MR mode all lights collapse back to layer 0.
+// LIGHTING LAYERS — READ THIS BEFORE ADDING A LIGHT.
 //
-// Why layers, not disabling lights: layer masks are per-mesh at shader
-// time, so this is one setter per light (no per-frame branching) and
-// stereo-safe (light-layer isolation works in the WebXR ArrayCamera; the
-// caveat noted in arena.js is about MESH layers, not lights).
+// three.js does NOT mask lights per mesh. The claim that once stood here —
+// "a THREE.Light only illuminates a mesh whose layer mask overlaps the
+// light's" — is false for WebGLRenderer. The only layer test involving a
+// light is in projectObject():
+//     const visible = object.layers.test( camera.layers );
+//     if ( visible ) { ... else if ( object.isLight ) pushLight( object ); }
+// (three r183, three.module.js:17598). Lights that pass are merged into ONE
+// global light-uniform block by WebGLRenderState.setupLights() and applied
+// to every material in the frame. A light's layers are compared against the
+// CAMERA, never against a mesh.
+//
+// What that means in practice:
+//   • Putting a light on layer 3 does not scope it to arena meshes. It
+//     scopes it to a camera that enables layer 3 — and nothing here does.
+//     `camera` below is mask 1; WebXR widens it to `camera.layers.mask |
+//     0b110` = 7 (layers 1/2 are the per-eye layers). Layer 3 is never set.
+//   • So the old arena rig — arenaKeyLight 20, arenaBackKeyLight 10, two
+//     side keys at 6, arenaFillHemi 10, arenaAmbient 3 — was dropped every
+//     single frame and lit nothing. Those six lights have been deleted.
+//     Their intensities had been walked up to 20/10/6/6 precisely because
+//     raising them had no visible effect. Do not reintroduce them.
+//   • Consequently there is no way to brighten the venue with a light
+//     without also hitting the ball, paddle and table. The Focus Room
+//     instead lights itself with an emissive term on its own materials
+//     (ROOM.SELF_LIT in focusRoomSpec.js), which genuinely cannot leak.
+//
+// setArenaLighting() still parks keyLight + rimLight on layer 3 in VR. That
+// is a switch-OFF, not an isolation: gameplay in VR is lit by hemiLight
+// alone at VR_GAMEPLAY_HEMI. It is kept exactly as it was because the ball
+// and paddle are tuned against it (see the P16 tone-mapping note above);
+// changing it changes how gameplay looks. In AR/MR all lights return to
+// layer 0 and are live again.
+//
+// ARENA_LIGHT_LAYER is still enabled on venue meshes by arena.js and
+// focusRoom.js (and asserted by tests/focusRoom.test.js). It now marks
+// venue geometry and parks the VR-disabled keys; it does not route light.
 export const ARENA_LIGHT_LAYER = 3;
 
 // KEY — near-vertical, mimics real ITTF hall luminaires (mounted overhead,
@@ -108,66 +126,6 @@ rimLight.castShadow = false;
 scene.add(rimLight);
 scene.add(rimLight.target);
 
-// ARENA-ONLY overhead key. Very hot (20 units) — the venue's authored
-// albedo is a deep broadcast-color palette (floor is 0x1a3a6b navy) AND
-// Neutral tone mapping compresses highlights hard, so anything less than
-// this lands the interior in visible shadow. Layer 3 keeps it clear of
-// gameplay meshes.
-export const arenaKeyLight = new THREE.DirectionalLight(0xfff4ea, 20.0);
-arenaKeyLight.position.set(0.6, 8, 0.4);
-arenaKeyLight.castShadow = false;
-arenaKeyLight.layers.set(ARENA_LIGHT_LAYER);
-arenaKeyLight.target.layers.set(ARENA_LIGHT_LAYER);
-scene.add(arenaKeyLight);
-scene.add(arenaKeyLight.target);
-
-// ARENA-ONLY BACK KEY: from the opposite side of the venue so the walls
-// behind the player don't drop into deep shadow. Half the primary's
-// intensity keeps directional shading (not flat) while still filling in
-// the "back of the room" that was reading nearly black.
-export const arenaBackKeyLight = new THREE.DirectionalLight(0xdde6f5, 10.0);
-arenaBackKeyLight.position.set(-2.0, 6, -6);
-arenaBackKeyLight.castShadow = false;
-arenaBackKeyLight.layers.set(ARENA_LIGHT_LAYER);
-arenaBackKeyLight.target.layers.set(ARENA_LIGHT_LAYER);
-scene.add(arenaBackKeyLight);
-scene.add(arenaBackKeyLight.target);
-
-// ARENA-ONLY SIDE KEYS: left + right so the mid-court walls (which sit
-// perpendicular to the front+back keys and would otherwise fall into a
-// vertical shadow band) get direct contribution. Warm, moderate.
-export const arenaSideKeyL = new THREE.DirectionalLight(0xfff4ea, 6.0);
-arenaSideKeyL.position.set(-8, 5, 0);
-arenaSideKeyL.castShadow = false;
-arenaSideKeyL.layers.set(ARENA_LIGHT_LAYER);
-arenaSideKeyL.target.layers.set(ARENA_LIGHT_LAYER);
-scene.add(arenaSideKeyL);
-scene.add(arenaSideKeyL.target);
-
-export const arenaSideKeyR = new THREE.DirectionalLight(0xfff4ea, 6.0);
-arenaSideKeyR.position.set(8, 5, 0);
-arenaSideKeyR.castShadow = false;
-arenaSideKeyR.layers.set(ARENA_LIGHT_LAYER);
-arenaSideKeyR.target.layers.set(ARENA_LIGHT_LAYER);
-scene.add(arenaSideKeyR);
-scene.add(arenaSideKeyR.target);
-
-// ARENA-ONLY: broad hemispheric fill for the venue's walls / floor / seats.
-// Sky cool (fluorescent bounce), ground warm (wood/felt bounce). Pushed
-// to 10 so every mesh gets a strong hemispheric baseline before any
-// directional contribution lands.
-export const arenaFillHemi = new THREE.HemisphereLight(0xdde6f5, 0x2a2618, 10.0);
-arenaFillHemi.layers.set(ARENA_LIGHT_LAYER);
-scene.add(arenaFillHemi);
-
-// ARENA-ONLY raw brightness floor. AmbientLight has no direction and no
-// distance falloff, so it lifts EVERY arena mesh's shading by a flat
-// value — the cheapest way to make sure no corner of the venue is
-// darker than a legible minimum. Layer 3 keeps it off gameplay.
-export const arenaAmbient = new THREE.AmbientLight(0xffffff, 3.0);
-arenaAmbient.layers.set(ARENA_LIGHT_LAYER);
-scene.add(arenaAmbient);
-
 // Procedural neutral-studio IBL, applied ONLY to the ball material (see
 // the ball setup in models.js loadModels) via material.envMap. Setting this on
 // scene.environment would also affect the paddle / table / arena walls and
@@ -196,13 +154,14 @@ const AR_LIGHT_INTENSITY = Object.freeze({
 const MR_FALLBACK_KEY_COLOR = 0xfff4e6;
 const MR_FALLBACK_HEMI_INTENSITY = 0.5;
 
-// Called when entering VR/arena mode. Moves keyLight + rimLight to the
-// arena layer so gameplay meshes (ball/paddle/table on layer 0) stop
-// receiving direct illumination — no specular hotspot, no directional
-// gradient on the paddle rubber. Gameplay now reads from hemiLight only,
-// which is boosted to compensate for losing the key's contribution.
-// arenaKeyLight + arenaFillHemi (also on layer 3) provide the additional
-// brightness the venue interior needs.
+// Called when entering VR/arena mode. Parks keyLight + rimLight on layer 3,
+// which — see the LIGHTING LAYERS note above — switches them OFF entirely
+// rather than restricting them to venue meshes. The intended effect on
+// gameplay holds either way: ball/paddle/table stop receiving direct
+// illumination, so no specular hotspot and no directional gradient on the
+// paddle rubber. Everything in VR is then lit by hemiLight alone, boosted
+// to VR_GAMEPLAY_HEMI to compensate. The venue does not get extra light
+// from here — the Focus Room supplies its own via ROOM.SELF_LIT.
 const VR_GAMEPLAY_HEMI = 2.2;
 export function setArenaLighting() {
   keyLight.layers.set(ARENA_LIGHT_LAYER);

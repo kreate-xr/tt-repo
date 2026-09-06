@@ -19,11 +19,21 @@ export const PacketType = Object.freeze({
   // Unreliable duplicate of NET_HIT (dedupe by eid) so the sound plays at
   // one one-way trip instead of waiting on reliable-channel ordering.
   NET_HIT_G:     6,
+  // Unreliable duplicate of PADDLE_HIT (dedupe by eid). The remote paddle is
+  // visual-only on the receiving peer, so their swing produces no local
+  // collision and no sound of its own — this event IS the opponent's contact
+  // sound, and a paddle clack that arrives late reads as badly as a missing
+  // one, hence the same dual-channel treatment NET_HIT gets.
+  PADDLE_HIT_G:  7,
 
   // Event channel (JSON), kept as string codes for readability in logs
   OWNERSHIP_HANDOFF:  'OWNERSHIP_HANDOFF',
   TABLE_BOUNCE:       'TABLE_BOUNCE',
   NET_HIT:            'NET_HIT',
+  // Opponent paddle contact, for sound only: { eid, vol, k, p, edge }. `p` is
+  // the contact point in the SENDER's world frame — the receiver mirrors it
+  // across the net plane (same rule as PaddleSync) before spatializing.
+  PADDLE_HIT:         'PADDLE_HIT',
   BALL_LOST:          'BALL_LOST',
   SCORE_UPDATE:       'SCORE_UPDATE',
   // Rally verdict from the ball owner: { rallySeq, winner:

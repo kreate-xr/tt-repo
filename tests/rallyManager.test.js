@@ -403,8 +403,11 @@ describe('rallyManager — game and match ending', () => {
         events.emit('paddleHit', { origin: 'ai-opponent' });
         events.emit('ballLost', { reason: 'out' });
       }
-      // Advance the next-serve timer so the next rally can start.
-      jest.advanceTimersByTime(1500);
+      // Advance past the whole inter-point window so the next rally can
+      // start: the dead ball has to be gone (POINT_END_DESPAWN_MS + the
+      // fade) before a paddle hit counts again, and the next serve is due
+      // at NEXT_SERVE_DELAY_MS.
+      jest.advanceTimersByTime(2500);
     }
   }
 
@@ -491,7 +494,7 @@ describe('rallyManager — serve rotation', () => {
       for (let i = 0; i < n; i++) {
         events.emit('paddleHit', { origin: 'player' });
         events.emit('ballLost', { reason: 'out' });
-        jest.advanceTimersByTime(1500);
+        jest.advanceTimersByTime(2500);   // full inter-point window
       }
     }
     scorePoints(2);
@@ -520,7 +523,7 @@ describe('rallyManager — serve rotation', () => {
         events.emit('paddleHit', { origin: 'ai-opponent' });
         events.emit('ballLost', { reason: 'out' });
       }
-      jest.advanceTimersByTime(1500);
+      jest.advanceTimersByTime(2500);   // full inter-point window
     }
     // Reach 2-2 deuce. Initial server is 'ai'; first swap to 'player' at 2 pts.
     score('ai'); score('player');             // 1-1

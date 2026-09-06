@@ -2,7 +2,7 @@
 //
 // Given: where the paddle is now, where the solver says it must be at
 // contact (position + face normal + velocity), and the time budget until
-// contact — produce a smooth 8-keyframe trajectory the FSM can read at
+// contact — produce a smooth keyframed trajectory the FSM can read at
 // 90Hz to drive the paddle through windup → strike → contact.
 //
 // Two-segment path per spec:
@@ -22,20 +22,122 @@
 // solverFaceNormal during the LAST HALF of swing (≈T-150ms before
 // contact — the visible telegraph window).
 //
-// 8 keyframes evenly spaced in time. The FSM linearly interpolates
-// between bracketing keyframes for position and slerps for face normal.
-// With 8 samples over typical ~400ms budget, sample spacing is ~57ms —
-// well under the visual threshold for keyframe transitions.
+// Keyframe spacing is per PHASE, not uniform across the budget, and that
+// distinction is load-bearing rather than cosmetic.
+//
+// The FSM drives the paddle by LINEARLY interpolating between bracketing
+// keyframes, and AIPaddle.refreshVelocity hands the physics a per-frame
+// finite difference of that position. So the velocity `computeImpulse`
+// actually sees is the CHORD AVERAGE over whichever keyframe segment the
+// contact frame falls in — not the curve's derivative there.
+//
+// With the original 8 uniform keyframes only three landed in the swing
+// phase, and the last segment spanned quintic u ∈ [0.643, 1]. The quintic
+// accelerates hard into contact (p'(0) = 0, p''(0) = p''(1) = 0), so that
+// chord is always SLOWER than the terminal velocity the solver solved for —
+// measured at 0.884× across 3600 realistic intermediate shots, and as low as
+// 0.71× on the fastest shots, where WINDUP_DISTANCE_MAX_M clips the
+// backswing. Never faster. The AI therefore under-hit every single ball by
+// ~12%, which cost ~4 cm of net clearance and turned a solver that verifies
+// 0% net hits into 7.4% live — 20-30% on the short placed targets the top
+// tiers play constantly. That is the "AI returns keep finding the net".
+//
+// The fix is to make the chord short enough that it IS the derivative:
+// space swing keyframes at most SWING_KEYFRAME_MAX_SPAN_MS apart, comfortably
+// inside one 90 Hz frame. Measured delivered/planned contact speed by spacing:
+//     8 uniform (≈54 ms)  0.884   net hits 7.4%
+//     16 uniform (≈27 ms) 0.972   net hits 0.2%
+//     32 uniform (≈12 ms) 0.989   net hits 0.0%
+// The windup phase keeps its old coarse spacing — it is a slow bezier whose
+// velocity nothing reads, and sampling it finely would only cost allocations.
+//
+// Cost: keyframes are built ONCE per rally shot (not per frame), and
+// interpolateTrajectory binary-searches, so a denser list is free at tick
+// time. A typical 380 ms budget plans ~24 keyframes, up from 8.
 //
 // Speed validation: tracks peak instantaneous speed (finite-difference
 // between adjacent keyframes). Returns reachable=false if peak exceeds
-// max_paddle_speed × 1.1 — caller can downgrade to lunge-and-miss.
+// max_paddle_speed × 1.1 — caller can downgrade to lunge-and-miss. Note the
+// finer sampling makes this measurement HONEST rather than stricter: for this
+// quintic the derivative rises monotonically to its endpoint, so the peak it
+// now reports is the solver's own contact speed, which the solver already
+// capped.
 
 import * as THREE from 'three';
 
-export const NUM_KEYFRAMES = 8;
 export const WINDUP_FRACTION = 0.6;
 export const SWING_FRACTION  = 0.4;
+
+// Windup samples. Five over the first 60% of the budget reproduces the old
+// uniform spacing through the bezier, which was never the problem.
+export const NUM_WINDUP_KEYFRAMES = 5;
+
+// Maximum spacing between swing-phase keyframes. Must stay under one display
+// frame so the FSM's per-frame finite difference reads the curve's local
+// derivative instead of averaging across the acceleration. 8 ms clears 90 Hz
+// (11.1 ms) and 120 Hz (8.3 ms) with margin.
+export const SWING_KEYFRAME_MAX_SPAN_MS = 8;
+
+// Bound on swing samples, so a pathologically long time budget cannot plan an
+// unbounded array. 64 covers a 512 ms swing phase (a 1.28 s total budget) at
+// full resolution; beyond that the spacing degrades gracefully.
+export const MAX_SWING_KEYFRAMES = 64;
+
+// Follow-through. The plan used to END at the contact keyframe, and
+// interpolateTrajectory clamps past its last sample — so the paddle STOPPED
+// DEAD the instant it arrived, and held that pose for the FSM's whole 80 ms
+// contact-grace window.
+//
+// Contact does not fire at the planned instant. detectDiscCollision resolves
+// the hit in whichever FRAME the ball crosses the swept blade, and the paddle
+// velocity handed to the impulse is that frame's finite difference. Roughly
+// half of all contacts therefore land on the LATE side of the planned instant
+// — where, with no follow-through, the difference was taken across a paddle
+// that had already parked. Measured against the same realistic-contact
+// envelope: half a frame late delivered 0.50× the solved speed and netted
+// 88.8% of returns; a full frame late delivered 0.00× and netted 100%.
+//
+// A real stroke does not stop on the ball, and neither should this one. The
+// plan continues past contact at the terminal velocity, so a contact anywhere
+// in the physically reachable window still reads the stroke the solver
+// solved. It is also what the stroke should have looked like all along.
+const FOLLOW_THROUGH_MS = 45;
+// Distance cap, so a 15 m/s smash does not fling the blade half a metre.
+const FOLLOW_THROUGH_MAX_M = 0.30;
+// The follow-through must not carry the blade through the net plane: the
+// paddle probe shares the net AABB with netTouch.js, which would score a net
+// touch against the AI for a stroke that never touched anything. Real strokes
+// have the same constraint — you cannot swing through the net.
+const FOLLOW_THROUGH_NET_MARGIN_M = 0.06;
+
+// Number of keyframes covering a swing phase of the given duration, INCLUDING
+// the shared boundary sample at the windup/swing seam. Exported for tests.
+export function swingKeyframeCount(swingDurationMs) {
+  if (!(swingDurationMs > 0)) return 2;
+  const n = Math.ceil(swingDurationMs / SWING_KEYFRAME_MAX_SPAN_MS) + 1;
+  return Math.min(MAX_SWING_KEYFRAMES, Math.max(2, n));
+}
+
+// How long the follow-through can run at the terminal velocity before the
+// distance cap or the net plane stops it. Returns milliseconds; 0 means there
+// is no room to follow through (a ball taken right on top of the net).
+// Exported for tests.
+export function followThroughMs(contactPos, swingDir, contactSpeed, tableBox) {
+  if (!(contactSpeed > 1e-6)) return 0;
+  let distance = Math.min(
+    contactSpeed * (FOLLOW_THROUGH_MS / 1000),
+    FOLLOW_THROUGH_MAX_M,
+  );
+  // The net sits on the table's centre plane. Only bind when the swing has a
+  // component across it; a purely upward or lateral follow-through is free.
+  if (tableBox && Math.abs(swingDir.z) > 1e-6) {
+    const netZ = (tableBox.min.z + tableBox.max.z) / 2;
+    const limitZ = netZ - Math.sign(swingDir.z) * FOLLOW_THROUGH_NET_MARGIN_M;
+    const room = (limitZ - contactPos.z) / swingDir.z;
+    distance = Math.min(distance, Math.max(0, room));
+  }
+  return (distance / contactSpeed) * 1000;
+}
 
 // Spec §section_2.algorithm.windup_phase_path: control-point midpoint
 // raised 10-15cm. Midpoint of 12cm splits the spec range.
@@ -176,7 +278,7 @@ function slerpVec3(a, b, t, out) {
 
 // --- Planner --------------------------------------------------------------
 
-// Plan an 8-keyframe paddle trajectory from current pose to contact pose.
+// Plan a keyframed paddle trajectory from current pose to contact pose.
 //
 // args: {
 //   currentPos, currentFaceNormal           Vector3 world — paddle now
@@ -218,7 +320,10 @@ function slerpVec3(a, b, t, out) {
 //
 // returns: {
 //   keyframes:      Array<{ time_ms: number, position: Vector3, faceNormal: Vector3 }>
-//                   length === NUM_KEYFRAMES, time_ms spans [0, timeBudgetMs]
+//                   time_ms starts at 0 and runs PAST timeBudgetMs by the
+//                   follow-through (see followThroughMs); the keyframe AT
+//                   timeBudgetMs is the contact pose. Count is phase-derived,
+//                   not fixed.
 //   reachable:      boolean — both phases within their own cap × 1.1
 //   peakSpeed_mps:          number — overall peak
 //   peakApproachSpeed_mps:  number — windup phase only
@@ -312,17 +417,51 @@ export function planTrajectory({
     return slerpVec3(disguiseFaceNormal, contactFaceNormal, snapU, out);
   }
 
-  // Build 8 keyframes evenly spaced in time.
+  // Sample times: coarse through the windup bezier, fine through the swing
+  // quintic (see the phase-spacing note at the top of the file). The last
+  // windup sample sits exactly on the seam at windupDurationMs, so the first
+  // swing sample is a true step into the quintic rather than a duplicate.
+  const sampleTimesMs = [];
+  if (windupDurationMs > 0) {
+    for (let i = 0; i < NUM_WINDUP_KEYFRAMES; i++) {
+      sampleTimesMs.push((i / (NUM_WINDUP_KEYFRAMES - 1)) * windupDurationMs);
+    }
+  } else {
+    sampleTimesMs.push(0);
+  }
+  const swingKeyframes = swingKeyframeCount(swingDurationMs);
+  for (let j = 1; j < swingKeyframes; j++) {
+    sampleTimesMs.push(windupDurationMs + (j / (swingKeyframes - 1)) * swingDurationMs);
+  }
+
+  // Follow-through samples, past the contact instant at the terminal velocity.
+  // Shortened (never slowed) when the distance cap or the net plane binds, so
+  // whatever window it does cover is covered at full stroke speed.
+  const followThroughDurationMs = followThroughMs(
+    contactPos, swingDir, contactSpeed, tableBox);
+  const followThroughSamples = followThroughDurationMs > 0
+    ? Math.ceil(followThroughDurationMs / SWING_KEYFRAME_MAX_SPAN_MS)
+    : 0;
+  for (let j = 1; j <= followThroughSamples; j++) {
+    sampleTimesMs.push(timeBudgetMs + (j / followThroughSamples) * followThroughDurationMs);
+  }
+
   const keyframes = [];
   let peakSpeed = 0;
   let peakApproachSpeed = 0;
   let peakSwingSpeed = 0;
-  for (let i = 0; i < NUM_KEYFRAMES; i++) {
-    const time_ms = (i / (NUM_KEYFRAMES - 1)) * timeBudgetMs;
+  for (let i = 0; i < sampleTimesMs.length; i++) {
+    const time_ms = sampleTimesMs[i];
     const position = new THREE.Vector3();
     const faceNormal = new THREE.Vector3();
 
-    if (time_ms <= windupDurationMs) {
+    if (time_ms > timeBudgetMs) {
+      // Follow-through: straight on from contact at the terminal velocity,
+      // face held at the contact normal (the wrist has already turned over).
+      position.copy(contactPos)
+        .addScaledVector(contactPaddleVelocity, (time_ms - timeBudgetMs) / 1000);
+      faceNormal.copy(contactFaceNormal).normalize();
+    } else if (time_ms <= windupDurationMs) {
       const u = windupDurationMs > 0 ? time_ms / windupDurationMs : 0;
       bezierAt(u, currentPos, bezMid, windupStart, position);
       if (time_ms >= revealStartMs) {
@@ -385,9 +524,12 @@ export function planTrajectory({
 // `outFaceN`. Returns true on success, false if keyframes is empty.
 //
 // We use linear position interpolation between keyframes (not Catmull-Rom)
-// because with 8 evenly-spaced samples on smooth curves the visible
-// artifact of linear vs spline is minimal and the math is simpler.
-// Phase 7 polish can swap in Catmull-Rom if testers notice.
+// because the swing phase is now sampled finer than a display frame, so the
+// chord IS the tangent to within a few tenths of a percent — which is the
+// whole point (see the phase-spacing note at the top of the file: the FSM's
+// per-frame finite difference of this output is what the physics uses as the
+// paddle's contact velocity). A spline would buy nothing and would no longer
+// guarantee the endpoint derivative.
 export function interpolateTrajectory(keyframes, elapsedMs, outPos, outFaceN) {
   if (!keyframes || keyframes.length === 0) return false;
   const first = keyframes[0];

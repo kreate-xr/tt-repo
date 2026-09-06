@@ -78,14 +78,64 @@ js/
   xr/               Session, controllers, paddle calibration, drift detection
   network/          WebRTC + Firestore signaling (SignalingClient, NetworkManager)
   lobby/            Room codes / LobbyManager over the signaling stack
-  ui/               DOM overlay (lobby UI on the landing page)
+  ui/               DOM overlay (lobby UI + post-session card on the landing page)
+  analytics/        Beta session collector (one Firestore doc per session)
+  auth/             Anonymous -> Google account linking, feedback/signup writes
 tests/              Jest suites (jsdom; three.js mapped to its CJS build)
 public/             Static assets copied verbatim into dist/
 vr-assets/          Unreleased VR venue assets, parked for beta — see its README
 server/             Dev-only telemetry receiver (not deployed)
-scripts/            check-firebase.mjs smoke test, asset analysis
-firestore.rules     Multiplayer lobby security rules (rules unit tests in tests-rules/)
+scripts/            check-firebase.mjs smoke test, query-sessions.mjs read-out,
+                    asset analysis
+firestore.rules     Lobby + beta-instrumentation security rules (unit tests in
+                    tests-rules/)
 ```
+
+## Beta instrumentation
+
+The beta goes out on a public link, so the players who hit something broken are
+the ones who will never tell us about it. Three write-only Firestore
+collections cover that, all behind the existing anonymous-auth gate:
+
+```
+sessions/{uid}/runs/{runId}   one doc per play session: funnel milestones,
+                              match stats, WebRTC health, JS errors
+feedback/{uid}/items/{id}     rating + optional note
+signups/{uid}                 early-access email, one row per account
+```
+
+None of them is readable from the client — `allow read: if false`, deliberately,
+so a player's feedback and email are not fetchable by anyone who can open the
+app. There are exactly two ways to read the data back: the Firebase console,
+and `scripts/query-sessions.mjs` (Admin SDK; needs a service-account key).
+
+```sh
+node scripts/query-sessions.mjs              # funnel, failed joins, errors, feedback
+node scripts/query-sessions.mjs --emails     # the early-access list as CSV
+```
+
+Points worth knowing before changing any of it:
+
+- **The session doc is written twice** — created at XR session start, updated
+  once at end. A headset coming off kills the tab, so an end-only write loses
+  exactly the sessions that ended badly.
+- **A failed multiplayer join gets its own doc** (`xrMode: 'lobby-*'`). The
+  lobby negotiates before XR entry, so those never reach the normal path, and
+  they carry the `connectTrace` phase breakdown — the only way to see which
+  round trip stalled on a stranger's network.
+- **`connectTrace` now collects unconditionally**; `?trace` gates only the
+  console output. Nobody adds a query param before hitting a bug.
+- **Anonymous uid survives the Google upgrade.** `linkWithPopup` preserves it,
+  so rows written before sign-in stay attached and the rules need no special
+  case.
+- **Stack traces need the local sourcemaps.** `vite build` emits them
+  (`sourcemap: 'hidden'`) but `firebase.json` keeps `**/*.map` out of the
+  deploy — symbolicate against your own `dist/` for the `appVersion` the
+  session doc reports.
+
+Setup this depends on: a production Firebase project (not `sportyxr-test`), the
+Google provider enabled in Identity Platform, `VITE_FIREBASE_AUTH_DOMAIN`
+pointed at the Hosting domain, and a Firestore TTL policy on `sessions`.
 
 ## Beta scope
 

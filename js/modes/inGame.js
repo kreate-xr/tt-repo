@@ -17,7 +17,13 @@ import {
 // Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline — live in
 // beta while the GLB venues above stay tree-shaken.
 import { createFocusRoom } from '../scene/focusRoom.js';
+import { warmWoodTile } from '../scene/woodFloor.js';
+import { warmWallTile } from '../scene/wallPanels.js';
 import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableColor, setNetXRMode } from '../scene/models.js';
+// Aliased: this module already has a local endSession() that ends the XR
+// session itself (below). Two different things with one obvious name.
+import { beginSession, endSession as endAnalyticsRun, mark } from '../analytics/session.js';
+import { showPostSession } from '../ui/postSession.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
 // FPS HUD disabled — import kept commented for easy restore.
 import {
@@ -32,16 +38,33 @@ import {
 } from '../scene/wristMenu.js';
 import { TrainingMenu } from '../scene/trainingMenu.js';
 import { MultiplayerMenu } from '../scene/multiplayerMenu.js';
+// Boot-phase timing for ?trace=1 (js/network/connectTrace.js). That module has
+// no imports of its own, so this static import costs ~1 KB in the entry bundle
+// and does NOT pull the Firebase chunk in with it.
+import { traceBoot } from '../network/connectTrace.js';
 // LobbyManager pulls in the signaling/WebRTC stack including the Firebase
 // SDK (~1 MB of parse on the Quest CPU). Loaded in the background once the
 // XR session starts (see startInGame) so the initial page bundle — and every
 // solo/AI session that never opens multiplayer — doesn't pay for it.
 let LobbyManagerCtor = null;
+// Warms Firebase (SDK construction, anonymous auth, the first Firestore round
+// trip) ahead of the CREATE/JOIN click. Reached through this same dynamic
+// import — see the re-export in LobbyManager.js for why it cannot be imported
+// directly. Null until the chunk resolves; every call site null-checks.
+let prewarmSignaling = null;
 function preloadLobbyManager() {
   if (!LobbyManagerCtor) {
+    traceBoot('lobby chunk import start');
     import('../lobby/LobbyManager.js')
-      .then((m) => { LobbyManagerCtor = m.LobbyManager; })
-      .catch((err) => console.error('[multiplayer] lobby stack failed to load', err));
+      .then((m) => {
+        LobbyManagerCtor = m.LobbyManager;
+        prewarmSignaling = m.prewarmSignaling;
+        traceBoot('lobby chunk ready');
+      })
+      .catch((err) => {
+        traceBoot('lobby chunk FAILED');
+        console.error('[multiplayer] lobby stack failed to load', err);
+      });
   }
 }
 import * as profileStore from '../profile/store.js';
@@ -146,12 +169,30 @@ async function requestBestFrameRate(session) {
 // between passthrough and VR) for a while AFTER the browser fires 'end' and
 // the start screen reappears. A requestSession that lands inside that window
 // is rejected with the generic "Failed to request XR session" — the
-// intermittent failure players hit when switching MR ↔ VR Focus. Two guards
-// close it: wait for the previous session's 'end' before requesting, then
-// retry briefly if the runtime is still busy releasing it.
+// intermittent failure players hit when switching MR ↔ VR Focus, and the one
+// that also bites re-entering the SAME mode. Three guards close it: hold the
+// request until the runtime has had RUNTIME_SETTLE_MS since the previous
+// 'end', retry if it is still busy releasing, and refuse a second concurrent
+// entry attempt (see entryInFlight) so an impatient click cannot collide with
+// the request already in flight.
 let lastSessionEnded = null;
+let lastSessionEndedAt = 0;
 
-// Resolved 'end' promise = plain microtask, so the common path pays nothing.
+// Only one entry attempt in flight at a time — see the guard in startInGame.
+let entryInFlight = false;
+
+// Waiting for 'end' alone is not enough, because 'end' is ALSO what puts the
+// start screen back (see the session-end listener at the bottom of this
+// file): by the time the player can physically click Enter, the promise below
+// has always resolved, so awaiting it adds exactly zero delay on the re-entry
+// path it was written for. The wall-clock settle window is the part that
+// actually waits — hold the request until this long after the previous 'end',
+// so the FIRST attempt (the only one guaranteed to still hold the click's
+// transient activation) lands after the runtime has released the compositor.
+// Re-entering after a normal pause on the start screen is already past the
+// window and pays nothing.
+const RUNTIME_SETTLE_MS = 800;
+
 // The timeout cap means a runtime that never fires 'end' can't brick the
 // Enter button — we fall through and let the retry loop below deal with it.
 function waitForPreviousSessionEnd(timeoutMs = 1500) {
@@ -159,17 +200,30 @@ function waitForPreviousSessionEnd(timeoutMs = 1500) {
   return Promise.race([
     lastSessionEnded,
     new Promise((resolve) => setTimeout(resolve, timeoutMs)),
-  ]);
+  ]).then(() => {
+    const sinceEnd = performance.now() - lastSessionEndedAt;
+    const settle = RUNTIME_SETTLE_MS - sinceEnd;
+    if (!(settle > 0)) return undefined;
+    console.log('[XR] previous session ended ' + Math.round(sinceEnd) +
+      ' ms ago — settling ' + Math.round(settle) + ' ms before requesting');
+    return new Promise((resolve) => setTimeout(resolve, settle));
+  });
 }
 
-// Delays total ~1.55 s — added to the wait above this stays inside Chromium's
-// ~5 s transient-activation window, so every retry still counts as
-// user-activated. SecurityError / NotAllowedError are never retried: the
-// activation was consumed or the user denied the prompt, and repeating the
-// call can only fail the same way. Everything else (InvalidStateError, and
-// Quest's runtime-busy rejections, which surface as NotSupportedError even
-// though isSessionSupported already said yes) is transient teardown state.
-const SESSION_RETRY_DELAYS_MS = [250, 500, 800];
+// Delays total ~2.85 s — added to the settle window above this stays inside
+// Chromium's ~5 s transient-activation window, so every retry still counts as
+// user-activated. SecurityError / NotAllowedError are never retried on the
+// FIRST attempt: the activation was never there or the user denied the
+// prompt, and repeating the call can only fail the same way. Everything else
+// (InvalidStateError, and Quest's runtime-busy rejections, which surface as
+// NotSupportedError even though isSessionSupported already said yes) is
+// transient teardown state.
+//
+// The same error on a LATER attempt means something different: the first call
+// consumed the activation and the runtime was still busy releasing. That is a
+// lost click, not a dead end, so tag it and let the caller ask for one more
+// press instead of showing a raw DOM message the player cannot act on.
+const SESSION_RETRY_DELAYS_MS = [250, 500, 900, 1200];
 
 async function requestSessionWithRetry(sessionType, init) {
   for (let attempt = 0; ; attempt++) {
@@ -177,6 +231,7 @@ async function requestSessionWithRetry(sessionType, init) {
       return await navigator.xr.requestSession(sessionType, init);
     } catch (err) {
       const fatal = err && (err.name === 'SecurityError' || err.name === 'NotAllowedError');
+      if (fatal && attempt > 0) err.xrNeedsAnotherPress = true;
       if (fatal || attempt >= SESSION_RETRY_DELAYS_MS.length) throw err;
       const delay = SESSION_RETRY_DELAYS_MS[attempt];
       console.warn(`[XR] requestSession failed (${err.name || err}) — previous session likely still releasing; retrying in ${delay} ms`);
@@ -225,6 +280,20 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     return;
   }
 
+  // One entry attempt at a time. The start screen stays up until
+  // requestSession resolves, and on a re-entry that path now spends up to a
+  // second settling the runtime — long enough for an impatient second click
+  // to fire a SECOND requestSession. The spec rejects that outright (a
+  // pending immersive session is an InvalidStateError) and whichever session
+  // does come back is orphaned, with no 'end' listener and no way out but a
+  // reload. Cleared as soon as the session is live — the overlay is hidden by
+  // then, so no further click can land — or on any failure before that.
+  if (entryInFlight) {
+    console.warn('[XR] entry already in progress — ignoring duplicate Enter');
+    return;
+  }
+  entryInFlight = true;
+
   // 'ar' → passthrough MR (see the real room); 'vr-focus' → procedural
   // Focus Room venue (js/scene/focusRoom.js). WebXR session type is fixed
   // at request time, so this is a pre-session choice, driven by the toggle
@@ -240,6 +309,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   if (!supported) {
     const label = isVR ? 'Immersive VR' : 'Immersive AR';
     if (statusEl) statusEl.textContent = `${label} not supported on this device.`;
+    entryInFlight = false;
     return;
   }
 
@@ -294,9 +364,19 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       domOverlay: { root: document.body },
     });
   } catch (err) {
-    console.error('Failed to start XR session:', err);
+    // Log the NAME as well: the raw message ("Failed to execute
+    // 'requestSession' on 'XRSystem': …") is the same string for half a dozen
+    // unrelated causes, and the DOMException name is the half that says which.
+    console.error('Failed to start XR session:', err && err.name, err);
     const label = isVR ? 'VR' : 'MR';
-    if (statusEl) statusEl.textContent = `Failed to start ${label} session: ` + err.message;
+    if (statusEl) {
+      // Lead with the one instruction that actually works — the runtime is
+      // busy, not broken, and the next press almost always gets in.
+      statusEl.textContent = err && err.xrNeedsAnotherPress
+        ? `The headset was still closing the previous session — press Enter ${label} again.`
+        : `Failed to start ${label} session — press Enter ${label} again. (${(err && err.name) || 'Error'}: ${err && err.message})`;
+    }
+    entryInFlight = false;
     // Nothing to roll back — no scene or lighting state has been touched yet.
     return;
   }
@@ -305,8 +385,31 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // menu, abortEntry, or the runtime itself). { once } so a stale listener
   // never holds the resolved promise's session alive.
   lastSessionEnded = new Promise((resolve) => {
-    session.addEventListener('end', resolve, { once: true });
+    session.addEventListener('end', () => {
+      // Wall-clock stamp for RUNTIME_SETTLE_MS — the event fires well before
+      // the Quest runtime has finished letting go of the compositor.
+      lastSessionEndedAt = performance.now();
+      resolve();
+    }, { once: true });
   });
+  // Session is ours: the overlay comes down on the next line, so no further
+  // Enter click can reach startInGame until the session ends and puts it back.
+  entryInFlight = false;
+
+  // Kick the lobby chunk (~368 KB of Firebase SDK) now rather than at the end
+  // of setup: the fetch overlaps setSession + the GLB load, and the module's
+  // evaluation task slots into the idle main thread while loadModels() waits
+  // on the network. Deliberately not at the top of startInGame — the
+  // isSessionSupported and requestSession failure paths both return before
+  // this point, and downloading it for a player who never got into XR is
+  // waste.
+  preloadLobbyManager();
+
+  // Session is live and the overlay is coming down — open the analytics run
+  // here, not at page load. This is the first ensureAnonymousAuth() for a SOLO
+  // player, and its identitytoolkit round trip has no business on the entry
+  // critical path. Fire-and-forget: it never rejects and never blocks setup.
+  beginSession({ xrMode });
 
   if (overlay) overlay.style.display = 'none';
   // Arena mode: solid dark clear + dimmed base lights; the room itself is
@@ -437,8 +540,15 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // impact heads NOW, behind the loading panel. Left lazy, the first swing or
   // ball roll paid that fill inside a render frame.
   prewarmAudio();
+  // Paint the Focus Room's two procedural tiles (1024² wood floor, 512x1024
+  // wall panelling) while loadModels waits on the network, so createFocusRoom
+  // below finds both canvases already memoized. setTimeout rather than a bare
+  // call so the paint is its own task inside that wait instead of extending
+  // this one. Skipped in MR, which builds no venue.
+  if (isVR) setTimeout(() => { warmWoodTile(); warmWallTile(); }, 0);
   try {
     await loadModels(loadingScreen, statusEl);
+    mark('modelsLoaded');
   } catch (err) {
     abortEntry('Failed to load 3D models: ' + (err?.message || err));
     return;
@@ -471,6 +581,15 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   if (isVR) {
     arena = createFocusRoom();
     if (arena) arena.show();
+    // Link the room's shader programs via KHR_parallel_shader_compile instead
+    // of stalling the first frame that draws it. Plain `camera`, NOT
+    // renderer.xr.getCamera(): compile() reads only camera.layers, to filter
+    // lights, and never camera matrices — and ARENA_LIGHT_LAYER is outside
+    // both that mask and the XR ArrayCamera's, so the surviving light set, and
+    // therefore the program keys, match what the ArrayCamera will render with.
+    // Never awaited: a runtime that never settles this must not stall entry.
+    renderer.compileAsync(scene, camera)
+      .catch((err) => console.warn('[XR] shader precompile failed:', err));
   }
 
   // BETA LAUNCH: GLB venue loading stays disabled with the createArena
@@ -663,6 +782,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // (lobby auto-entry, or a drill exited back to the menu) it goes straight
     // into the match as before.
     if (drill === 'multiplayer' && !(multiplayer && multiplayer.networkManager)) {
+      // Opening the panel is the intent signal. Pay Firebase init + anonymous
+      // auth + the first Firestore round trip HERE, while the player is still
+      // choosing CREATE vs JOIN or typing a six-character code — otherwise all
+      // of it lands inside the wait after the button press.
+      traceBoot('MULTI panel opened');
+      if (prewarmSignaling) prewarmSignaling();
       enterTuner(mpMenu);
       return;
     }
@@ -709,7 +834,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // a user has navigated wrist menu → MULTI → CREATE/JOIN it is resolved. On
   // the (slow-network) chance it isn't, the factory throws inside the menu
   // model's try and surfaces as its friendly retryable error.
-  preloadLobbyManager();
   const mpMenu = new MultiplayerMenu({
     createLobby: () => {
       if (!LobbyManagerCtor) {
@@ -1261,6 +1385,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
 
   // --- Session end cleanup ---
   session.addEventListener('end', () => {
+    // FIRST, before any teardown: this is the last moment the page is
+    // guaranteed alive, and the write has to be issued from here rather than
+    // from an unload handler, which on a headset-removal often never runs.
+    endAnalyticsRun({});
     teardownDrill();
     clearStatsHud();
     wristMenu.hide();
@@ -1287,6 +1415,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     restoreARLighting();
     setSceneBackground(new THREE.Color(0x1a1a2e));
     if (overlay) overlay.style.display = 'flex';
+    // The overlay coming back used to be the whole of "the session ended".
+    // The card goes up with it — see js/ui/postSession.js for why this
+    // moment and no other.
+    showPostSession();
     renderer.setAnimationLoop(null);
     // Close the peer connection on session end so the room is released and
     // the remote peer is notified via the standard onclose path. Prefer the

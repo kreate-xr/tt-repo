@@ -12,6 +12,17 @@
 // would hand the opponent several times the spin its shot tables were tuned
 // against, silently rewriting every rally. That asymmetry is the whole
 // contract of this constant and is what the AI test below pins down.
+//
+// IT IS A CEILING, NOT A FLAT MULTIPLIER. The gain multiplies spinCaptureGain,
+// and impulse.js locks the linear half of the friction couple to that same
+// number (HOLLOW_SPHERE_MOI_FACTOR: Δv_t = (2/3)·R·Δω) — so at 2.5 a player's
+// brush injects 1.167 m/s of ball speed per m/s of slip, against the AI's
+// 0.467. Nothing bounded that channel: PADDLE_CONTACT_SPEED_CAP caps only the
+// NORMAL component. What a contact actually receives is therefore scaled by
+// how much stroke went into it (swingPreparation.js), which is the governor
+// the AI has always had through its capped windup distance. The last two
+// describe blocks pin both halves of that: the ceiling is still reached by a
+// real stroke, and a jab no longer reaches it.
 
 const THREE = require('three');
 
@@ -42,6 +53,7 @@ jest.mock('../js/scene/models.js', () => {
     setBallSquash: () => {},
     updateBallSquashAmount: () => {},
     resetBallSquash: () => {},
+    setBallOpacity: () => {},
   };
 });
 jest.mock('../js/scene/audio.js', () => ({
@@ -79,15 +91,44 @@ const BRUSH = 0.022;
 
 // One player swing: identity-quaternion paddle carrying its face 0.1 below the
 // controller (paddleFaceOffset), swept up past a ball hanging at rest.
-function playerSwing() {
+//
+// `prepSteps` run-up frames precede the contact, each advancing the paddle by
+// the SAME (LIFT, BRUSH) vector as the contact step. That matters twice over:
+// the gain is now earned by stroke travel (swingPreparation.js), and a run-up
+// of identical steps leaves the median-of-3 velocity filter reporting exactly
+// the value the unprepared two-frame swing passes through raw — so prepared
+// and unprepared swings meet the ball with identical contact kinematics and
+// differ ONLY in the history behind them.
+//
+// The ball is spawned two frames before contact in every case, so gravity has
+// moved it by the same amount no matter how long the run-up was.
+const PREP_STEPS_COMMITTED = 3;   // 4 × 0.132 m = 0.53 m — past SWING_PREP_FULL_M
+const PREP_STEPS_JAB = 0;         // 1 × 0.132 m — a stab, under the ramp
+
+function playerSwing(prepSteps = PREP_STEPS_COMMITTED) {
   const ctrl = new THREE.Object3D();
+  // Start every swing from a clean paddle history. Without this the median-of-3
+  // velocity ring and the previous swing's face position leak across swings —
+  // the first frame of a new swing finite-differences against wherever the last
+  // one ended, and a short swing then meets the ball at a median of two junk
+  // samples. Run-ups of different lengths would be comparing different
+  // collisions, which is exactly what these tests must not do.
+  ball.resetPaddleTracking();
+  let t = (clock += 1);
+  for (let k = prepSteps; k >= 1; k--) {
+    ctrl.position.set(0, 1.00 - k * LIFT, 0.600 - k * BRUSH);
+    ctrl.updateMatrixWorld(true);
+    ball.tickPhysics(DT, ctrl, t);
+    t += DT;
+  }
   ball.spawnBallAt(BALL_AT, new THREE.Vector3(0, 0, 0), null);
   ctrl.position.set(0, 1.00, 0.600);
   ctrl.updateMatrixWorld(true);
-  ball.tickPhysics(DT, ctrl, (clock += 1));
+  ball.tickPhysics(DT, ctrl, t);
+  t += DT;
   ctrl.position.set(0, 1.00 + LIFT, 0.600 + BRUSH);
   ctrl.updateMatrixWorld(true);
-  ball.tickPhysics(DT, ctrl, clock + DT);
+  ball.tickPhysics(DT, ctrl, t);
 }
 
 // The same brushing sweep driven through the AI registration path instead.
@@ -127,6 +168,11 @@ function spinAtGain(swing, gain) {
   return hit;
 }
 
+// The same, for a player swing with a specific amount of run-up behind it.
+function hitWithPrep(prepSteps) {
+  return spinAtGain(() => playerSwing(prepSteps), 2.5);
+}
+
 afterEach(() => {
   C.setPlayerSpinGain(2.5);
   ball.clearListeners();
@@ -164,12 +210,74 @@ describe('PLAYER_SPIN_GAIN', () => {
     expect(gained.spinMag / base.spinMag).toBeCloseTo(1.0, 6);
   });
 
-  test('does not change pace — only spin capture is compensated', () => {
-    // The gain multiplies spinCaptureGain, which feeds Δω and the tangential
-    // friction kick. The normal-direction reflection that sets shot speed must
-    // not move, or "more spin" would silently become "harder ball" too.
+  test('leaves the normal-axis reflection alone but DOES add pace', () => {
     const base = spinAtGain(playerSwing, 1);
     const gained = spinAtGain(playerSwing, 2.5);
+    // impactSpeed is |v_rel · n| measured BEFORE the impulse, so the gain
+    // cannot move it. This assertion is what the previous version of this
+    // test checked while claiming to prove "the gain does not change pace" —
+    // it proved nothing, because no value of the gain could ever have changed
+    // this number.
     expect(gained.impactSpeed).toBeCloseTo(base.impactSpeed, 6);
+    // The claim it MEANT to make is false, and this is the whole reason the
+    // gain has to be governed: the tangential friction impulse that carries
+    // the extra spin also drags the ball along the slip direction, so more
+    // spin is also, unavoidably, a faster ball leaving the bat.
+    expect(gained.outSpeed).toBeGreaterThan(base.outSpeed);
+  });
+});
+
+// --- The governor -----------------------------------------------------------
+// Same ball, same contact kinematics, same ceiling — only the stroke behind
+// the contact differs. Everything here is a controlled comparison: the run-up
+// steps are the contact step repeated, so the median-of-3 velocity filter
+// hands both swings the identical contact velocity, and the ball is spawned
+// two frames before contact either way.
+describe('swing preparation governs the gain', () => {
+  test('a committed stroke still earns the full ceiling', () => {
+    const raw = spinAtGain(() => playerSwing(PREP_STEPS_COMMITTED), 1);
+    const committed = hitWithPrep(PREP_STEPS_COMMITTED);
+    expect(committed.swingTravel).toBeGreaterThan(0.40); // SWING_PREP_FULL_M
+    expect(committed.spinMag).toBeLessThan(C.PADDLE_SPIN_CAP_KNEE); // not vacuous
+    expect(committed.spinMag / raw.spinMag).toBeCloseTo(2.5, 2);
+  });
+
+  test('a jab earns none of it — a block gets raw physics', () => {
+    const raw = spinAtGain(() => playerSwing(PREP_STEPS_JAB), 1);
+    const jab = hitWithPrep(PREP_STEPS_JAB);
+    expect(jab.swingTravel).toBeLessThan(0.40);
+    // Not literally 1.0 — one 0.132 m step sits just above SWING_PREP_MIN_M,
+    // on the flat bottom of the smoothstep. The point is that it is nowhere
+    // near the ceiling a real stroke reaches.
+    expect(jab.spinMag / raw.spinMag).toBeGreaterThanOrEqual(1);
+    expect(jab.spinMag / raw.spinMag).toBeLessThan(1.2);
+  });
+
+  test('the contact itself is identical — only the history differs', () => {
+    // If this drifts, the two tests above are comparing different collisions
+    // and prove nothing about preparation.
+    const jab = hitWithPrep(PREP_STEPS_JAB);
+    const committed = hitWithPrep(PREP_STEPS_COMMITTED);
+    expect(committed.impactSpeed).toBeCloseTo(jab.impactSpeed, 6);
+    expect(committed.contactRadius).toBeCloseTo(jab.contactRadius, 6);
+    expect(committed.swingSpeed).toBeCloseTo(jab.swingSpeed, 6);
+  });
+
+  test('preparation controls pace, not just spin — the compounding loop', () => {
+    // This is the property the since-removed MULTIPLAYER_PADDLE_COR_SCALE was
+    // trimming in the wrong term. A hurried return can no longer put more pace on the ball
+    // than a prepared one, so a fast exchange between two humans damps itself
+    // instead of compounding.
+    const jab = hitWithPrep(PREP_STEPS_JAB);
+    const committed = hitWithPrep(PREP_STEPS_COMMITTED);
+    expect(committed.outSpeed).toBeGreaterThan(jab.outSpeed);
+  });
+
+  test('AI contacts are untouched by preparation', () => {
+    // The AI never consults the tracker: its windup distance already caps its
+    // stroke, and double-governing it would quietly rewrite its shot tables.
+    const hit = spinAtGain(aiSwing, 2.5);
+    expect(hit.origin).toBe('ai-test');
+    expect(hit.swingTravel).toBe(0);
   });
 });

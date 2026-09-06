@@ -40,6 +40,7 @@ jest.mock('../js/scene/models.js', () => {
     setBallSquash: () => {},
     updateBallSquashAmount: () => {},
     resetBallSquash: () => {},
+    setBallOpacity: () => {},
   };
 });
 jest.mock('../js/scene/audio.js', () => ({

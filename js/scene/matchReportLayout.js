@@ -146,8 +146,15 @@ export function renderMatchReport(ctx, modelIn) {
   ctx.textBaseline = 'middle';
 
   // --- Title -----------------------------------------------------------------
-  ctx.font = `bold 28px ${FONT}`;
-  ctx.fillStyle = WHITE;
+  // With a winner known the title IS the result announcement — the headline
+  // the scoreboard used to banner across its own score area — so it's drawn
+  // in gold at the larger size. Callers pass the wording ("YOU WIN!",
+  // "OPPONENT WINS THE MATCH 3-1"); a plain "MATCH COMPLETE" stays white.
+  // Multiplayer's strings are long enough to need measuring: the card is
+  // 1024 wide and canvas paints straight past its edge.
+  const titleGold = !!m.winner;
+  fitPx(ctx, m.title, w - MARGIN * 2, titleGold ? 34 : 28, 18);
+  ctx.fillStyle = titleGold ? C.gold : WHITE;
   ctx.fillText(m.title, w / 2, TITLE_Y);
 
   // --- Side panels -----------------------------------------------------------
@@ -378,6 +385,21 @@ function hline(ctx, x0, x1, y, color) {
   ctx.moveTo(x0, y);
   ctx.lineTo(x1, y);
   ctx.stroke();
+}
+
+// Largest size at which `text` fits `maxW`, stepping down from `size` and
+// never below `min`. Same idea as scoreboardLayout's fitPx (headline text
+// shrinks rather than being cut), kept local because this card's type is all
+// bold. Leaves ctx.font set to the size it chose.
+function fitPx(ctx, text, maxW, size, min) {
+  let px = size;
+  while (px > min) {
+    ctx.font = `bold ${px}px ${FONT}`;
+    if (ctx.measureText(text).width <= maxW) break;
+    px -= 1;
+  }
+  ctx.font = `bold ${px}px ${FONT}`;
+  return px;
 }
 
 // Canvas paints straight past its container, so anything whose width depends

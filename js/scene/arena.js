@@ -8,12 +8,13 @@
 // Layer strategy:
 //   Venue meshes stay on layer 0 (so the WebXR ArrayCamera renders them
 //   in both eyes — layer isolation on meshes is unreliable in stereo XR)
-//   AND ADDITIONALLY have ARENA_LIGHT_LAYER (3) enabled. Layer 3 is the
-//   "arena-only lighting" bit: arenaKeyLight + arenaFillHemi (defined in
-//   sceneSetup.js) sit on that layer and thus only contribute to venue
-//   shading. Gameplay meshes stay on layer 0 only, so those bright arena
-//   lights (deliberately hot to make the venue read) never throw a
-//   hotspot on the ball / paddle / table.
+//   AND ADDITIONALLY have ARENA_LIGHT_LAYER (3) enabled. That bit is now a
+//   MARKER for venue geometry, not a lighting route: three.js has no
+//   per-mesh light masking (see the LIGHTING LAYERS note in sceneSetup.js),
+//   so the layer-3 arena rig this once described never illuminated
+//   anything and has been deleted. A venue that needs to be brighter
+//   lights itself with emissive on its own materials, the way the Focus
+//   Room does with ROOM.SELF_LIT.
 //
 //   In VR mode setArenaLighting() also swings the P16 keyLight + rimLight
 //   onto layer 3, so the direct-key rig for AR mode stops touching gameplay
@@ -36,10 +37,15 @@ import { scene, ARENA_LIGHT_LAYER } from './sceneSetup.js';
 import { tableBox } from './models.js';
 import { hudLog } from './hud.js';
 
-// Layer used ONLY to quarantine THREE.Light nodes that may be baked into the
-// GLB, so they don't illuminate gameplay meshes on layer 0. No camera ever
-// enables this layer — that's the whole point; the lights become inert.
-const ARENA_LIGHT_QUARANTINE_LAYER = 2;
+// Baked-in GLB lights are switched off with visible=false, NOT by moving
+// them to a layer. The old quarantine layer was 2 — which is precisely
+// WebXR's right-eye layer (WebXRManager sets cameraXR.layers.mask =
+// camera.layers.mask | 0b110, then strips bit 1 from the left eye and bit 2
+// from the right). A light parked there passed the right eye's layer test
+// and was dropped by the left, so the venue's baked lights were live in ONE
+// EYE ONLY — binocular rivalry, the worst possible outcome for a headset.
+// visible=false is what actually makes a light inert: projectObject()
+// returns early on it, so it never reaches the frame's light state.
 
 // Node names in arena.glb that must be hidden because we render the real,
 // physics-driven equivalents from other GLBs. The venue ships its own
@@ -303,8 +309,9 @@ export function createArena(variantName = 'stadium') {
 
     // Meshes stay on default layer 0 so both eyes render them (see file
     // header for the WebXR ArrayCamera layer-propagation caveat). THREE.Light
-    // nodes get moved to a quarantine layer no camera ever enables so any
-    // baked-in venue lights can't leak onto gameplay meshes' shading.
+    // nodes are set invisible so any baked-in venue lights can't leak onto
+    // gameplay meshes' shading — see the note above on why a layer cannot
+    // do this job.
     // Nodes whose name is in HIDDEN_VENUE_NODE_NAMES get set invisible so the
     // venue's decorative table/net don't overlap our real Table.glb.
     // Also count mesh vs. light nodes so the HUD tells us both "the file
@@ -314,7 +321,7 @@ export function createArena(variantName = 'stadium') {
     let meshCount = 0, lightCount = 0, hiddenCount = 0;
     arenaMesh.traverse((obj) => {
       if (obj.isLight) {
-        obj.layers.set(ARENA_LIGHT_QUARANTINE_LAYER);
+        obj.visible = false;
         lightCount++;
         return;
       }
@@ -454,32 +461,13 @@ export function createArena(variantName = 'stadium') {
         console.warn('[arena] tt variant: no Wall0[0-3] nodes found — scoreboard falls back to floating');
       }
 
-      // Interior fill. tt-arena is a closed box; the scene's arena directional
-      // lights sit above the venue pointing down at origin, so on the interior
-      // only the floor's up-facing normals catch them — the ceiling and the
-      // inward faces of the walls receive no direct contribution and fall back
-      // to arenaFillHemi's ground color (0x2a2618, dark warm brown), which is
-      // why the room read dim. A PointLight placed inside the room radiates
-      // omnidirectionally, so every interior normal gets a direct hit
-      // regardless of orientation. Kept on ARENA_LIGHT_LAYER so it does NOT
-      // touch gameplay meshes (ball/paddle/table stay hemi-only per the P16
-      // no-specular-on-gameplay rule). Anchored to the CeilingLight node so
-      // the light source visually coincides with the venue's own fixture.
-      // Intensity is in candela (physically-correct units default since r155);
-      // 300 cd with inverse-square decay reads as a strong ceiling luminaire
-      // at 3–5 m — comparable to real broadcast-court fixture output.
-      const ceilingFixture = arenaMesh.getObjectByName('CeilingLight');
-      if (ceilingFixture) {
-        const fixtureWorld = ceilingFixture.getWorldPosition(new THREE.Vector3());
-        const interiorLight = new THREE.PointLight(0xbfd4ff, 300, 0, 2);
-        interiorLight.position.copy(fixtureWorld).sub(group.position);
-        interiorLight.castShadow = false;
-        interiorLight.layers.set(ARENA_LIGHT_LAYER);
-        group.add(interiorLight);
-        console.log('[arena] tt interior PointLight added at', interiorLight.position);
-      } else {
-        console.warn('[arena] tt variant: no CeilingLight node — interior fill skipped');
-      }
+      // NOTE: a PointLight used to be added here for interior fill, on
+      // ARENA_LIGHT_LAYER "so it does not touch gameplay meshes". It never
+      // lit anything at all — no camera enables layer 3, so it was dropped
+      // from every frame (sceneSetup.js LIGHTING LAYERS). It has been
+      // removed rather than repaired: repairing it means the light reaches
+      // the ball and paddle too, which the P16 no-specular-on-gameplay rule
+      // forbids. Brighten this venue with emissive on its own materials.
     }
 
     hudLog(`arena: SHOWN — ${meshCount} meshes, ${lightCount} lights, ` +

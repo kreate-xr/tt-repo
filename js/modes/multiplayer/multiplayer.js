@@ -31,8 +31,8 @@ import {
   paddleFaceCenterWorld, paddleFaceNormalWorld, paddleVelocity,
 } from '../../physics/ball.js';
 import { resolvePaddleTablePenetration } from '../../physics/paddleTableClamp.js';
-import { GRAVITY } from '../../physics/constants.js';
-import { playBounceSound } from '../../scene/audio.js';
+import { GRAVITY, HAPTIC_MAX_SPEED } from '../../physics/constants.js';
+import { playBounceSound, playPaddleHitSound, playPaddleEdgeSound } from '../../scene/audio.js';
 import { PaddleSync } from '../../network/PaddleSync.js';
 import { GameStateSync, AUTHORITATIVE_EXTRAP_CAP_MS, BALL_EXTRAP_SUBSTEP_MS } from '../../network/GameStateSync.js';
 import { HandoffManager } from '../../network/HandoffManager.js';
@@ -48,6 +48,7 @@ import { createPlayerServeController } from '../aiMatch/playerServe.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
 import { createMatchReport } from '../../scene/matchReport.js';
 import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
+import { mark, setMatchSummary, setNetSource } from '../../analytics/session.js';
 import { faultRuleText } from '../../scene/faultText.js';
 import { pulseFoul } from '../../xr/haptics.js';
 import { createNetTouchWatcher } from '../../scene/netTouch.js';
@@ -109,6 +110,15 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   sessionState.ballOwner = role === 'host' ? 'self' : 'opponent';
 
   const tableCenterZ = tableBox ? (tableBox.min.z + tableBox.max.z) / 2 : 0;
+
+  // NOTE: multiplayer used to soften the bat here (PADDLE_RESTITUTION × 0.75)
+  // because pace compounded between two humans while the AI absorbed it. That
+  // was a symptom fix in the wrong term — the energy was entering through the
+  // tangential friction kick that PLAYER_SPIN_GAIN scales, not through the
+  // normal reflection COR was trimming, so it deadened clean drives and left
+  // the compounding intact. The cause (a player with no biomechanical limit on
+  // stroke energy) is now handled at its source in swingPreparation.js, which
+  // governs both modes identically. One bat, one COR, no per-mode constant.
 
   // --- Match state (scoring, serve turns, game end) ---
   // Absolute side names ('host'/'guest') keep the model identical on both
@@ -185,10 +195,6 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   }
   startMatchClock();
   const report = createMatchReport();
-  // Delay so the deciding point is still on the table when the match ends,
-  // rather than a panel appearing over it instantly.
-  const REPORT_DELAY_MS = 3000;
-  let reportTimer = null;
   let matchDone = false;
   // Rematch handshake. Both peers must ask before either resets — see
   // PacketType.REMATCH_REQUEST. `matchEpoch` counts completed rematches and
@@ -239,11 +245,18 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
       opponent: myAbs === 'host' ? g.scoreGuest : g.scoreHost,
     }));
     const st = statTracker.getStats();
+    setMatchSummary(st);
+    const myGames = myAbs === 'host' ? s.gamesHost : s.gamesGuest;
+    const oppGames = myAbs === 'host' ? s.gamesGuest : s.gamesHost;
     report.setModel({
+      // The headline the scoreboard banner used to carry.
+      title: s.matchWinner === myAbs
+        ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
+        : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
       playerName: 'YOU',
       opponentName: 'OPPONENT',
-      playerGames: myAbs === 'host' ? s.gamesHost : s.gamesGuest,
-      opponentGames: myAbs === 'host' ? s.gamesGuest : s.gamesHost,
+      playerGames: myGames,
+      opponentGames: oppGames,
       bestOf: s.bestOf,
       sets,
       winner: s.matchWinner === myAbs ? 'player' : 'opponent',
@@ -262,15 +275,18 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
 
   // Both match-over paths (our own applyRallyEnd, and adopting the host's
   // reconciled state) come through here, so a guest that only learns the match
-  // is over from a SCORE_UPDATE still gets the card — and never gets it twice.
-  function scheduleMatchReport(s) {
-    if (matchDone || reportTimer) return;
+  // is over from a SCORE_UPDATE still gets the card — and never gets it twice
+  // (showMatchReport sets matchDone synchronously).
+  //
+  // Raised on the spot: the card used to wait out a 3 s delay so the
+  // deciding point stayed visible, but with the scoreboard's win banner gone
+  // it is the only announcement that the match is over, and a silent 3 s gap
+  // between the last point and any feedback read as a freeze.
+  function raiseMatchReport(s) {
+    if (matchDone) return;
     statTracker.stop();
     stopMatchClock();
-    reportTimer = setTimeout(() => {
-      reportTimer = null;
-      showMatchReport(s);
-    }, REPORT_DELAY_MS);
+    showMatchReport(s);
   }
 
   function requestRematch() {
@@ -302,7 +318,6 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     match.reset();
     statTracker.reset();
     startMatchClock();
-    if (reportTimer) { clearTimeout(reportTimer); reportTimer = null; }
     matchDone = false;
     report.hide();
     if (scoreboard) scoreboard.setMatchOverBanner(null);
@@ -402,6 +417,53 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     seenNetEids.push(eid);
     if (seenNetEids.length > 8) seenNetEids.shift();
     return true;
+  }
+
+  // Opponent paddle contact. Unlike the AI match, the remote paddle here is
+  // visual-only — it is never registered as a collider (see the aiFace* note
+  // below), so ball.js fires no paddleHit for their swing and their half of
+  // every rally was silent. The hitter therefore sends the sound itself, on
+  // both channels with eid dedupe, exactly like NET_HIT: the unreliable copy
+  // normally lands a full one-way trip before the ordered reliable one, and
+  // a clack that arrives late reads as wrong as no clack at all.
+  let paddleEidCounter = role === 'host' ? 0 : 1;
+  const seenPaddleEids = [];
+  const remoteHitPos = new THREE.Vector3();
+  function sendPaddleHitSound(info) {
+    paddleEidCounter += 2;
+    const p = info.contactPos;
+    const payload = {
+      eid: paddleEidCounter,
+      // Same volume/intensity curves ball.js uses for the local contact, so
+      // the two peers hear the same strike at the same weight.
+      vol: Math.min(info.swingSpeed / 3, 1.0),
+      k: Math.min(info.impactSpeed / HAPTIC_MAX_SPEED, 1.0),
+      p: p ? [p.x, p.y, p.z] : null,
+      edge: !!info.edge,
+    };
+    nm.sendGame({ type: PacketType.PADDLE_HIT_G, ...payload });
+    nm.sendEvent({ type: PacketType.PADDLE_HIT, ...payload });
+  }
+  function playRemotePaddleHit(msg) {
+    if (typeof msg.eid === 'number') {
+      if (seenPaddleEids.includes(msg.eid)) return;
+      seenPaddleEids.push(msg.eid);
+      if (seenPaddleEids.length > 8) seenPaddleEids.shift();
+    }
+    // Sender frame -> ours: mirror the contact point across the net plane,
+    // the same rule PaddleSync applies to the remote paddle pose. Without it
+    // the clack pans from behind the listener.
+    let pos = null;
+    if (msg.p) {
+      remoteHitPos.set(msg.p[0], msg.p[1], 2 * tableCenterZ - msg.p[2]);
+      pos = remoteHitPos;
+    }
+    const vol = msg.vol != null ? msg.vol : 0.5;
+    const k = msg.k != null ? msg.k : vol;
+    // No blade-weight shape: the opponent's bat weight is their setting, and
+    // it is not on the wire. Neutral shape matches what an AI contact uses.
+    if (msg.edge) playPaddleEdgeSound(vol, k, pos);
+    else playPaddleHitSound(vol, k, pos, undefined, 'opponent');
   }
 
   // Optimistic-authority handoff protocol state (hit ids, pending epoch,
@@ -525,6 +587,10 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     }
     if (packet.type === PacketType.NET_HIT_G) {
       if (shouldPlayNetSound(packet.eid)) playBounceSound(0.2);
+      return;
+    }
+    if (packet.type === PacketType.PADDLE_HIT_G) {
+      playRemotePaddleHit(packet);
     }
   }
   function onEventMessage(msg) {
@@ -539,6 +605,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         if (shouldPlayNetSound(msg.eid)) playBounceSound(0.2);
         break;
       }
+      case PacketType.PADDLE_HIT: playRemotePaddleHit(msg); break;
       case PacketType.BALL_LOST: {
         if (ballModel) ballModel.visible = false;
         // The owner observed the loss. Hide the mirrored ball and drop any
@@ -617,18 +684,11 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         hudLog(`score reconciled from host (rally ${snap.rallySeq})`);
         const s = match.getState();
         if (s.matchOver) {
-          const myGames = myAbs === 'host' ? s.gamesHost : s.gamesGuest;
-          const oppGames = myAbs === 'host' ? s.gamesGuest : s.gamesHost;
-          if (scoreboard) {
-            scoreboard.setMatchOverBanner(
-              s.matchWinner === myAbs
-                ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
-                : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
-            );
-          }
           // Reconciliation is the only way a peer whose own verdict was
           // dropped learns the match is over — so the card is raised here too.
-          scheduleMatchReport(s);
+          // The result headline rides on the card (showMatchReport), not on a
+          // scoreboard banner.
+          raiseMatchReport(s);
         }
         break;
       }
@@ -729,6 +789,11 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // non-owner. See network/HandoffManager.js for the protocol.
   function onPaddleHit(info) {
     if (!info || info.origin !== 'player') return;
+    // Sound first, and before the rallyDecided gate: ball.js already played
+    // this contact in our own ears whatever the rally state, so the opponent
+    // must hear it too — a swing at a dead ball that is silent on one side
+    // and audible on the other is worse than an extra clack.
+    sendPaddleHitSound(info);
     if (!ballModel) return;
     // Swings at a ball whose point is already decided are not play. The
     // corpse stays visible until the next serve window opens 2.5s later, and
@@ -739,6 +804,8 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     // just as reliable online as offline (the ball itself leaves our
     // authority a moment later).
     statTracker.recordShot({ outSpeed: info.outSpeed, spinType: info.spinType });
+    // Funnel: first paddle contact — see the matching mark in aiMatch.js.
+    mark('firstRally');
     hm.localHit(gameSync.encodeForWire(ballModel.position, ballVelocity, ballAngularVelocity));
     // Keep (or grab — an early swing at a still-incoming dead-reckoned ball
     // can fire before we adopted the opponent's handoff) full authority for
@@ -991,15 +1058,8 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     if (s.matchOver) {
       const myGames = myAbs === 'host' ? s.gamesHost : s.gamesGuest;
       const oppGames = myAbs === 'host' ? s.gamesGuest : s.gamesHost;
-      if (scoreboard) {
-        scoreboard.setMatchOverBanner(
-          s.matchWinner === myAbs
-            ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
-            : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
-        );
-      }
       hudLog(`match over: ${s.matchWinner === myAbs ? 'you win' : 'opponent wins'} ${myGames}-${oppGames}`);
-      scheduleMatchReport(s);
+      raiseMatchReport(s);
       return;
     }
     if (s.gameJustEnded) {
@@ -1054,6 +1114,19 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
       : null;
     if (telemetry) telemetry.start();
   }
+
+  // The 2 s beacon has no deployed sink off localhost (see TELEMETRY_URL
+  // above), but the sampler still runs and lastMetrics still holds the most
+  // recent read — so the session doc gets the WebRTC health for free, once,
+  // instead of thousands of writes per player. A getter, not a snapshot: what
+  // matters is the state at session end.
+  setNetSource(() => ({
+    telemetry: telemetry ? telemetry.lastMetrics : null,
+    thermalThrottled: ThermalMonitor.isThrottled(),
+    // A session that reached this module at all has a live connection; a
+    // FAILED join never gets here, and is recorded by the lobby path instead.
+    connectFailed: false,
+  }));
 
   // Wire all the connection-bound side-effects: incoming-message handlers,
   // send loop, telemetry. Called once on entry; called again after each
@@ -1328,7 +1401,6 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   }
   function dispose() {
     if (serveTimer) clearTimeout(serveTimer);
-    if (reportTimer) clearTimeout(reportTimer);
     stopMatchClock();
     report.dispose();
     if (remotePaddleVisual) remoteGroup.remove(remotePaddleVisual);

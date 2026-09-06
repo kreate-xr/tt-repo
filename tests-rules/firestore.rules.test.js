@@ -86,6 +86,16 @@ describe('auth boundary', () => {
     await seedRoom('AAAAAA', freshRoom({ offer: sdp('offer') }));
     await assertSucceeds(getDoc(doc(db(OTHER), 'rooms/AAAAAA')));
   });
+
+  test('signed-in get on a nonexistent room succeeds — the signaling warm-up', async () => {
+    // firebaseClient.prewarmSignaling() reads this doc when the player opens
+    // the multiplayer lobby, purely to open the Firestore channel before the
+    // CREATE/JOIN click. The id is deliberately outside ROOM_CODE_ALPHABET
+    // (which omits 0 and 1) and 7 chars rather than 6, so it can never collide
+    // with a live room. If `allow get` is ever tightened, the warm-up must be
+    // changed with it or it will log a permission-denied on every lobby open.
+    await assertSucceeds(getDoc(doc(db(OTHER), 'rooms/0warmup')));
+  });
 });
 
 describe('room create', () => {
@@ -258,5 +268,192 @@ describe('ICE candidates', () => {
     await assertSucceeds(getDocs(collection(db(GUEST), `rooms/${CODE}/hostCandidates`)));
     await assertSucceeds(getDocs(collection(db(HOST), `rooms/${CODE}/guestCandidates`)));
     await assertFails(getDocs(collection(db(OTHER), `rooms/${CODE}/hostCandidates`)));
+  });
+});
+
+// ── Beta instrumentation collections ────────────────────────────────────────
+//
+// sessions / feedback / signups are write-only from the client. The property
+// that matters most is the one with no equivalent in the rooms rules above:
+// `read` is denied even to the author. A player's feedback text and email must
+// not be fetchable by anyone who can open the app, so there is no path from
+// the client back to any of it — only the Firebase console and
+// scripts/query-sessions.mjs, both of which bypass rules by design.
+//
+// Ownership is encoded in the path, so a foreign uid cannot even address
+// another player's document.
+
+describe('sessions/{uid}/runs/{runId}', () => {
+  const runPath = (uid) => `sessions/${uid}/runs/run1`;
+
+  const runCreate = (extra = {}) => ({
+    startedAt: serverTimestamp(),
+    xrMode: 'ar',
+    appVersion: '1.0.0',
+    ua: 'Mozilla/5.0 (Quest)',
+    screen: '1024x768',
+    ...extra,
+  });
+
+  async function seedRun(uid, data) {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), runPath(uid)), data);
+    });
+  }
+
+  test('the owner creates their own run', async () => {
+    await assertSucceeds(setDoc(doc(db(HOST), runPath(HOST)), runCreate()));
+  });
+
+  test('a foreign uid cannot write into another player subtree', async () => {
+    await assertFails(setDoc(doc(db(OTHER), runPath(HOST)), runCreate()));
+  });
+
+  test('signed-out writes are refused', async () => {
+    await assertFails(setDoc(doc(anonDb(), runPath(HOST)), runCreate()));
+  });
+
+  test('startedAt must be the server clock, not a client-chosen time', async () => {
+    await assertFails(setDoc(doc(db(HOST), runPath(HOST)),
+      runCreate({ startedAt: Timestamp.fromMillis(0) })));
+  });
+
+  test('an unknown field is refused — the shape is the contract', async () => {
+    await assertFails(setDoc(doc(db(HOST), runPath(HOST)), runCreate({ evil: 1 })));
+  });
+
+  test('an oversized user-agent is refused', async () => {
+    await assertFails(setDoc(doc(db(HOST), runPath(HOST)),
+      runCreate({ ua: 'x'.repeat(301) })));
+  });
+
+  test('more than 20 errors is refused — the client caps at 20 too', async () => {
+    const errors = Array.from({ length: 21 }, (_, i) => ({ msg: `e${i}` }));
+    await assertFails(setDoc(doc(db(HOST), runPath(HOST)), runCreate({ errors })));
+  });
+
+  test('the end-of-session merge is allowed', async () => {
+    await seedRun(HOST, { startedAt: Timestamp.now(), xrMode: 'ar' });
+    await assertSucceeds(updateDoc(doc(db(HOST), runPath(HOST)), {
+      endedAt: serverTimestamp(),
+      durationMs: 90000,
+      milestones: { pageLoad: 0, sessionStart: 4200, firstRally: 15000 },
+      net: { thermalThrottled: false },
+      match: { shots: 12, accuracyPct: 75 },
+    }));
+  });
+
+  test('an update cannot smuggle in a field outside the end payload', async () => {
+    await seedRun(HOST, { startedAt: Timestamp.now(), xrMode: 'ar' });
+    await assertFails(updateDoc(doc(db(HOST), runPath(HOST)), {
+      endedAt: serverTimestamp(),
+      durationMs: 1,
+      milestones: {},
+      xrMode: 'rewritten',
+    }));
+  });
+
+  test('milestones must be a map — a list would defeat the one-check validation', async () => {
+    await seedRun(HOST, { startedAt: Timestamp.now(), xrMode: 'ar' });
+    await assertFails(updateDoc(doc(db(HOST), runPath(HOST)), {
+      endedAt: serverTimestamp(),
+      durationMs: 1,
+      milestones: ['pageLoad'],
+    }));
+  });
+
+  test('nobody can read a run back, not even its author', async () => {
+    await seedRun(HOST, { startedAt: Timestamp.now(), xrMode: 'ar' });
+    await assertFails(getDoc(doc(db(HOST), runPath(HOST))));
+    await assertFails(getDocs(collection(db(HOST), `sessions/${HOST}/runs`)));
+  });
+
+  test('runs cannot be deleted from the client', async () => {
+    await seedRun(HOST, { startedAt: Timestamp.now(), xrMode: 'ar' });
+    await assertFails(deleteDoc(doc(db(HOST), runPath(HOST))));
+  });
+});
+
+describe('feedback/{uid}/items/{itemId}', () => {
+  const fbPath = (uid) => `feedback/${uid}/items/i1`;
+  const feedback = (extra = {}) => ({ createdAt: serverTimestamp(), rating: 4, ...extra });
+
+  test('the owner writes a rating', async () => {
+    await assertSucceeds(setDoc(doc(db(HOST), fbPath(HOST)), feedback()));
+  });
+
+  test('text-only and rating-only are both valid submissions', async () => {
+    await assertSucceeds(setDoc(doc(db(HOST), `feedback/${HOST}/items/i2`),
+      { createdAt: serverTimestamp(), text: 'the net looks wrong' }));
+    await assertSucceeds(setDoc(doc(db(HOST), `feedback/${HOST}/items/i3`),
+      { createdAt: serverTimestamp(), rating: 5 }));
+  });
+
+  test('a rating outside 1..5 is refused', async () => {
+    await assertFails(setDoc(doc(db(HOST), fbPath(HOST)), feedback({ rating: 0 })));
+    await assertFails(setDoc(doc(db(HOST), `feedback/${HOST}/items/i4`), feedback({ rating: 6 })));
+  });
+
+  test('a 2000-char cap on the note', async () => {
+    await assertFails(setDoc(doc(db(HOST), fbPath(HOST)),
+      feedback({ text: 'z'.repeat(2001) })));
+  });
+
+  test('a foreign uid cannot write into another player feedback', async () => {
+    await assertFails(setDoc(doc(db(OTHER), fbPath(HOST)), feedback()));
+  });
+
+  test('feedback is never readable from the client', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), fbPath(HOST)), { rating: 3 });
+    });
+    await assertFails(getDoc(doc(db(HOST), fbPath(HOST))));
+  });
+});
+
+describe('signups/{uid}', () => {
+  const signup = (extra = {}) => ({
+    email: 'player@example.com',
+    method: 'google',
+    createdAt: serverTimestamp(),
+    ...extra,
+  });
+
+  test('the owner registers interest once', async () => {
+    await assertSucceeds(setDoc(doc(db(HOST), `signups/${HOST}`), signup()));
+  });
+
+  test('the doc id must BE the uid — that is the whole rate limit', async () => {
+    await assertFails(setDoc(doc(db(HOST), `signups/${OTHER}`), signup()));
+  });
+
+  test('a second submit is refused: create-only means already on the list', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), `signups/${HOST}`), { email: 'a@b.co', method: 'manual' });
+    });
+    await assertFails(setDoc(doc(db(HOST), `signups/${HOST}`), signup()));
+    await assertFails(updateDoc(doc(db(HOST), `signups/${HOST}`), { email: 'new@b.co' }));
+  });
+
+  test('mergedFrom is accepted — the credential-already-in-use breadcrumb', async () => {
+    await assertSucceeds(setDoc(doc(db(HOST), `signups/${HOST}`),
+      signup({ mergedFrom: 'old-anon-uid' })));
+  });
+
+  test('an unknown method is refused', async () => {
+    await assertFails(setDoc(doc(db(HOST), `signups/${HOST}`), signup({ method: 'carrier-pigeon' })));
+  });
+
+  test('an oversized address is refused', async () => {
+    await assertFails(setDoc(doc(db(HOST), `signups/${HOST}`),
+      signup({ email: `${'x'.repeat(250)}@example.com` })));
+  });
+
+  test('the email list is never readable from the client', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await setDoc(doc(ctx.firestore(), `signups/${HOST}`), { email: 'a@b.co', method: 'manual' });
+    });
+    await assertFails(getDoc(doc(db(HOST), `signups/${HOST}`)));
+    await assertFails(getDocs(collection(db(HOST), 'signups')));
   });
 });
