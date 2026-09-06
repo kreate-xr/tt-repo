@@ -110,9 +110,18 @@ app. There are exactly two ways to read the data back: the Firebase console,
 and `scripts/query-sessions.mjs` (Admin SDK; needs a service-account key).
 
 ```sh
+node scripts/check-beta-collections.mjs      # verify the DEPLOYED rules accept/refuse correctly
 node scripts/query-sessions.mjs              # funnel, failed joins, errors, feedback
 node scripts/query-sessions.mjs --emails     # the early-access list as CSV
 ```
+
+Run `check-beta-collections.mjs` after any `firebase deploy --only
+firestore:rules`. The emulator suite proves the rules FILE is right; this
+proves what is actually deployed is, against the real project, with anonymous
+auth really enabled. It also asserts the negatives — if a client can read back
+its own feedback or signup row, the deployed rules are older than this repo and
+the beta is collecting email addresses anyone can fetch. It leaves tagged rows
+behind (the rules deny delete), so point it at the test project.
 
 Points worth knowing before changing any of it:
 
