@@ -17,8 +17,13 @@ import { getMatchSummary } from '../analytics/session.js';
 
 let els = null;
 let rating = null;
-let feedbackSent = false;
 let signedUp = false;
+// Tapping a rating submits it, but a player picking 4 by going 1-2-3-4 taps
+// four times. Without a debounce that is four rows for one opinion, and the
+// rules allow create-only so they cannot be collapsed afterwards. One row,
+// the last value.
+let ratingTimer = null;
+const RATING_DEBOUNCE_MS = 900;
 
 function $(id) { return document.getElementById(id); }
 
@@ -43,13 +48,19 @@ function setRating(value) {
   for (const b of els.ratingBtns) {
     b.setAttribute('aria-checked', String(Number(b.dataset.rating) === value));
   }
-  // A rating on its own is the whole point of the tap — send it immediately
-  // rather than making the player also find the button. The textarea can
-  // still be sent separately afterwards.
-  submitFeedback({ silentIfEmpty: true });
+  // A rating needs no second confirming click — that is the whole point of the
+  // one-tap path. Deferred just long enough to absorb a run of taps.
+  if (ratingTimer) clearTimeout(ratingTimer);
+  ratingTimer = setTimeout(() => {
+    ratingTimer = null;
+    submitFeedback({ silentIfEmpty: true });
+  }, RATING_DEBOUNCE_MS);
 }
 
 async function submitFeedback({ silentIfEmpty = false } = {}) {
+  // An explicit Send beats a pending auto-submit — otherwise the note goes in
+  // one row and the rating lands in a second a moment later.
+  if (ratingTimer) { clearTimeout(ratingTimer); ratingTimer = null; }
   const text = els.feedback ? els.feedback.value.trim() : '';
   if (rating === null && !text) {
     if (!silentIfEmpty) setStatus('Add a rating or a note first.', true);
@@ -66,7 +77,6 @@ async function submitFeedback({ silentIfEmpty = false } = {}) {
       // went badly".
       context: { ...(getMatchSummary() || {}), page: 'post-session' },
     });
-    feedbackSent = true;
     setStatus('Thanks — that helps a lot.');
   } catch (err) {
     console.warn('[feedback] not sent:', (err && err.code) || (err && err.message));
@@ -98,8 +108,7 @@ async function joinWithGoogle() {
     await saveSignup(result.email, 'google', result.previousUid || null);
     signedUp = true;
     setStatus(`You're on the list — ${result.email}`);
-    els.emailRow.hidden = true;
-    els.or.hidden = true;
+    hideSignupAsk();
   } catch (err) {
     console.warn('[signup] google path failed:', (err && err.code) || (err && err.message));
     setStatus('Could not complete sign-in — try the email option.', true);
@@ -123,9 +132,7 @@ async function joinWithEmail() {
     await saveSignup(address, 'manual');
     signedUp = true;
     setStatus("You're on the list — thanks!");
-    els.emailRow.hidden = true;
-    els.or.hidden = true;
-    els.google.hidden = true;
+    hideSignupAsk();
   } catch (err) {
     const code = (err && err.code) || '';
     // The rules allow create only, so a second submit from the same account
@@ -133,6 +140,7 @@ async function joinWithEmail() {
     if (code === 'permission-denied') {
       signedUp = true;
       setStatus("You're already on the list.");
+      hideSignupAsk();
     } else {
       console.warn('[signup] email path failed:', code || (err && err.message));
       setStatus('Could not add you just now — sorry.', true);
@@ -140,6 +148,16 @@ async function joinWithEmail() {
   } finally {
     els.emailSend.disabled = false;
   }
+}
+
+// Leaves the status line visible (it carries the confirmation) but takes away
+// the buttons and the field, so a second submit is not even offered.
+function hideSignupAsk() {
+  if (!els) return;
+  if (els.google) els.google.hidden = true;
+  if (els.or) els.or.hidden = true;
+  if (els.emailRow) els.emailRow.hidden = true;
+  if (els.consent) els.consent.hidden = true;
 }
 
 function hide() {
@@ -154,14 +172,25 @@ export function showPostSession() {
   if (!els || !els.card) return;
   const stats = getMatchSummary();
   if (els.summary) els.summary.textContent = summaryLine(stats);
-  // A player who already sent both on a previous session should not be asked
-  // again — the card still appears (the summary is new) with the asks gone.
-  if (feedbackSent && signedUp) {
-    els.card.hidden = false;
-    return;
-  }
-  els.card.hidden = false;
+
+  // PER-SESSION RESET. Leaving XR and going back in is normal, and without
+  // this the card reopens carrying the previous session's state: the old
+  // rating still lit and the old note still in the box. Because tapping a
+  // rating submits immediately, that stale note would then be sent a second
+  // time, attached to THIS match's context — a duplicate row saying something
+  // about a match it was never about.
+  if (ratingTimer) { clearTimeout(ratingTimer); ratingTimer = null; }
+  rating = null;
+  for (const b of els.ratingBtns) b.setAttribute('aria-checked', 'false');
+  if (els.feedback) els.feedback.value = '';
+
+  // signedUp is account-level rather than per-session: once they are on the
+  // list, stop asking. Hides the whole block so the heading does not sit
+  // above nothing.
+  if (els.signup) els.signup.hidden = signedUp;
+
   setStatus('');
+  els.card.hidden = false;
 }
 
 /** Idempotent DOM wiring. Safe to call when the markup is absent. */
@@ -180,6 +209,8 @@ export function wirePostSession() {
     emailSend: $('post-email-send'),
     emailRow: card.querySelector('.join-row'),
     or: card.querySelector('.post-or'),
+    signup: $('post-signup'),
+    consent: card.querySelector('.post-consent'),
     status: $('post-status'),
   };
 
