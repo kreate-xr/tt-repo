@@ -452,6 +452,35 @@ describe('createRallyTracker — what a peer can honestly judge', () => {
     expect(v.winner).toBe('self');
   });
 
+  test('a credited serve whose own-half bounce then DOES arrive plays on', () => {
+    // The normal-link case: the handoff lands one one-way trip after the
+    // strike, well before the server's first bounce, so our sim watches the
+    // whole flight. The credited bounce must be consumed by the real one —
+    // it used to count as a SECOND own-half bounce and fault every legal
+    // serve in the receiver's favour.
+    const t = createRallyTracker({ tableCenterZ: 0 });
+    t.reset({ server: 'opponent' });
+    t.registerHit('opponent', { assumeServeBounced: true });
+    expect(t.registerBounce(-OWN_Z)).toBeNull();   // server's own half
+    expect(t.registerBounce(OWN_Z)).toBeNull();    // lands on ours: rally live
+    // ...and a second bounce on our side is still the ordinary double bounce.
+    const v = t.registerBounce(OWN_Z);
+    expect(v.reason).toBe('doubleBounce');
+    expect(v.winner).toBe('opponent');
+  });
+
+  test('a credited serve that dies on the server half is still a fault', () => {
+    // The credit absorbs exactly one own-half bounce; a second one we
+    // actually saw is the serve failing to clear the net.
+    const t = createRallyTracker({ tableCenterZ: 0 });
+    t.reset({ server: 'opponent' });
+    t.registerHit('opponent', { assumeServeBounced: true });
+    expect(t.registerBounce(-OWN_Z)).toBeNull();
+    const v = t.registerBounce(-OWN_Z);
+    expect(v.reason).toBe('serveFault');
+    expect(v.winner).toBe('self');
+  });
+
   test('a credited serve can still be a let', () => {
     const t = createRallyTracker({ tableCenterZ: 0 });
     t.reset({ server: 'opponent' });

@@ -71,6 +71,10 @@ export function createRallyRules({
   // the serve either completes legally or faults.
   let serveStroke = false;
   let serveOwnBounceSeen = false;
+  // The own-half bounce was CREDITED (registerHit's assumeServeBounced), not
+  // observed. If the bounce then does show up in our sim it is the one we
+  // credited, not a second one — see registerBounce.
+  let serveOwnBounceAssumed = false;
   let serveNetTouched = false;
 
   const other = (side) => (side === near ? far : near);
@@ -109,6 +113,7 @@ export function createRallyRules({
     bouncesSinceHit = 0;
     serveStroke = false;
     serveOwnBounceSeen = false;
+    serveOwnBounceAssumed = false;
     serveNetTouched = false;
   }
 
@@ -124,6 +129,7 @@ export function createRallyRules({
     bouncesSinceHit = 0;
     serveStroke = true;
     serveOwnBounceSeen = false;
+    serveOwnBounceAssumed = false;
     serveNetTouched = false;
   }
 
@@ -137,7 +143,10 @@ export function createRallyRules({
   // link it can miss the server's own-half bounce entirely and then read a
   // perfectly legal serve as one that skipped their half. We can only judge
   // what we saw, and the cost of standing down is a rare uncalled fault
-  // rather than a point taken from someone who did nothing wrong.
+  // rather than a point taken from someone who did nothing wrong. The credit
+  // is provisional: on a normal link the handoff lands BEFORE that bounce,
+  // and when the bounce then arrives it must read as the credited one — not
+  // as a second own-half bounce, which would fault every legal serve.
   function registerHit(side, {
     contactPos = null, inVel = null, at = null, assumeServeBounced = false,
   } = {}) {
@@ -154,6 +163,7 @@ export function createRallyRules({
 
     serveStroke = isServeStroke;
     serveOwnBounceSeen = isServeStroke && assumeServeBounced;
+    serveOwnBounceAssumed = serveOwnBounceSeen;
     serveNetTouched = false;
     lastHitter = side;
     lastHitAt = t;
@@ -199,9 +209,12 @@ export function createRallyRules({
     bouncesSinceHit += 1;
 
     if (side === lastHitter) {
-      // The serve's required first bounce on the server's own half.
-      if (serveStroke && !serveOwnBounceSeen && !serveNetTouched) {
+      // The serve's required first bounce on the server's own half — either
+      // the first one we see, or the one we credited up front finally
+      // showing up in our sim (a credit is consumed by at most one bounce).
+      if (serveStroke && !serveNetTouched && (!serveOwnBounceSeen || serveOwnBounceAssumed)) {
         serveOwnBounceSeen = true;
+        serveOwnBounceAssumed = false;
         return null;
       }
       // A serve that died on the server's half (a second own bounce, or it
@@ -216,6 +229,7 @@ export function createRallyRules({
       // Clipped the cord and still arrived legally — replay.
       if (serveNetTouched) return { let: true };
       serveStroke = false; // serve complete, rally live
+      serveOwnBounceAssumed = false;
     }
 
     // We're on the receiving side by definition here (side !== lastHitter),
