@@ -37,10 +37,10 @@
 
 import * as THREE from 'three';
 import {
-  GRAVITY, BUOYANCY_ACCEL, MAGNUS_COEFFICIENT, MAGNUS_VERTICAL_SCALE,
+  GRAVITY, BUOYANCY_ACCEL, MAGNUS_VERTICAL_SCALE,
   SPIN_DAMPING, TABLE_LINEAR_FRICTION, TABLE_SPIN_GAIN, TABLE_SIDESPIN_KICK,
   FLOOR_Y,
-  applyDragStep, tableRestitution,
+  applyDragStep, tableRestitution, magnusCoefficientAt,
 } from './constants.js';
 
 // Integration step sizes, named so the trade-off behind each is recorded
@@ -105,10 +105,15 @@ export function integrateFlightStep(pos, vel, spin, dt) {
   // same reason tickPhysics keeps them separate.
   vel.y += (GRAVITY + BUOYANCY_ACCEL) * dt;
 
-  if (spin.lengthSq() > SPIN_EPSILON_SQ) {
+  const spinSq = spin.lengthSq();
+  if (spinSq > SPIN_EPSILON_SQ) {
+    // Lift saturates with spin ratio (constants.js magnusCoefficientAt):
+    // the coefficient is evaluated per step from |ω| and |v|, two extra
+    // sqrt and no allocation.
+    const k = magnusCoefficientAt(Math.sqrt(spinSq), vel.length());
     _magnus.crossVectors(spin, vel);
     _magnus.y *= MAGNUS_VERTICAL_SCALE;
-    vel.addScaledVector(_magnus, MAGNUS_COEFFICIENT * dt);
+    vel.addScaledVector(_magnus, k * dt);
     spin.multiplyScalar(Math.exp(-SPIN_DAMPING * dt));
   }
 

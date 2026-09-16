@@ -6,8 +6,11 @@
 // up the new value automatically — no re-import needed.
 
 // Master toggle for the "weighty ball" perception pass — gates haptics, paddle
-// pose smoothing, drag, sub-bass thud, and impact squash. Flip to false to A/B
-// against the original floaty feel in headset without reverting code.
+// pose smoothing, the paddle COR/contact-cap/angular-contribution trio,
+// sub-bass thud, and impact squash. Flip to false to A/B against the
+// original floaty feel in headset without reverting code. Drag is NOT on
+// this gate any more: it sits at its physical value (see DRAG_COEFFICIENT)
+// and a zero-drag ball is not a baseline worth comparing against.
 export const WEIGHTY_BALL_ENABLED = true;
 
 // Earth-real gravity. This shipped at -12 for a while (the "weighty ball"
@@ -15,8 +18,10 @@ export const WEIGHTY_BALL_ENABLED = true;
 // every hang time by ~10%, broke serve-toss timing — the single most
 // rehearsed motion a real player brings into the headset — and compounded
 // with the table COR into a game that played uniformly low and rushed. The
-// weighty read is now carried by drag, haptics, and audio, which don't
-// distort trajectories.
+// weighty read is carried by haptics and audio, which don't distort
+// trajectories. (Drag carried part of it for a while too, at 30% above
+// physical — retired 2026-09 after the first real-player tester called the
+// ball "too heavy" off the bounce.)
 export let GRAVITY = -9.81;
 
 // Aerodynamic buoyancy on the ball. F_B = ρ_air · V · g (upward), acceleration
@@ -74,6 +79,22 @@ export const SPIN_CAPTURE_GAIN = 35;
 // grip saturation and is a property of the BALL, so it must not scale with a
 // compensation for how fast a human can wave a controller.
 //
+// SPIN ONLY — it does not add pace. The friction impulse that spins the ball
+// also pushes it, and impulse.js locks the two halves together through
+// HOLLOW_SPHERE_MOI_FACTOR (Δv_t = (2/3)·R·Δω). For a long time this gain
+// multiplied the shared number, so a player's brush injected 1.167 m/s of
+// ball speed per m/s of slip against the physical 0.467 — through the one
+// channel PADDLE_CONTACT_SPEED_CAP never bounded (it clips the normal
+// component only). A player standing ready with a full wind-up earned that
+// in full on the very first stroke, which is what the first real-player
+// tester reported as "the first hit is too hard on the ball". ball.js now
+// hands computeImpulse the physical SPIN_CAPTURE_GAIN as `linearKickGain`
+// on player contacts while spinCaptureGain carries this compensation: the
+// compensated brush spins the ball 2.5× and pushes it exactly as hard as an
+// uncompensated one. The input gap is a SPIN-readability problem; linear
+// momentum was never short. swingPreparation.js still scales what a contact
+// receives of this ceiling by the stroke behind it.
+//
 // This knowingly breaks the "one ball, one spin economy" invariant the
 // 2026-08 unification established, for players only and for a stated reason.
 // Revisit if VR controllers or stroke tracking ever close the speed gap.
@@ -83,8 +104,9 @@ export let PLAYER_SPIN_GAIN = 2.5;
 // (no-slip physics), but nothing bounded the SLIP feeding it: a VR
 // wrist-flick can produce 10+ m/s of tangential face speed no real arm
 // achieves in a brush, yielding 350-500+ rad/s — and with Magnus applied
-// per-frame (and running ~2.5× physical, see MAGNUS_COEFFICIENT) that
-// compounds into cartoon curves. Knee-and-asymptote form: |ω| ≤ KNEE passes
+// per-frame (at the time linear in ω and ~2.5× physical; today saturating
+// and physical, see MAGNUS_COEFFICIENT, but grip still saturates) that
+// compounded into cartoon curves. Knee-and-asymptote form: |ω| ≤ KNEE passes
 // EXACTLY 1:1 (a pure tanh shaved 4-6% off legitimate mid-range brush spin
 // — measurable, and exactly the kind of silent attenuation the tangential
 // path was exempted from capping to avoid); above the knee, the excess
@@ -108,29 +130,54 @@ export const PADDLE_SPIN_CAP_KNEE = 300;
 // corkscrew fast through turbulent boundary-layer shear, so full retention
 // is wrong too — restores an authentic tilted-axis bounce response while
 // keeping the residual apex wobble around ~1 m/s² at rally speeds
-// (0.35 · MAGNUS_COEFFICIENT · ω_cork · v_y with ω_cork ≈ 100, v_y ≈ 3),
-// an order of magnitude under the shot's main Magnus curve.
+// (0.35 · k_eff · ω_cork · v_y with ω_cork ≈ 100, v_y ≈ 3 and k_eff ≈
+// MAGNUS_COEFFICIENT at that spin — see magnusCoefficientAt), an order of
+// magnitude under the shot's main Magnus curve.
 export const CORKSCREW_RETAIN = 0.35;
-// Magnus curvature. Applied as a = MAGNUS_COEFFICIENT · (ω × v). Real
-// ping-pong ball has k_m ≈ 3e-6 N·s/rad; divided by the 2.7 g ball mass
-// that's an effective a-coefficient of ~1.1e-3 (subtle curve, most of the
-// lateral displacement accumulates late in flight per Δx = ½·a·t²). The
-// sim runs somewhat above realistic so the curve is legible in VR, but
-// 0.018 was too aggressive: it made the ball visibly curve from the very
-// first frames after paddle contact, breaking the "flies mostly straight,
-// kicks after the bounce" perception real players expect. That perception
-// is real physics — pure vertical sidespin can't be transferred into
-// lateral velocity by the table bounce (contact is on the spin axis, ω × r
-// = 0), so all lateral motion comes from Magnus, and half-·a·t² makes it
-// mostly manifest in the second half of the trajectory when the coefficient
-// is at a realistic level.
+// Magnus curvature. Applied as a = k_eff(|ω|, |v|) · (ω × v), where
+// MAGNUS_COEFFICIENT is the effective coefficient at the reference point
+// (ω = 100 rad/s, v = 8 m/s) and magnusCoefficientAt() below saturates it
+// with spin the way a real sphere's lift does.
 //
-// 0.004 is the PHYSICAL coefficient (CL ≈ 1/(2 + v/ωr) empirical sphere fit;
-// a_M ≈ 3 m/s² at ω=100 rad/s, v=8 m/s — the older "k_m ≈ 3e-6 → ~1.1e-3"
-// figure in git history underestimated it). Reference points at 0.004:
-//   ω = 125 rad/s (light brush), v = 5 m/s: a_M = 2.5 m/s²
-//   ω = 250 rad/s (moderate),    v = 8 m/s: a_M = 8 m/s²
-//   ω = 400 rad/s (elite loop),  v = 10 m/s: a_M = 16 m/s²
+// WHY IT SATURATES. The measured lift coefficient of a spinning sphere is
+// well fit by CL ≈ 1/(2 + v/(ω·r)) (Bearman & Harvey's golf-ball data; the
+// same form fits table-tennis balls at their spin ratios). Lift force is
+// ½·ρ·A·CL·v², so with K = ½·ρ·A/m = 0.279 m⁻¹ for the regulation ball:
+//
+//     a = K·r · v/(v + 2·r·|ω|) · (ω × v)          K·r = 0.00558
+//
+// At low spin ratio (2rω ≪ v) this IS the linear model; as spin rises the
+// prefactor falls off as v/(v + 0.04·ω) and the lift asymptotes instead of
+// growing without bound. The sim ran the linear model for a long time and
+// paid for it exactly where players brush hardest: it was calibrated at
+// ω = 100 and over-predicted 1.8× at loop spin. Acceleration in m/s²,
+// linear model vs. this one vs. the fit:
+//
+//     ω rad/s, v m/s              linear   now    fit
+//     100,  8  light rally spin    3.2     3.2    3.0
+//     300,  8  loop                9.6     5.8    5.4
+//     400, 10  elite loop         16.0     9.2    8.6
+//     350,  5  loop after bounce   7.0     4.0    3.7
+//     345,  4  heavy backspin serve 5.5    1.8    1.7
+//     188, 20  pro 30 rps drive   15.0    16.4   15.3
+//
+// The "loop after bounce" row is the tester's "after the first bounce the
+// ball gets too heavy and falls too fast": table friction ADDS topspin on a
+// topspin bounce (TABLE_SPIN_GAIN), so the post-bounce Magnus was the
+// LARGEST term in the flight and the linear model doubled it. Pinned by
+// tests/physicalReference.test.js at 100/300/400 rad/s.
+//
+// 0.004 at the reference point is 7% above the fit's 0.0037 — inside the
+// fit's own scatter; left alone so tuner rows and stored tuner values keep
+// meaning what they always meant. MAGNUS_REF_* are the calibration point,
+// not knobs: moving them only re-labels what MAGNUS_COEFFICIENT means.
+//
+// Perception note that still holds: pure vertical sidespin can't be
+// transferred into lateral velocity by the table bounce (contact is on the
+// spin axis, ω × r = 0), so all lateral motion comes from Magnus, and
+// ½·a·t² makes it manifest mostly in the second half of the flight — the
+// "flies mostly straight, kicks after the bounce" look real players expect.
+// 0.018 (an early value) curved from the first frame and broke that.
 //
 // HISTORY — this shipped at 0.010 (~2.5× physical) for a long time, as
 // documented "REALISM DEBT": the AI's shot vocabulary encoded spin at ~1/4
@@ -142,20 +189,42 @@ export const CORKSCREW_RETAIN = 0.35;
 // archetypes and the training feeds all scaled ×2.5 to physical rad/s
 // (M·ω preserved, so every AI arc is unchanged), solver strike caps raised
 // to real racket-head speeds to carry the bigger tangential component, and
-// this dropped to the physical 0.004. Player shots now curve at true scale,
-// and one ball obeys one spin economy everywhere. Note an earlier lone
-// attempt to drop just the coefficient (to 0.006, tables unscaled) tanked
-// pro-tier high-pace feasibility (41/120 vs 115/120 solvable at 18-22 m/s)
-// — Magnus dip is the mechanism that lands fast shots, which is why the
-// coefficient and the spin tables must move TOGETHER.
+// this dropped to 0.004. An earlier lone attempt to drop just the
+// coefficient (to 0.006, tables unscaled) tanked pro-tier high-pace
+// feasibility (41/120 vs 115/120 solvable at 18-22 m/s) — Magnus dip is the
+// mechanism that lands fast shots, which is why a UNIFORM coefficient change
+// and the spin tables must move TOGETHER. Saturation is exempt from that
+// rule: it leaves the pace end (high v, moderate ω — the last row above)
+// slightly STRONGER and only shaves the high-spin tail, and it was gated on
+// the solver-envelope tests before shipping (see the 2026-09 entry in the
+// tests/solverEnvelope*.test.js headers for the measured rates).
 export let MAGNUS_COEFFICIENT = 0.004;
+// Calibration point for MAGNUS_COEFFICIENT (see above). MAGNUS_REF_SCALE is
+// the saturation prefactor's reciprocal at that point, so k_eff(ref) ==
+// MAGNUS_COEFFICIENT exactly.
+export const MAGNUS_REF_OMEGA = 100;    // rad/s
+export const MAGNUS_REF_SPEED = 8;      // m/s
+export const MAGNUS_BALL_RADIUS = 0.02; // m — enters only via the spin ratio 2rω/v
+const MAGNUS_2R = 2 * MAGNUS_BALL_RADIUS;
+const MAGNUS_REF_SCALE = (MAGNUS_REF_SPEED + MAGNUS_2R * MAGNUS_REF_OMEGA) / MAGNUS_REF_SPEED;
+
+// Effective Magnus coefficient at a given spin magnitude (rad/s) and speed
+// (m/s). Scalar, allocation-free — it runs inside every flight substep
+// (rollout.js integrateFlightStep) and the golden-trajectory test mirrors it.
+// Returns 0 for a stationary ball (the cross product is zero there anyway).
+export function magnusCoefficientAt(omegaMag, speed) {
+  const d = speed + MAGNUS_2R * omegaMag;
+  return d > 1e-9 ? (MAGNUS_COEFFICIENT * MAGNUS_REF_SCALE * speed) / d : 0;
+}
 // Vertical Magnus scale — controls topspin drop / backspin lift visibility.
 // Was 0.85 (dampening the vertical curve to keep "runaway dips" in check).
 // Lifted to 1.0 so topspin loops actually DIVE into the court and backspin
 // slices actually FLOAT — the two most recognizable spin arcs in table
-// tennis. Combined with the MAGNUS_COEFFICIENT bump above, a heavy loop
-// now drops ~30-40 cm more than a flat drive over the same range, which
-// reads to the eye as "that ball is spinning."
+// tennis. Measured 2026-09 through integrateFlightStep with the saturating
+// lift: a rally drive launched at (0, 1.5, 8) m/s from 1 m high lands at
+// z +1.74 flat, +1.11 with a 300 rad/s loop and +1.05 at 400 rad/s — the
+// loop drops ~0.6 m shorter, which reads to the eye as "that ball is
+// spinning" (and the 300→400 step buying only 5 cm more is the saturation).
 export const MAGNUS_VERTICAL_SCALE = 1.0;
 // Air drag on rotation. Applied as ω *= exp(-SPIN_DAMPING * dt) per frame.
 // Real 2.7 g ping-pong balls lose ~5–10% of spin per second to air; at 0.35
@@ -166,21 +235,30 @@ export let SPIN_DAMPING = 0.10;
 
 // Quadratic air drag on the ball. The old linear model (v *= 1 - k·dt) bled
 // the same fraction of speed per second at every velocity — physically wrong.
-// Real drag is F_d = ½·ρ·Cd·A·v², i.e. dv/dt = -k·|v|·v with k ≈ 0.14 for a
-// 40 mm 2.7 g ITTF ball. Under the quadratic model a smash bleeds much more
-// speed per second than a soft push, so hard hits arrive slower and soft
-// touches carry farther — the correct physical behavior.
-// 0.13 is the strictly physical value (½·ρ·Cd·A/m with Cd ≈ 0.47 for a 40 mm
-// 2.7 g ball). It shipped at 0.10 for a while — deliberately slick, paired
-// with -12 gravity for the "heavy ball" read. The default now sits at 0.17,
-// ~30% above the textbook figure: a deliberate feel choice, not a physics
-// claim. It exaggerates the thing the real game is built on — a ping-pong
-// ball visibly decelerating across the table — so smashes bleed harder and
-// soft touches read floatier, which is most of why the game reads "floaty at
-// slow pace, violent at high pace." Applied per Euler step as
-// v_next = v / (1 + k·|v|·dt) — semi-implicit form, stable at any dt.
-// Set to 0 to disable drag entirely.
-export let DRAG_COEFFICIENT = WEIGHTY_BALL_ENABLED ? 0.17 : 0;
+// Real drag is F_d = ½·ρ·Cd·A·v², i.e. dv/dt = -k·|v|·v. Under the quadratic
+// model a smash bleeds much more speed per second than a soft push, so hard
+// hits arrive slower and soft touches carry farther — the correct physical
+// behavior.
+//
+// 0.13 IS the physical value: k = ½·ρ·Cd·A/m with ρ = 1.2 kg/m³,
+// A = π·(0.02)² = 1.257e-3 m², m = 2.7e-3 kg gives k = 0.279·Cd, and a smooth
+// sphere at the ball's Reynolds number (~2e4, sub-critical) has Cd ≈ 0.45-0.50
+// → k = 0.126-0.140. Pinned by tests/physicalReference.test.js.
+//
+// HISTORY. It shipped at 0.10 for a while (deliberately slick, paired with
+// -12 gravity for the "heavy ball" read), then at 0.17 through the 2026-08
+// realism pass — ~30% above textbook, documented as "a deliberate feel
+// choice, not a physics claim" to exaggerate the ball visibly decelerating
+// across the table. The first tester who plays real table tennis reported
+// exactly that exaggeration: "after the first bounce the ball gets too heavy
+// and falls too fast." The weighty read is carried by haptics and audio,
+// which do not distort trajectories; drag is not a feel knob any more, which
+// is also why it is no longer behind WEIGHTY_BALL_ENABLED — a zero-drag
+// "vacuum ball" is not a meaningful A/B baseline against the real value.
+//
+// Applied per Euler step as v_next = v / (1 + k·|v|·dt) — semi-implicit
+// form, stable at any dt. Set to 0 to disable drag entirely.
+export let DRAG_COEFFICIENT = 0.13;
 
 // Table friction — couples spin to linear velocity on bounce. Both are the
 // same friction impulse J at the contact point, so they should be at the
@@ -226,34 +304,45 @@ export const TABLE_LINEAR_FRICTION_AT_MU_REF = 0.12;
 export const TABLE_SPIN_GAIN_AT_MU_REF = 15;
 export let TABLE_MU = TABLE_MU_REFERENCE;
 
-// Table COR reference (median of the speed-dependent curve — see
-// tableRestitution()). Tuner adjusts this scalar; the hi/lo offsets below
-// preserve the curve shape while shifting overall bounciness. A very light
-// drop bounces at ~median + HI_OFFSET, a hard smash at ~median + LO_OFFSET
-// (LO_OFFSET is negative). Physical rationale: real tables lose more energy
-// at high impact speed because the wood-composite deck flexes and the ball
-// deforms more — a soft drop is nearly elastic, a slam is not.
+// Table COR reference (the "median" the speed-dependent curve pivots on —
+// see tableRestitution()). Tuner adjusts this scalar; the hi/lo offsets
+// below preserve the curve shape while shifting overall bounciness. A very
+// light drop bounces at ~median + HI_OFFSET, a hard smash at ~median +
+// LO_OFFSET (LO_OFFSET is negative). Physical rationale: real tables lose
+// more energy at high impact speed because the wood-composite deck flexes
+// and the ball deforms more — a soft drop is nearly elastic, a slam is not.
 //
-// Reference point, the ITTF certification test: a 30 cm drop (impact ≈
-// 2.4 m/s) must rebound ~23 cm, i.e. e ≈ 0.88 at that speed. Median 0.82 with
-// V* = 8 hits that dead on (e(5) ≈ 0.83, e(10) ≈ 0.77 — measured high-speed
-// table data), and that is what we ship: this deck plays like a regulation
-// one, in every mode.
+// THE ONE MEASURED NUMBER is the ITTF certification test: a 30 cm drop
+// (impact ≈ 2.43 m/s) must rebound ~23 cm, i.e. e ≈ 0.88 at that speed. The
+// curve e(v) = 0.80 + 0.12·exp(−v/6) gives:
 //
-// It previously sat at 0.92, a lively-table feel choice above certification.
-// The real cost of that was not the median but the COR_MAX clamp: 0.92 + the
-// 0.13 low-speed lift pinned the curve flat at 0.95 for every impact under
-// ~4 m/s, which is most of a rally — so the speed-dependence this curve
-// exists to model was invisible in normal play and only reappeared on hard
-// smashes. At 0.82 the clamp is out of the way and soft drops, drives and
-// slams again bounce measurably differently.
+//     impact   0      2.43    5       8       10      12   m/s
+//     e        0.920  0.880   0.852   0.832   0.823   0.816
 //
-// The earlier tuning (median 0.75, V* = 4) gave e(2.4) ≈ 0.76 — well under
-// regulation, and it read as "dead table" rather than "weighty ball."
+// so this deck passes certification and still loses a little more with
+// speed (−0.06 from the drop test to a 10 m/s slam), but no more than that.
+// Pinned by tests/physicalReference.test.js (the drop test through the live
+// integrator, and a flatness bound e(5) − e(10) ≤ 0.04).
+//
+// HISTORY. The curve shipped as ±0.13 around the median with V* = 8:
+// e(2.4) 0.88, e(5) 0.83, e(8) 0.79, e(10) 0.77 — an extra 0.12 of loss
+// between the certification speed and rally pace that the comment ascribed
+// to "measured high-speed table data" it never cited. The first real-player
+// tester reported the consequence directly ("after the first bounce the
+// ball ... falls too fast"): every rally-pace bounce came off the deck 5-8%
+// slower than a regulation table's. The offsets are now asymmetric (+0.10 /
+// −0.02) so the median 0.82 keeps its meaning for the tuner, the 'ittf'
+// preset and the setter floor. Nothing assumes the offsets are symmetric.
+//
+// Before that it sat at 0.92, a lively-table feel choice above
+// certification, where the 0.13 low-speed lift pinned the curve flat at
+// COR_MAX for every impact under ~4 m/s. And before THAT, median 0.75 with
+// V* = 4 gave e(2.4) ≈ 0.76 — well under regulation, and it read as "dead
+// table" rather than "weighty ball."
 export let TABLE_RESTITUTION = 0.82;
-export const TABLE_RESTITUTION_HI_OFFSET = 0.13;   // low-speed lift
-export const TABLE_RESTITUTION_LO_OFFSET = -0.13;  // high-speed loss
-export const TABLE_RESTITUTION_V_STAR    = 8.0;    // m/s transition scale
+export const TABLE_RESTITUTION_HI_OFFSET = 0.10;   // low-speed lift
+export const TABLE_RESTITUTION_LO_OFFSET = -0.02;  // high-speed loss
+export const TABLE_RESTITUTION_V_STAR    = 6.0;    // m/s transition scale
 
 // Discrete lateral velocity kick at the table bounce, driven by ω_y (sidespin).
 // Applied as Δv = TABLE_SIDESPIN_KICK · ω_y in the direction perpendicular to
@@ -359,10 +448,13 @@ export const PADDLE_RESTITUTION_V_STAR    = 6.0;    // m/s transition scale
 // The real asymmetry was that the AI has a biomechanical governor (its windup
 // distance is capped at WINDUP_DISTANCE_MAX_M and its plans are speed-
 // validated) and the player had none: a VR flick costs the same 150 ms no
-// matter what is coming across the net. swingPreparation.js gives the player
-// the same constraint, so the loop damps itself in both modes and the bat is
-// one bat again. Do not reintroduce a per-mode COR — if multiplayer pace still
-// feels wrong, the honest knobs are the preparation ramp thresholds.
+// matter what is coming across the net. swingPreparation.js first gave the
+// player the same constraint; the 2026-09 pass then closed the channel at
+// its source — the compensation is spin-only (ball.js passes the physical
+// gain to computeImpulse as linearKickGain), so there is no amplifier left
+// to compound and the bat is one bat again. Do not reintroduce a per-mode
+// COR — if multiplayer pace still feels wrong, the honest knob is
+// PADDLE_CONTACT_SPEED_CAP, for both modes.
 
 // Asymptotic ceiling on effective paddle contact speed fed to the impulse
 // math. Represents the maximum face velocity a human arm can realistically
@@ -578,11 +670,12 @@ export const SWING_HAPTIC_CURVE         = 1.4;  // ramp exponent; 1 = linear
 export const STATIONARY_VEL = 0.18;     // m/s
 export const STATIONARY_TIME = 0.9;     // seconds
 
-// Dead-ball bounce damping. With the lively-table default (median 0.92) the
-// COR curve sits at the COR_MAX clamp for every impact below ~3.9 m/s, so a
-// ball left bouncing on the table loses only 5% of its speed per bounce and
-// takes ~2v/(g(1−e)) ≈ 15+ seconds to dwindle below the stuck-ball detector
-// — during which the feeder (which waits for ballLost) cannot advance.
+// Dead-ball bounce damping. A regulation table is nearly elastic at low
+// impact speed — the curve tops out at 0.92 as a bounce dies (and sat at the
+// 0.95 COR_MAX clamp under the old lively-table default) — so a ball left
+// bouncing on the table loses under 10% of its speed per bounce and takes
+// ~2v/(g(1−e)) ≈ 10+ seconds to dwindle below the stuck-ball detector —
+// during which the feeder (which waits for ballLost) cannot advance.
 //
 // The first bounce or two of any ball are LIVE play and must keep the full
 // curve: a machine feed bounces once before the return, a serve bounces on
@@ -667,13 +760,14 @@ export function setTableMu(v) {
 // bat and table (paddle median from the certification-test COR, μ at the
 // couple's calibration point); 'lively' and 'dead' bracket it for A/B feel
 // comparisons. Note the shipped LOAD default (weighty-ball paddle median
-// 0.82, lively table 0.92) is a standing feel choice documented at the
-// definitions above — presets are explicit user actions, not the boot state.
-// ittf.tableEn0 is the certified median 0.82: with the ±0.13 curve offsets
-// this reproduces the ITTF drop test (e(2.4) ≈ 0.88 → ~23 cm rebound from
-// 30 cm) instead of the lively 0.92 it shipped with for a while — which made
-// the preset labelled "ITTF" bounce well above a regulation table, with the
-// setter floor (then 0.90) making the honest value unreachable entirely.
+// 0.82, certified table 0.82) is documented at the definitions above —
+// presets are explicit user actions, not the boot state.
+// ittf.tableEn0 is the certified median 0.82: with the +0.10 / −0.02 curve
+// offsets and V* = 6 this reproduces the ITTF drop test (e(2.4) ≈ 0.88 →
+// ~23 cm rebound from 30 cm) instead of the lively 0.92 it shipped with for
+// a while — which made the preset labelled "ITTF" bounce well above a
+// regulation table, with the setter floor (then 0.90) making the honest
+// value unreachable entirely.
 export const PHYSICS_PRESETS = {
   ittf:   { paddleE0: 0.878, tableEn0: 0.82, tableMu: 0.25 },
   lively: { paddleE0: 0.90,  tableEn0: 0.95, tableMu: 0.25 },
@@ -751,15 +845,15 @@ export function dragBoostFactor(rangeX, T) {
 // STATIONARY_VEL, ballLost never fires, and the rally manager waits on a
 // serve that can never be re-offered. The median+HI_OFFSET curve shape
 // crosses 1.0 whenever the tuner-adjustable median exceeds (1 − HI_OFFSET),
-// which the lively-table default of 0.92 does — so the curves clamp here
+// which the tuner's 'lively' preset (0.95) does — so the curves clamp here
 // rather than trusting the median to stay low.
 //
 // 0.95 and not 0.99: settle time is governed by the per-bounce loss at the
 // ceiling (total dwindle time ≈ 2·v/(g·(1−e))), so a 0.99 cap still leaves
-// ~30 s of visible micro-bouncing. 0.95 is the low-speed maximum of the
-// previously shipped curve (median 0.82 + 0.13 offset), which settled in a
-// few seconds and read fine in-headset; mid/high-speed bounces (e(5) ≈ 0.93
-// at the current median) sit under the cap and keep the lively-table feel.
+// ~30 s of visible micro-bouncing. At the shipped table median (0.82 +
+// 0.10 offset → 0.92 at zero speed) the clamp never binds; it only comes
+// into play for tuner medians above 0.85, where it keeps a lively table from
+// becoming a perpetual one.
 export const COR_MAX = 0.95;
 
 // Speed-dependent paddle COR. Real rubber is near-elastic on soft touches

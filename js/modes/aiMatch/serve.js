@@ -83,11 +83,13 @@ const SWING_FORWARD_TRAVEL_M = 0.20;
 // way back down at about net height — the whole arc is in view, which is the
 // point: the player has to be able to read the toss to read the serve.
 //
-// Measured under the shipping physics (gravity -9.81, drag 0.17):
-//   normal toss: rise 0.88m (apex 0.98m over the table), struck 792ms after
-//                release at 0.33m descending at 3.3 m/s
-//   high toss:   rise 0.99m (apex 1.09m), struck 840ms after release at
-//                0.34m descending at 3.5 m/s
+// Measured under the shipping physics (gravity -9.81, drag 0.13 — the
+// 2026-09 physical value; at the old 0.17 the toss was ~3 cm lower and
+// ~20 ms quicker):
+//   normal toss: rise 0.91m (apex 1.01m over the table), struck 808ms after
+//                release at 0.33m descending at 3.4 m/s
+//   high toss:   rise 1.02m (apex 1.12m), struck 864ms after release at
+//                0.32m descending at 3.7 m/s
 // Serve takes ~1.2s from paddle-ready to contact where it used to take 0.4s
 // with no visible ball at all.
 //
@@ -124,7 +126,8 @@ const TOSS_DRIFT_MPS = 0.05;            // barely-there horizontal drift
 // upward arcs that did solve topped out at a 0.5–0.72 m landing — so every
 // deep-target archetype was served short, arriving at the receiver's end line
 // after 1.3 s at under 2 m/s. Measured at 0.35 m, arcs from −2.2 to −0.7 land
-// 0.85–1.32 deep and arrive in 0.5–0.8 s at 2.7–4.5 m/s. Ten centimetres of
+// 0.85–1.37 deep (see the arc/depth table below) and arrive in 0.5–0.8 s at
+// 2.7–4.5 m/s. Ten centimetres of
 // contact height is the difference between a serve that reaches the player
 // and one that dribbles over the line.
 const TOSS_CONTACT_HEIGHT_M = 0.35;     // above table surface
@@ -250,6 +253,16 @@ const SERVE_VH_MIN_MPS = 1.0;
 const SERVE_VH_MAX_MPS = 9.5;
 const SERVE_VH_BINARY_STEPS = 9;
 const SERVE_LANDING_TOLERANCE_M = 0.30;   // stop trying other arcs below this
+// Tighter stop for the sidespin aim-shift loop around the arc solver. The
+// arc loop's 0.30 is a "good enough arc, stop burning candidates" tolerance;
+// the aim shift exists to remove the lateral curl miss on top of that arc,
+// and it used to share the 0.30 — so a heavy pendulum that curled 27 cm
+// wide was declared solved and never corrected. That was masked while the
+// linear Magnus model over-curled sidespin (misses sat past 0.30 and the
+// shift ran); at the physical lift the miss lands just inside it. Each
+// shift iteration is one more arc solve, amortized across the toss frames
+// like the first, and the loop still stops as soon as the ball is on target.
+const SERVE_AIM_SHIFT_TOLERANCE_M = 0.12;
 // Meters of landing error a candidate may buy per m/s of arc mismatch.
 // Without this a soft touch serve loses to a laser-flat one that happens to
 // land 10cm closer — accuracy would erase the archetype's character.
@@ -265,13 +278,17 @@ const SERVE_ARC_MISMATCH_MAX_M = 0.08;
 // --- Arc preference vs. reachable depth -------------------------------------
 //
 // Deepest legal landing each arc can reach, measured at the production
-// contact height with the shipping physics (drag 0.17, gravity −9.81,
-// table COR curve clamped at COR_MAX — the clamp trims the own-half
-// bounce's low-speed rebound, which is why these sit a few cm shorter
-// than the pre-clamp measurements):
+// contact height (0.35 m, z −1.44) with the shipping physics — drag 0.13,
+// gravity −9.81, the 2026-09 table COR curve (e(2.4) 0.88, e(5) 0.85; the
+// old ±0.13 curve clamped at COR_MAX for soft own-half bounces, this one
+// does not) — no spin, SERVE_NET_MARGIN_M clearance, sweeping vh in 5 cm/s
+// steps (re-measure with the same sweep when the physics moves again):
 //
 //     vy    −2.2   −1.7   −1.2   −0.7   −0.2    +0.3 and above
-//     z      1.28   1.08   0.92   0.77   0.71    ~0.68-0.75 (flat ceiling)
+//     z      1.37   1.35   1.10   0.85   0.73    ~0.69-0.75 (flat ceiling)
+//
+// (At drag 0.17 with the old curve these were 1.28 / 1.08 / 0.92 / 0.77 /
+// 0.71 — the physical ball carries every arc 5-25 cm deeper.)
 //
 // The own-half bounce is what caps it: an UPWARD launch has only ~0.5 s of
 // air before it must land on the server's half, which caps its horizontal
@@ -283,7 +300,7 @@ const SERVE_ARC_MISMATCH_MAX_M = 0.08;
 // targetSpeed alone) sent every soft archetype — all of which ask for
 // 0.85–1.10 depth — onto a +1.4 arc that tops out at 0.78. So the speed
 // preference is ceilinged by the depth the target actually demands.
-const SERVE_ARC_DEPTH_REF_Z  = [0.71, 1.28];
+const SERVE_ARC_DEPTH_REF_Z  = [0.73, 1.37];
 const SERVE_ARC_DEPTH_REF_VY = [-0.2, -2.2];
 // Aim the preference one notch flatter than the bare minimum, so the chosen
 // arc isn't sitting exactly on its own reachability limit.
@@ -511,7 +528,7 @@ function* serveSolveSteps(launchPos, targetWorld, targetSpeed, launchSpin, env, 
   const virtual = targetWorld.clone();
   for (let i = 0; i < maxIters; i++) {
     if (!best.sim || !best.sim.landing) break;
-    if (best.legal && best.landingError <= SERVE_LANDING_TOLERANCE_M) break;
+    if (best.legal && best.landingError <= SERVE_AIM_SHIFT_TOLERANCE_M) break;
     virtual.x += targetWorld.x - best.sim.landing.x;
     virtual.z += targetWorld.z - best.sim.landing.z;
     const next = yield* solveTwoBounceServeSteps(launchPos, virtual, targetSpeed, launchSpin, env);

@@ -15,32 +15,41 @@
 // controller no matter what is coming across the net, so the player could
 // produce a maximum-energy stroke against any ball at any rally speed.
 //
-// WHAT THAT BROKE. PLAYER_SPIN_GAIN (2.5) compensates a controller swing
-// reaching roughly a fifth of real racket-head speed. It multiplies
-// spinCaptureGain — but the friction impulse that spins the ball also pushes
-// it, and impulse.js correctly locks the two together through
-// HOLLOW_SPHERE_MOI_FACTOR (Δv_t = (2/3)·R·Δω). So the gain necessarily
-// scales the LINEAR kick too:
+// WHAT THAT BROKE (historical). PLAYER_SPIN_GAIN (2.5) compensates a
+// controller swing reaching roughly a fifth of real racket-head speed. It
+// multiplies spinCaptureGain — and for a long time impulse.js locked the
+// linear half of the friction couple to the same number through
+// HOLLOW_SPHERE_MOI_FACTOR (Δv_t = (2/3)·R·Δω), so the gain scaled the
+// LINEAR kick too:
 //
 //     gain 35   (AI)      kick 0.467 m/s per m/s of slip
 //     gain 87.5 (player)  kick 1.167 m/s per m/s of slip
 //
-// Above 1.0 means a brushing swing injects more linear speed than the slip
+// Above 1.0 meant a brushing swing injected more linear speed than the slip
 // it came from, and PADDLE_CONTACT_SPEED_CAP deliberately caps only the
-// NORMAL component, so nothing bounded that channel. Against the AI it is
+// NORMAL component, so nothing bounded that channel. Against the AI it was
 // invisible: paddleSolver inverts a target landing point through (1 + e) and
-// dissipates the surplus every other stroke. Between two humans there is no
-// governor, so it compounds — which is what MULTIPLAYER_PADDLE_COR_SCALE (now
-// removed) was trimming, in the wrong term (normal reflection) for the wrong
-// cause.
+// dissipates the surplus every other stroke. Between two humans there was no
+// governor, so it compounded — which is what MULTIPLAYER_PADDLE_COR_SCALE
+// (now removed) was trimming, in the wrong term (normal reflection) for the
+// wrong cause.
+//
+// Since the 2026-09 physics pass the couple is split for player contacts:
+// ball.js passes the physical SPIN_CAPTURE_GAIN as computeImpulse's
+// `linearKickGain`, so the compensation is spin-only and the pace channel is
+// closed at its source (a prepared first stroke no longer leaves the bat
+// harder than the swing warrants — the tester's "first hit too hard"). The
+// governor below therefore no longer limits pace; what it still does is the
+// honest part of its original job.
 //
 // THE MODEL. Gain is earned, not granted. At contact we measure how far the
 // paddle actually travelled along its swing axis since the stroke's
-// turnaround, and ramp the compensation between "no stroke at all" (raw
-// physics, gain 1.0) and "a committed stroke" (full PLAYER_SPIN_GAIN). A
-// hurried jab at an incoming smash gets what a real blocker gets: the
-// reflection, and nothing extra. Faster rally → less preparation → less
-// amplification → pace self-limits, in BOTH modes, with no per-mode constant.
+// turnaround, and ramp the SPIN compensation between "no stroke at all"
+// (raw physics, gain 1.0) and "a committed stroke" (full PLAYER_SPIN_GAIN).
+// A hurried jab at an incoming smash gets what a real blocker gets: the
+// reflection and the physical brush, nothing extra. A block reads as a
+// block, a loop as a loop, because the spin is earned by the stroke that
+// real technique would need.
 //
 // This file is pure and side-effect-free: no THREE, no DOM, no module state.
 // Positions come in as plain numbers so tests can drive a stroke directly.

@@ -13,16 +13,19 @@
 // against, silently rewriting every rally. That asymmetry is the whole
 // contract of this constant and is what the AI test below pins down.
 //
-// IT IS A CEILING, NOT A FLAT MULTIPLIER. The gain multiplies spinCaptureGain,
-// and impulse.js locks the linear half of the friction couple to that same
-// number (HOLLOW_SPHERE_MOI_FACTOR: Δv_t = (2/3)·R·Δω) — so at 2.5 a player's
-// brush injects 1.167 m/s of ball speed per m/s of slip, against the AI's
-// 0.467. Nothing bounded that channel: PADDLE_CONTACT_SPEED_CAP caps only the
-// NORMAL component. What a contact actually receives is therefore scaled by
-// how much stroke went into it (swingPreparation.js), which is the governor
-// the AI has always had through its capped windup distance. The last two
-// describe blocks pin both halves of that: the ceiling is still reached by a
-// real stroke, and a jab no longer reaches it.
+// IT IS SPIN ONLY. The gain multiplies spinCaptureGain; the linear half of
+// the friction couple (HOLLOW_SPHERE_MOI_FACTOR: Δv_t = (2/3)·R·Δω) stays at
+// the physical SPIN_CAPTURE_GAIN via computeImpulse's linearKickGain opt. It
+// used to be locked to the compensated gain, so at 2.5 a player's brush
+// injected 1.167 m/s of ball speed per m/s of slip against the AI's 0.467,
+// through the one channel PADDLE_CONTACT_SPEED_CAP never bounded (it caps
+// only the NORMAL component) — a prepared first stroke left the bat too
+// hard. Two tests below pin that the gain no longer changes outgoing speed.
+//
+// IT IS A CEILING, NOT A FLAT MULTIPLIER. What a contact actually receives
+// is scaled by how much stroke went into it (swingPreparation.js). The last
+// describe block pins both halves of that: the ceiling is still reached by a
+// real stroke, and a jab does not reach it.
 
 const THREE = require('three');
 
@@ -210,20 +213,21 @@ describe('PLAYER_SPIN_GAIN', () => {
     expect(gained.spinMag / base.spinMag).toBeCloseTo(1.0, 6);
   });
 
-  test('leaves the normal-axis reflection alone but DOES add pace', () => {
+  test('leaves the normal-axis reflection alone and does NOT add pace', () => {
     const base = spinAtGain(playerSwing, 1);
     const gained = spinAtGain(playerSwing, 2.5);
     // impactSpeed is |v_rel · n| measured BEFORE the impulse, so the gain
-    // cannot move it. This assertion is what the previous version of this
-    // test checked while claiming to prove "the gain does not change pace" —
-    // it proved nothing, because no value of the gain could ever have changed
-    // this number.
+    // cannot move it — this line alone proves nothing about pace.
     expect(gained.impactSpeed).toBeCloseTo(base.impactSpeed, 6);
-    // The claim it MEANT to make is false, and this is the whole reason the
-    // gain has to be governed: the tangential friction impulse that carries
-    // the extra spin also drags the ball along the slip direction, so more
-    // spin is also, unavoidably, a faster ball leaving the bat.
-    expect(gained.outSpeed).toBeGreaterThan(base.outSpeed);
+    // The assertion that matters is on the OUTGOING speed. The friction
+    // impulse that carries the spin also drags the ball along the slip
+    // direction, and for a long time the two halves of that couple were
+    // locked, so the gain made a faster ball as well as a spinnier one — the
+    // unbounded channel behind "the first hit is too hard". ball.js now
+    // hands computeImpulse the physical SPIN_CAPTURE_GAIN as linearKickGain
+    // on player contacts: the compensated brush spins the ball 2.5× and
+    // pushes it exactly as hard as the uncompensated one.
+    expect(gained.outSpeed).toBeCloseTo(base.outSpeed, 6);
   });
 });
 
@@ -263,14 +267,17 @@ describe('swing preparation governs the gain', () => {
     expect(committed.swingSpeed).toBeCloseTo(jab.swingSpeed, 6);
   });
 
-  test('preparation controls pace, not just spin — the compounding loop', () => {
-    // This is the property the since-removed MULTIPLAYER_PADDLE_COR_SCALE was
-    // trimming in the wrong term. A hurried return can no longer put more pace on the ball
-    // than a prepared one, so a fast exchange between two humans damps itself
-    // instead of compounding.
+  test('preparation controls spin; pace is physical either way', () => {
+    // The compounding loop the since-removed MULTIPLAYER_PADDLE_COR_SCALE was
+    // trimming (in the wrong term) ran through the linear half of the
+    // friction couple, which the gain used to scale. That half is now pinned
+    // to the physical gain on every player contact (linearKickGain), so a
+    // committed stroke and a jab push the ball identically and differ only
+    // in spin. Pace between two humans no longer has an amplifier to damp.
     const jab = hitWithPrep(PREP_STEPS_JAB);
     const committed = hitWithPrep(PREP_STEPS_COMMITTED);
-    expect(committed.outSpeed).toBeGreaterThan(jab.outSpeed);
+    expect(committed.spinMag).toBeGreaterThan(jab.spinMag * 2);
+    expect(committed.outSpeed).toBeCloseTo(jab.outSpeed, 6);
   });
 
   test('AI contacts are untouched by preparation', () => {

@@ -304,20 +304,39 @@ describe('feed solving — accuracy', () => {
     }
   });
 
-  test('a short feed needs the room a far origin gives it', () => {
+  test('a short feed is a lob: the flat arc cannot clear the net, the lofted one lands it', () => {
     // Physical, not incidental: landing 23 cm past a 15.25 cm net means
-    // descending steeply just after the net. From the near origin at 8 m/s the
-    // flattest arc that reaches the point crosses the net BELOW the cord, so
-    // the shot is correctly refused; the far origin's longer, more arcing path
-    // makes the same placement makeable.
-    const far = solveFeed(cfg({ depth: 'short', feedOrigin: 'L-far', scatterSigma: 0 }),
-      env, { rng: mulberry32(9) });
-    expect(far.feasible).toBe(true);
-    expect(far.errorM).toBeLessThan(0.02);
+    // descending steeply just after the net. At 8 m/s the flattest arc that
+    // reaches the point crosses the net BELOW the cord from the near origin,
+    // so the solver must take the lofted branch — which, at the physical
+    // drag and Magnus, converges from either origin. (Under the old 1.8×
+    // loop-spin Magnus the 375 rad/s topspin default bent the near-vertical
+    // lob enough that the near origin was refused outright; this test used
+    // to pin that refusal.)
+    for (const feedOrigin of ['L-far', 'center-near']) {
+      const feed = solveFeed(cfg({ depth: 'short', feedOrigin, scatterSigma: 0 }),
+        env, { rng: mulberry32(9) });
+      expect(feed.feasible).toBe(true);
+      expect(feed.errorM).toBeLessThan(0.02);
+      // Lofted: it clears the cord by far more than any driven feed could.
+      expect(feed.netClearance).toBeGreaterThan(0.5);
+    }
 
+    // And the reason it lofts: the low branch from the near origin, aimed
+    // straight at the same point with the same spin, goes into the net.
     const near = solveFeed(cfg({ depth: 'short', feedOrigin: 'center-near', scatterSigma: 0 }),
       env, { rng: mulberry32(9) });
-    expect(near.feasible).toBe(false);
+    const dir = near.commandedLanding.clone().sub(near.spawn);
+    dir.y = 0;
+    const range = dir.length();
+    dir.normalize();
+    const low = solveElevation(near.spawn, dir, near.config.speed, near.spin, range, env, 'low');
+    expect(low.feasible).toBe(true);
+    const vel = dir.clone().multiplyScalar(near.config.speed * Math.cos(low.theta))
+      .addScaledVector(new THREE.Vector3(0, 1, 0), near.config.speed * Math.sin(low.theta));
+    const flat = rolloutToFirstBounce(near.spawn, vel, near.spin.clone(), env);
+    expect(flat).not.toBeNull();
+    expect(flat.netClearance).toBeLessThanOrEqual(0);
   });
 
   // Reported from the headset: "if I slow the speed the ball is not coming to

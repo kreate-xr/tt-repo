@@ -493,9 +493,15 @@ describe('solvePaddle — net clearance', () => {
   // FSM used to route every rejection straight to the centre-table zero-spin
   // safe block, erasing placement/spin identity on ~15% of intermediate/pro
   // rally shots. aiFSM's soften ladder now retries the SAME target at
-  // (0.80 speed, 0.6 spin) then (0.62, 0.3) before the block. This pins the
-  // physics that makes the ladder worth having: most full-pace rejections ARE
-  // executable at soften pace on the same target.
+  // (0.80 speed, 0.6 spin), (0.62, 0.45) and (0.45, 0.35) before the block.
+  // This pins the physics that makes the ladder worth having: most full-pace
+  // rejections ARE executable at soften pace on the same target.
+  //
+  // The third rung arrived with the 2026-09 physics pass: at the physical
+  // drag (0.13) and the saturating Magnus, a 0.62-pace ball from a low
+  // contact still lands long, and the two-rung ladder measured 0.70 here
+  // (0.83 at the old drag alone). The rungs below mirror aiFSM.SOFTEN_LADDER
+  // — change both.
   test('soften ladder: most full-pace rejections solve at reduced pace/spin on the same target', () => {
     const env = { ...makeEnv(), netBox: regulationNetBox() };
     const rng = mulberry32(20260830);
@@ -519,7 +525,7 @@ describe('solvePaddle — net clearance', () => {
       const full = solvePaddle(args);
       if (full.feasible) { fullOK += 1; continue; }
       let rescued = false;
-      for (const [sv, pv] of [[0.80, 0.6], [0.62, 0.3]]) {
+      for (const [sv, pv] of [[0.80, 0.6], [0.62, 0.45], [0.45, 0.35]]) {
         const r = solvePaddle({
           ...args,
           targetSpeed: Math.max(3.0, args.targetSpeed * sv),

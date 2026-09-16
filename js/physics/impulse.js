@@ -127,6 +127,21 @@ export const HOLLOW_SPHERE_MOI_FACTOR = 2 / 3;
 //                         spin about the paddle face normal. They align
 //                         only for a flat block hit; for angled swings
 //                         both apply to different components.
+//   linearKickGain        optional number — the gain used for the LINEAR
+//                         half of the friction couple (the kick along the
+//                         slip direction). Default: spinCaptureGain, i.e.
+//                         the physical hollow-sphere couple Δv_t =
+//                         (2/3)·R·Δω. The player path passes the physical
+//                         SPIN_CAPTURE_GAIN here while spinCaptureGain
+//                         carries PLAYER_SPIN_GAIN: the compensation exists
+//                         because a controller brushes at ~1/5 racket speed
+//                         and under-produces SPIN, and carrying it into
+//                         linear momentum was the unbounded channel that
+//                         made a prepared first stroke leave the bat too
+//                         hard (PADDLE_CONTACT_SPEED_CAP bounds only the
+//                         normal component). Grip saturation (slipSat)
+//                         still keys off spinCaptureGain so the kick stops
+//                         growing exactly where spin does.
 export function computeImpulse(
   ballV, ballW, ballPos,
   paddleV, paddleW, paddlePivot,
@@ -139,6 +154,11 @@ export function computeImpulse(
   const restitutionCurve = opts?.restitutionCurve;
   const sweetnessFactor = opts?.sweetnessFactor ?? 1.0;
   const torsionalDampES = opts?.torsionalDampES ?? 1.0;
+  // Gain for the LINEAR half of the friction couple. Defaults to the spin
+  // gain — the physical couple — so every existing caller is unchanged; the
+  // player path passes the physical SPIN_CAPTURE_GAIN here while its spin
+  // gain carries PLAYER_SPIN_GAIN (see the opts doc above).
+  const linearKickGain = opts?.linearKickGain ?? spinCaptureGain;
   // Contact point on the ball surface — center minus faceNormal * radius.
   _contactPoint.copy(ballPos).addScaledVector(faceNormal, -ballRadius);
 
@@ -227,10 +247,16 @@ export function computeImpulse(
   // the slip direction. Gated on velDot < 0 — the "moving away" nudge branch
   // has no normal impulse and therefore no friction to transmit. Saturation
   // mirrors PADDLE_SPIN_CAP: the kick per unit slip is (2/3)·R·gain, so the
-  // slip magnitude past which spin saturates (CAP/gain) is also where the
+  // slip magnitude past which spin saturates (CAP/spinGain) is also where the
   // linear kick stops growing — one grip limit, two consistent halves.
+  //
+  // The kick uses linearKickGain, not spinCaptureGain. They are the same
+  // number for every physical contact (AI, solver, edge strikes); they differ
+  // only on player contacts, where spinCaptureGain carries the VR input-gap
+  // compensation (PLAYER_SPIN_GAIN) and the linear half deliberately does
+  // not — see constants.js PLAYER_SPIN_GAIN for why.
   if (velDot < 0) {
-    let kickPerSlip = HOLLOW_SPHERE_MOI_FACTOR * ballRadius * spinCaptureGain * sweetnessFactor;
+    let kickPerSlip = HOLLOW_SPHERE_MOI_FACTOR * ballRadius * linearKickGain * sweetnessFactor;
     if (PADDLE_SPIN_CAP > 0 && spinCaptureGain > 0) {
       const slipMag = slipTangent.length();
       const slipSat = PADDLE_SPIN_CAP / spinCaptureGain;

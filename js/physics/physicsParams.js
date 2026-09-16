@@ -29,7 +29,7 @@ export const LOCKED_ROWS = [
   },
   {
     id: 'drag', label: 'Air Resistance',
-    desc: 'Quadratic drag on the ball. Fixed slightly above textbook for read.',
+    desc: 'Quadratic drag, ½ρCdA/m for a 40 mm 2.7 g ball (Cd ≈ 0.47). Physical.',
     get: () => P.DRAG_COEFFICIENT, fmt: (v) => v.toFixed(2),
   },
   {

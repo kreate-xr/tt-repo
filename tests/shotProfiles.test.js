@@ -222,8 +222,9 @@ describe('spin scales sanely across tiers', () => {
   // Spin used to be identical at every tier, with DIFFICULTY_CAPS.maxSpin
   // truncating it — which collapsed whole shot types to a constant. Per-tier
   // spin overrides fixed that, but they must not become a licence to inflate:
-  // MAGNUS_COEFFICIENT is ~9x physical, so ~26 rps here already bends the ball
-  // like a real elite loop. Tier separation comes mainly from PACE.
+  // spin is on the physical rps scale and the lift saturates like a real
+  // ball's (constants.js magnusCoefficientAt), so past ~60 rps more requested
+  // spin buys almost no more curve. Tier separation comes mainly from PACE.
   test('topspin rises with tier but stays in the sane band', () => {
     for (const type of ['loop', 'topspin_drive']) {
       const b = profileFor(type, 'beginner').spinMean;

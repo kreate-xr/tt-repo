@@ -339,8 +339,10 @@ describe('isServeTargetLegal', () => {
 
 describe('ensureNetClearance', () => {
   // Reset drag between tests — the setter has a live-binding into serve.js.
-  // 0.10 is the nominal DRAG_COEFFICIENT baseline under the quadratic model.
-  afterEach(() => setDragCoefficient(0.10));
+  // 0.13 is the shipped DRAG_COEFFICIENT (the physical value); resetting to
+  // anything else leaves later describes measuring a ball the game never
+  // flies.
+  afterEach(() => setDragCoefficient(0.13));
 
   function simCrossNetY(launchPos, vel, spin) {
     // Independent copy of the simulator used inside serve.js. Uses the same
@@ -359,7 +361,7 @@ describe('ensureNetClearance', () => {
       v.y += GRAVITY * dt;
       if (s.lengthSq() > 1e-4) {
         magnus.crossVectors(s, v);
-        v.addScaledVector(magnus, 0.008 * dt); // MAGNUS_COEFFICIENT nominal
+        v.addScaledVector(magnus, 0.008 * dt); // legacy linear Magnus; s is zero here so it never runs
       }
       applyDragStep(v, dt);
       pos.addScaledVector(v, dt);
@@ -437,12 +439,12 @@ describe('ensureNetClearance', () => {
 // the live ball uses and assert the full legality checklist.
 
 describe('solveTwoBounceServe — ITTF two-bounce serves', () => {
-  // Pin the SHIPPING physics (constants.js defaults: drag 0.17, gravity
-  // -9.81). Earlier describes' afterEach hooks leave the legacy tuning
-  // (0.10 / -12) behind, and the solver's legality envelope is measured
-  // against what the live game actually runs.
-  beforeEach(() => { setDragCoefficient(0.17); setGravity(-9.81); });
-  afterEach(() => { setDragCoefficient(0.17); setGravity(-9.81); });
+  // Pin the SHIPPING physics (constants.js defaults: drag 0.13, gravity
+  // -9.81) explicitly, so the solver's legality envelope is measured against
+  // what the live game actually runs whatever an earlier describe's hooks
+  // did.
+  beforeEach(() => { setDragCoefficient(0.13); setGravity(-9.81); });
+  afterEach(() => { setDragCoefficient(0.13); setGravity(-9.81); });
 
   const NET_TOP = 0.1525;
   const BALL_R = 0.02;
@@ -723,7 +725,7 @@ describe('SERVE_STATES enum', () => {
 // that the predicted strike is taken on the way back down.
 
 describe('predictTossContact', () => {
-  afterEach(() => { setDragCoefficient(0.10); setGravity(-12); });
+  afterEach(() => { setDragCoefficient(0.13); setGravity(-9.81); });
 
   // Mirrors the production geometry: toss from 10cm above the table, struck
   // on the descent at 35cm (or sooner if the descent-speed cap bites).

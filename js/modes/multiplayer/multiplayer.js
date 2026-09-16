@@ -116,9 +116,11 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // was a symptom fix in the wrong term — the energy was entering through the
   // tangential friction kick that PLAYER_SPIN_GAIN scales, not through the
   // normal reflection COR was trimming, so it deadened clean drives and left
-  // the compounding intact. The cause (a player with no biomechanical limit on
-  // stroke energy) is now handled at its source in swingPreparation.js, which
-  // governs both modes identically. One bat, one COR, no per-mode constant.
+  // the compounding intact. The cause is now closed at its source: the
+  // compensation is spin-only (ball.js passes the physical gain to
+  // computeImpulse as linearKickGain), and swingPreparation.js scales the
+  // spin a stroke earns, identically in both modes. One bat, one COR, no
+  // per-mode constant.
 
   // --- Match state (scoring, serve turns, game end) ---
   // Absolute side names ('host'/'guest') keep the model identical on both

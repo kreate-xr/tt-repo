@@ -161,11 +161,19 @@ describe('golden trajectory: flight integrator landing pin', () => {
     for (let i = 0; i < maxSteps; i++) {
       // gravity + buoyancy
       vel.y += (GRAVITY + BUOYANCY_ACCEL) * dt;
-      // Magnus
-      if (omega.lengthSq() > 1e-4) {
+      // Magnus — saturating with spin ratio, as rollout.js does through
+      // constants.magnusCoefficientAt: k = M·S_ref·v/(v + 2r·|ω|) with the
+      // reference scale S_ref = (8 + 0.04·100)/8 = 1.5 so k == M at
+      // (100 rad/s, 8 m/s). Written out here rather than imported, per the
+      // contract above: if the production helper's formula drifts, this
+      // copy is the regression signal.
+      const wSq = omega.lengthSq();
+      if (wSq > 1e-4) {
+        const speed = vel.length();
+        const k = MAGNUS_COEFFICIENT * 1.5 * speed / (speed + 0.04 * Math.sqrt(wSq));
         tmp.crossVectors(omega, vel);
         tmp.y *= MAGNUS_VERTICAL_SCALE;
-        vel.addScaledVector(tmp, MAGNUS_COEFFICIENT * dt);
+        vel.addScaledVector(tmp, k * dt);
         omega.multiplyScalar(Math.exp(-SPIN_DAMPING * dt));
       }
       // Drag

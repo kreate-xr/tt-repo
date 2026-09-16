@@ -485,17 +485,24 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
     // gets the same compensation for a slow swing.
     // Earned, not granted. PLAYER_SPIN_GAIN is the CEILING; what a contact
     // actually gets is scaled by how much stroke went into it, so the gain
-    // (and the linear friction kick locked to it by HOLLOW_SPHERE_MOI_FACTOR)
-    // can only be had by a player who had the time to swing. This is the
-    // biomechanical governor the AI has always had via its capped windup
-    // distance — see swingPreparation.js for why its absence made pace
-    // compound between two humans but not against the AI.
+    // can only be had by a player who had the time to swing — see
+    // swingPreparation.js.
+    //
+    // SPIN ONLY. The compensation scales spin capture; the linear half of the
+    // friction couple (the kick along the slip direction) stays at the
+    // PHYSICAL gain captured here before the multiply, and is handed to
+    // computeImpulse as linearKickGain. The couple used to be locked, which
+    // let a prepared stroke inject 1.17 m/s of ball speed per m/s of brush
+    // (against 0.47 physical) through the one channel PADDLE_CONTACT_SPEED_CAP
+    // never bounded — the "first hit is too hard" testers reported. Pace now
+    // comes from the normal reflection alone, for player and AI alike.
     //
     // Direction is the paddle's own velocity at contact: the stroke axis is
     // whatever the player is actually swinging along, so a brush, a drive and
     // a lunge are all measured on their own terms rather than against the
     // table.
     let swingTravel = 0;
+    const physicalKickGain = spinCaptureGain;
     if (ctx.origin === 'player') {
       swingTravel = ctx.velocity
         ? _swingTracker.strokeTravel(ctx.velocity.x, ctx.velocity.y, ctx.velocity.z)
@@ -515,6 +522,11 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
     const impulseOpts = ctx.origin === 'player'
       ? playerImpulseOpts()
       : { restitutionCurve: paddleRestitution };
+    if (ctx.origin === 'player') {
+      // Physical couple for the linear kick; the compensated gain above is
+      // spin-only. AI contacts leave this unset → default (= spin gain).
+      impulseOpts.linearKickGain = physicalKickGain;
+    }
     if (isEdgeStrike) {
       // Strip the curve for edge strikes so the scalar PADDLE_EDGE_RESTITUTION
       // is honored. Only mutates the fresh player-opts object above.

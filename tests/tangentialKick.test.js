@@ -94,6 +94,29 @@ describe('tangential friction kick — momentum consistency', () => {
     expect(dVt.length()).toBeCloseTo(expected, 6);
   });
 
+  test('linearKickGain splits the couple deliberately: player spin is compensated, the kick is not', () => {
+    // ball.js passes the physical gain as linearKickGain on player contacts
+    // while spinCaptureGain carries PLAYER_SPIN_GAIN. Pin the split: Δω
+    // scales with the compensated gain, Δv_t with the physical one.
+    const compensated = GAIN * 2.5;
+    const r = computeImpulse(
+      v(6, 0, 0), v(0, 0, -100), v(0, 0, 0),
+      v(0, 0, 0), null, null,
+      v(-1, 0, 0),
+      R, E, compensated,
+      { linearKickGain: GAIN },
+    );
+    const slip = r.slipTangent.length();
+    expect(slip).toBeGreaterThan(0.5);
+    expect(r.deltaOmega.length()).toBeCloseTo(compensated * slip, 6);
+    const dVt = v(0, r.ballV_out.y, r.ballV_out.z).length();
+    expect(dVt).toBeCloseTo(HOLLOW_SPHERE_MOI_FACTOR * R * GAIN * slip, 6);
+    // And the default (opt omitted) is still the locked physical couple.
+    const locked = block(v(6, 0, 0), v(0, 0, -100));
+    const dVtLocked = v(0, locked.ballV_out.y, locked.ballV_out.z).length();
+    expect(dVtLocked).toBeCloseTo(dVt, 6);
+  });
+
   test('kick saturates with the spin cap: huge slip does not add unbounded velocity', () => {
     const r = block(v(8, 0, 0), v(0, 0, -2000)); // absurd incoming spin
     const kickCap = HOLLOW_SPHERE_MOI_FACTOR * R * PADDLE_SPIN_CAP;

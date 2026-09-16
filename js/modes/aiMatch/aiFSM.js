@@ -197,10 +197,11 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
   // (~0.3-0.6 ms of solver work per frame), and the time-to-contact below
   // which the remaining job is drained in one go instead — waiting more
   // frames there could eat into the swing.
-  // 3 (was 2): the soften ladder can chain up to 4 solves on a ball whose
-  // full-pace request is infeasible; 3/frame keeps even that worst case ahead
-  // of the drain threshold on a normal flight without measurable frame cost.
-  const SOLVE_ROLLOUTS_PER_FRAME = 3;
+  // 4 (was 3, was 2): the soften ladder can chain up to 5 solves on a ball
+  // whose full-pace request is infeasible (full + three rungs + safe block,
+  // up to 20 rollouts each); 4/frame keeps even that worst case ahead of the
+  // drain threshold on a normal flight without measurable frame cost.
+  const SOLVE_ROLLOUTS_PER_FRAME = 4;
   const SOLVE_DRAIN_BELOW_MS = 450;
 
   function transition(next) {
@@ -465,7 +466,7 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
       : 0;
     // The solve runs AMORTIZED: solvePaddleSteps yields between verification
     // rollouts (up to 20 per solve; the soften ladder + safe fallback can
-    // chain up to 4 solves on a hard ball — a guaranteed frame hitch when
+    // chain up to 5 solves on a hard ball — a guaranteed frame hitch when
     // run synchronously inside this worker-reply callback).
     // update() steps the job a few rollouts per frame while the FSM sits in
     // DECIDING — the same place it already waits on the worker round-trip —
@@ -500,9 +501,20 @@ export function createAIFSM({ paddle, intent, difficulty = 'beginner', failureHa
   // zero-spin centre block erased the tiers' placement identity — measured
   // 2026-08-30 at ~15% of all intermediate/pro rally shots, concentrated in
   // exactly the high-spin/high-pace shots that read as intelligence.
+  //
+  // Three rungs since the 2026-09 physics pass (drag and Magnus at their
+  // physical values). Under the old 1.8×-physical loop-spin Magnus the two-
+  // rung ladder rescued ≥80% of the hard band (low contact, loop pace, heavy
+  // spin); with real lift a 0.62-pace / 0.3-spin ball from a low contact
+  // still lands long, and the honest next step is what a real player does —
+  // lift it: slower again, and keep a little more spin for the dip. Measured
+  // on the paddleSolver "soften ladder" band, 2 seeds: two rungs 0.70/0.78,
+  // three rungs 0.83/0.88 (tests/paddleSolver.test.js pins ≥ 0.8). The rung
+  // scales are mirrored in that test — change both.
   const SOFTEN_LADDER = [
     { speedScale: 0.80, spinScale: 0.6 },
-    { speedScale: 0.62, spinScale: 0.3 },
+    { speedScale: 0.62, spinScale: 0.45 },
+    { speedScale: 0.45, spinScale: 0.35 },
   ];
   // Floor for softened pace: above a drop-shot touch, below the safe block's
   // 4.0 — softening below this reads as a fluffed swing, not a controlled one.

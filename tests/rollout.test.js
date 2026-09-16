@@ -38,7 +38,9 @@ const v3 = (x, y, z) => new THREE.Vector3(x, y, z);
 // The integration as the three predictive callers ran it BEFORE consolidation:
 // gravity without buoyancy. Kept here as the explicit "what was wrong" baseline
 // so the buoyancy assertion below measures a real difference rather than
-// restating the implementation.
+// restating the implementation. Its Magnus term is the old linear-in-ω form;
+// that is fine because its only use below runs with zero spin, so the term
+// never fires — the saturating model lives in constants.magnusCoefficientAt.
 function legacyFlightStep(pos, vel, spin, dt) {
   vel.y += GRAVITY * dt;
   if (spin.lengthSq() > 1e-4) {

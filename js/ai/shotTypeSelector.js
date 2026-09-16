@@ -52,8 +52,12 @@ export const SHOT_TYPES = Object.freeze({
 // PHYSICAL rps — the same scale the player's brush shots produce through
 // SPIN_CAPTURE_GAIN. They were ×2.5 smaller for a long time, cancelling a
 // MAGNUS_COEFFICIENT that ran 2.5× physical (see the history note on that
-// constant); both moved together, so every arc these tables describe is
-// unchanged. The practical ceiling is ~64 rps ≈ 400 rad/s: PADDLE_SPIN_CAP
+// constant); both moved together, so every arc these tables describe was
+// unchanged. The 2026-09 pass then made the lift SATURATE with spin (the
+// real sphere's CL fit), which bends a 50-60 rps loop ~40% less than the
+// linear model did; the tables were deliberately NOT rescaled for it (more
+// requested ω just saturates harder) and the solver-envelope tests gate the
+// result. The practical ceiling is ~64 rps ≈ 400 rad/s: PADDLE_SPIN_CAP
 // (420 rad/s, real rubber-grip saturation) is what the impulse model can
 // actually deliver, so requests are kept just inside it — the old top-end
 // loop (34 rps at 2.5× Magnus ≡ 85 rps real-equivalent) was super-physical
