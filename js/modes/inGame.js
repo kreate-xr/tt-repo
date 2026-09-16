@@ -73,6 +73,9 @@ import { CalibrationWizard } from '../scene/calibrationWizard.js';
 import { CalibrationTuner } from '../scene/calibrationTuner.js';
 import { paddleAngularVelocity } from '../physics/ball.js';
 import { update as updateTrackingLossGuard } from '../xr/trackingLossGuard.js';
+import {
+  depthSensingSessionInit, createDepthOcclusion, createOffHandOccluder,
+} from '../xr/depthOcclusion.js';
 import { getProfile } from './training/difficulty.js';
 import {
   initStatsHud, setLiveLine, hideLiveLine, showSummary, hideSummary, clearStatsHud,
@@ -358,10 +361,17 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // immersive-vr sessions.
     const optionalFeatures = ['hand-tracking', 'plane-detection', 'dom-overlay'];
     if (xrMode === 'ar') optionalFeatures.push('light-estimation');
+    // Real-world occlusion in passthrough (js/xr/depthOcclusion.js): the
+    // depth-sensing feature plus its usage/format preferences. Optional —
+    // a runtime without it (Quest 2, emulator) starts the session anyway and
+    // the off-hand occluder below covers the hand instead.
+    const depthInit = depthSensingSessionInit(xrMode);
+    if (depthInit) optionalFeatures.push(...depthInit.optionalFeatures);
     session = await requestSessionWithRetry(sessionType, {
       requiredFeatures: ['local-floor'],
       optionalFeatures,
       domOverlay: { root: document.body },
+      ...(depthInit ? { depthSensing: depthInit.depthSensing } : {}),
     });
   } catch (err) {
     // Log the NAME as well: the raw message ("Failed to execute
@@ -647,6 +657,36 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     session.requestLightProbe({ reflectionFormat: 'srgba8' })
       .then((probe) => { xrLightProbe = probe; })
       .catch(() => { /* runtime declined; MR fallback rig stays */ });
+  }
+
+  // --- MR real-world occlusion (js/xr/depthOcclusion.js). Tier 1 rides
+  // three's depth-sensing mesh once the runtime delivers depth; tier 2 is a
+  // depth-only sphere on the off-hand grip, shown only while tier 1 is not
+  // active, so the hand holding the serve ball is never painted over by
+  // the table on any headset. Passthrough only — there is nothing real to
+  // occlude against in the Focus Room.
+  const depthOcclusion = isVR ? null : createDepthOcclusion(renderer);
+  const offHandOccluder = isVR ? null : createOffHandOccluder();
+  if (offHandOccluder) scene.add(offHandOccluder);
+  let depthOcclusionWasActive = false;
+  if (!isVR) {
+    const features = session.enabledFeatures || [];
+    const granted = features.includes('depth-sensing');
+    console.log(`[XR] depth-sensing ${granted ? 'granted' : 'not available'}`
+      + (granted ? ` (usage ${session.depthUsage}, format ${session.depthDataFormat})` : '')
+      + ' — off-hand occluder is the fallback');
+  }
+  function updateOcclusion() {
+    if (!depthOcclusion) return;
+    const active = depthOcclusion.update();
+    if (active !== depthOcclusionWasActive) {
+      depthOcclusionWasActive = active;
+      hudLog(`[XR] depth occlusion ${active ? 'active' : 'inactive'}`);
+    }
+    const grip = xr.getOffHandGrip();
+    const showFallback = !active && !!grip;
+    offHandOccluder.visible = showFallback;
+    if (showFallback) grip.getWorldPosition(offHandOccluder.position);
   }
 
   // --- State ---
@@ -1409,6 +1449,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       if (child.geometry) child.geometry.dispose();
       if (child.material) child.material.dispose();
     });
+    if (depthOcclusion) depthOcclusion.dispose();
+    if (offHandOccluder) {
+      scene.remove(offHandOccluder);
+      offHandOccluder.geometry.dispose();
+      offHandOccluder.material.dispose();
+    }
     // Tear down arena mode if it was active. restoreARLighting is safe to
     // call unconditionally — it's a no-op relative to the AR defaults.
     if (arena) { arena.dispose(); arena = null; }
@@ -1567,6 +1613,11 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       drillFinished = true;
       showDrillSummary();
     }
+
+    // Last thing before the draw: the occlusion range uniform reads this
+    // frame's eye projection, and the fallback sphere follows this frame's
+    // off-hand grip pose.
+    updateOcclusion();
 
     renderer.render(scene, camera);
   });
