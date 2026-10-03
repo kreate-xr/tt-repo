@@ -18,6 +18,10 @@
 <p>Calibrate hovered — longest of the captions</p><div class="slot" id="s4"></div>
 <p>Table GREEN · ball WHITE — after simulated swatch clicks</p><div class="slot" id="s5"></div>
 <p>Dev session (?tuner) — the gear takes the odd slot under the left pair</p><div class="slot" id="s6"></div>
+<p>Dominant hand hovered — RIGHT (default), caption names the current hand</p><div class="slot" id="s7"></div>
+<p>Dominant hand LEFT — after a simulated tap</p><div class="slot" id="s8"></div>
+<p>MR session — backdrop toggle beside the hand button, hovered while OFF</p><div class="slot" id="s9"></div>
+<p>MR session — backdrop ON after a simulated tap (screen fills)</p><div class="slot" id="s10"></div>
 <script type="module">
   import { WristMenu } from '/js/scene/wristMenu.js';
   import { setTableColor, setBallColor } from '/js/scene/models.js';
@@ -59,6 +63,27 @@
   });
 
   snap('s6', hover('tune'), { showTune: true });
+
+  // Hand button: state lives outside the menu (profile store in the game),
+  // so the preview holds it in a local and feeds it back through the getter
+  // the way inGame.js does.
+  snap('s7', hover('dominantHand'));
+  let hand = 'R';
+  snap('s8', (wm) => {
+    wm.on('dominantHand', ({ hand: next }) => { hand = next; });
+    wm.activate(wm.buttons.find(b => b.id === 'dominantHand'));
+    hover('dominantHand')(wm);
+  }, { getDominantHand: () => hand });
+
+  // Backdrop toggle: MR sessions only (showBackdrop), state held outside the
+  // menu like the hand.
+  snap('s9', hover('mrBackdrop'), { showBackdrop: true });
+  let backdropOn = false;
+  snap('s10', (wm) => {
+    wm.on('mrBackdrop', ({ on }) => { backdropOn = on; });
+    wm.activate(wm.buttons.find(b => b.id === 'mrBackdrop'));
+    hover('mrBackdrop')(wm);
+  }, { showBackdrop: true, getBackdropOn: () => backdropOn });
 </script>
 </body>
 </html>

@@ -6,14 +6,17 @@
 //   - Left dock: how the game plays — Calibrate Paddle, Competition Rules.
 //   - Center row: three large circular mode tiles (Play / AI / Multi),
 //     each with a coloured crosshair ring, icon, main label + subtitle.
-//   - Right dock: how it looks — Table Color, Ball Color.
+//   - Right dock: how it looks — Table Color, Ball Color — with Dominant
+//     Hand centred beneath the pair.
 //   - Top pills: difficulty segmented control, and match length (BEST OF).
 //   - Below the tiles: hover caption naming the dock button under the cursor.
 //   - Bottom pill: Exit.
 //
 // The two docks are deliberately the same size (2 × 56px each, sharing the
 // mode row's centreline) — a lone button on one side against a cluster on the
-// other reads as a layout that ran out of room.
+// other reads as a layout that ran out of room. The hand button hangs
+// centred under the right pair (a T, not an L): a third button IN the row
+// would reach the MULTI tile's crosshair ticks.
 //
 // Input paths: laser raycast, plus off-hand poke via inGame.js's
 // updatePokeInput. Both flow through hitTestUV, which supports circles
@@ -113,6 +116,11 @@ const DOCK_CAPTIONS = {
   calibrate:  'Calibrate Paddle  —  align the bat with your controller',
   ballColor:  'Ball Color  —  orange or white, both ITTF legal',
   tableColor: 'Table Color  —  blue or green, both ITTF approved',
+  // Stateful: the live line is composed in drawDockCaption so it names the
+  // CURRENT hand, which the icon alone shows only as one letter.
+  dominantHand: 'Dominant Hand  —  which hand holds the paddle',
+  // Stateful like the hand: the live line says whether the screen is up.
+  mrBackdrop: 'Backdrop  —  a screen behind the far end that hides your room',
   help:       'Rules  —  how the serve, the rally and the score are judged',
 };
 
@@ -386,11 +394,66 @@ const ICONS = {
     ctx.fillText('?', cx, cy + 1);
     ctx.restore();
   },
+  hand(ctx, cx, cy, s, color, hand) {
+    // Dominant-hand glyph: one bold letter, L or R. It began as the letter
+    // beside a small bat on the held side, but at dock size the bat shrank
+    // to a dot-on-a-stick and the pair read as "R + magnifier". A single
+    // letter is the one thing here that survives XR minification; the hover
+    // caption names the setting and the current hand in full, the same way
+    // the other icon-only dock buttons rely on theirs.
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.font = `800 ${Math.round(s * 0.92)}px ${FONT_FAMILY}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    // +1px: optical centre, as for the ? glyph.
+    ctx.fillText(hand === 'L' ? 'L' : 'R', cx, cy + 1);
+    ctx.restore();
+  },
+  backdrop(ctx, cx, cy, s, color, on) {
+    // Passthrough backdrop toggle: a wide screen standing behind a small
+    // table seen end-on. Stateful in the swatch grammar — the screen is
+    // FILLED while the backdrop is up and an outline while it is down, so
+    // the button reports the current state without a label. The table in
+    // front is always solid: it is the fixed point the screen is behind.
+    ctx.save();
+    ctx.strokeStyle = color; ctx.fillStyle = color;
+    ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    const w = s * 0.92, h = s * 0.50;
+    const top = cy - s * 0.44;
+    roundRectPath(ctx, cx - w / 2, top, w, h, s * 0.05);
+    if (on) ctx.fill(); else ctx.stroke();
+    // Table: a slab plus two legs, wholly BELOW the screen with a gap. The
+    // panel is one canvas, so a table cut out of a filled screen would have
+    // to be composited through the button chrome; stacking them instead
+    // keeps the table identical in both states and only the screen changes.
+    const tw = s * 0.46, ty = top + h + s * 0.08, th = s * 0.08;
+    ctx.fillRect(cx - tw / 2, ty, tw, th);
+    ctx.fillRect(cx - tw / 2 + s * 0.04, ty + th, s * 0.06, s * 0.20);
+    ctx.fillRect(cx + tw / 2 - s * 0.10, ty + th, s * 0.06, s * 0.20);
+    ctx.restore();
+  },
 };
 
 export class WristMenu {
-  constructor({ showTune = TUNER_ENABLED } = {}) {
+  // `getDominantHand` reports the current 'L' / 'R' for the hand button's
+  // icon and caption. Read on every draw rather than copied: the setting
+  // also changes from the PLAY › SETTINGS screen and from first-swing
+  // detection, and the button must show whichever is current. The menu
+  // never writes it — like the colour swatches, a click only emits the next
+  // value and inGame.js owns the store.
+  // `showBackdrop` adds the passthrough backdrop toggle — MR sessions only,
+  // the Focus Room has its own back wall — and `getBackdropOn` reports its
+  // live state for the icon and caption, on the same read-don't-copy terms
+  // as the hand: the menu emits the next value and inGame.js owns the store.
+  constructor({
+    showTune = TUNER_ENABLED, getDominantHand = () => 'R',
+    showBackdrop = false, getBackdropOn = () => false,
+  } = {}) {
     this.showTune = showTune;
+    this.getDominantHand = getDominantHand;
+    this.showBackdrop = showBackdrop;
+    this.getBackdropOn = getBackdropOn;
     this.canvas = document.createElement('canvas');
     this.canvas.width = CANVAS_W;
     this.canvas.height = CANVAS_H;
@@ -723,14 +786,41 @@ export class WristMenu {
       id: 'ballColor', kind: 'dock', icon: 'ballSwatch',
       shape: 'rect', x: rightX, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
     });
+    // Dominant hand sits with the two swatches — the player-facing "set up
+    // my game" cluster — rather than three screens deep in PLAY › SETTINGS
+    // (which keeps its row; both write the same profile key). Centred under
+    // the pair: a third button in the row would overlap the MULTI tile's
+    // crosshair ticks (x ≈ 822), and hanging it flush under `ballColor`
+    // would clip the capsule's rounded end. At y = 252…308 it clears the
+    // caption line (text from y ≈ 323) and the capsule boundary (x ≈ 992 at
+    // that height) with room to spare.
+    this.buttons.push({
+      id: 'dominantHand', kind: 'dock', icon: 'hand',
+      shape: 'rect', x: rightX - (DOCK + DOCK_GAP) / 2,
+      y: DOCK_Y + DOCK + DOCK_GAP, w: DOCK, h: DOCK, radius: 15,
+    });
+    // Passthrough backdrop, MR sessions only: beside the hand button on its
+    // row, toward the centre. It belongs on this side — it is how the game
+    // LOOKS — and this is the one slot left there: the top pair is bounded
+    // by the capsule's end (x ≈ 992) and the hand's slot cannot move without
+    // re-deriving the layout above. At x = 840…896 it clears the MULTI
+    // tile's ring (which reaches x ≈ 799 at this height) by 40px. Same as
+    // the dev-only Tune button, the layout is unchanged when it is absent.
+    if (this.showBackdrop) {
+      this.buttons.push({
+        id: 'mrBackdrop', kind: 'dock', icon: 'backdrop',
+        shape: 'rect', x: rightX - (DOCK + DOCK_GAP) / 2 - DOCK - DOCK_GAP,
+        y: DOCK_Y + DOCK + DOCK_GAP, w: DOCK, h: DOCK, radius: 15,
+      });
+    }
 
     // Tune Physics exists only in dev sessions (?tuner / ?selftest — see
     // TUNER_ENABLED), so it gets the odd slot rather than displacing a
-    // shipping button: centred under the left pair, where it mirrors nothing
-    // and costs the production layout nothing. It cannot go beside them —
-    // a third button in that row reaches the PLAY tile's ticks — nor flush
-    // under `calibrate`, whose bottom-left corner would clip the capsule's
-    // rounded end at x = 32.
+    // shipping button: centred under the left pair, mirroring the hand
+    // button on the right, and costing the production layout nothing. It
+    // cannot go beside them — a third button in that row reaches the PLAY
+    // tile's ticks — nor flush under `calibrate`, whose bottom-left corner
+    // would clip the capsule's rounded end at x = 32.
     if (this.showTune) {
       this.buttons.push({
         id: 'tune', kind: 'dock', icon: 'gear',
@@ -917,7 +1007,16 @@ export class WristMenu {
     // Falls back to the service law rather than going blank — see
     // SERVE_RULE_CAPTION. Hovering a dock button still wins, because that is
     // an answer to a question the player just asked.
-    const text = (b && DOCK_CAPTIONS[b.id]) || SERVE_RULE_CAPTION;
+    let text = (b && DOCK_CAPTIONS[b.id]) || SERVE_RULE_CAPTION;
+    if (b && b.id === 'dominantHand') {
+      const hand = this.getDominantHand() === 'L' ? 'Left' : 'Right';
+      text = `Dominant Hand  —  ${hand}  ·  tap to switch, the paddle follows`;
+    }
+    if (b && b.id === 'mrBackdrop') {
+      text = this.getBackdropOn()
+        ? 'Backdrop  —  On  ·  tap to see your room past the far end again'
+        : 'Backdrop  —  Off  ·  tap for a screen behind the far end that hides your room';
+    }
 
     const ctx = this.ctx;
     ctx.save();
@@ -1116,7 +1215,14 @@ export class WristMenu {
     // icon tint that lived here existed only for the competition-rules
     // trophy, which is gone.
     const drawIcon = ICONS[b.icon];
-    if (drawIcon) drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, COLORS.chromeText);
+    if (drawIcon) {
+      // The hand letter and the backdrop screen are the icons whose state
+      // lives outside this module.
+      let state;
+      if (b.id === 'dominantHand') state = this.getDominantHand();
+      else if (b.id === 'mrBackdrop') state = !!this.getBackdropOn();
+      drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, COLORS.chromeText, state);
+    }
     // Calibration drift badge (spec §C8) — small yellow dot on top-right
     // of the calibrate button when the drift detector suggests recalibration.
     if (b.id === 'calibrate' && this._driftFlagCache) {
@@ -1269,6 +1375,22 @@ export class WristMenu {
       const nextId = BALL_COLOR_ORDER[(idx + 1) % BALL_COLOR_ORDER.length];
       this.emit('ballColor', { colorId: nextId });
       this.draw();  // refresh the swatch to the new color
+      return;
+    }
+    if (button.kind === 'dock' && button.id === 'dominantHand') {
+      // Two values, so a tap is a toggle. The store coerces anything odd back
+      // to a legal value, and the redraw reads the result through the getter
+      // rather than assuming the write took.
+      const next = this.getDominantHand() === 'L' ? 'R' : 'L';
+      this.emit('dominantHand', { hand: next });
+      this.draw();  // refresh the letter / bat side and the caption
+      return;
+    }
+    if (button.kind === 'dock' && button.id === 'mrBackdrop') {
+      // A toggle: emits the OTHER state, and the redraw reads the result
+      // back through the getter once inGame.js has stored it.
+      this.emit('mrBackdrop', { on: !this.getBackdropOn() });
+      this.draw();  // refresh the screen fill and the caption
       return;
     }
     if (button.kind === 'exit') {

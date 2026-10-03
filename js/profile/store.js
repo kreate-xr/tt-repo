@@ -42,6 +42,13 @@ export const SETTING_SPECS = Object.freeze({
   // defaulting them makes old profiles correct with no migration.
   sessionBestBeginner: { type: 'number', min: 0, max: 100, default: 0 },
   sessionBestPlayer:   { type: 'number', min: 0, max: 100, default: 0 },
+  // Passthrough backdrop (js/scene/mrBackdrop.js): a screen behind the far
+  // end of the table that hides the player's room. Off by default — "play
+  // in your room" is what Mixed Reality promises on the start screen, and
+  // the screen is for the player whose room they would rather not look at.
+  // Toggled from the wrist menu in MR sessions only; ignored in the Focus
+  // Room, which has its own back wall.
+  mrBackdrop:          { type: 'boolean', default: false },
 });
 
 function defaultSettings() {

@@ -155,7 +155,7 @@ describe('event registration', () => {
     // Guards the inverse mistake: a tile wired to an event name that nothing
     // downstream listens for.
     const menu = new WristMenu();
-    for (const event of ['start', 'training', 'tune', 'calibrate', 'ballColor', 'exit']) {
+    for (const event of ['start', 'training', 'tune', 'calibrate', 'ballColor', 'dominantHand', 'mrBackdrop', 'exit']) {
       let fired = false;
       menu.on(event, () => { fired = true; });
       menu.emit(event, {});
@@ -366,5 +366,172 @@ describe('rules card', () => {
     menu.hide();
     expect(menu.helpOpen).toBe(false);
     expect(menu.buttons.map((b) => b.id)).toContain('mode-aiMatch');
+  });
+});
+
+describe('dominant-hand dock button', () => {
+  // Bounding box of any button, circles included, for the overlap sweep.
+  function box(b) {
+    if (b.shape === 'circle') {
+      return { x0: b.cx - b.r, y0: b.cy - b.r, x1: b.cx + b.r, y1: b.cy + b.r };
+    }
+    return { x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.h };
+  }
+  // Half-pixel tolerance: adjacent pill segments share an edge, and
+  // `rowX + segW + segW` vs `rowX + 2 * segW` differ in the last float bit.
+  function overlaps(a, b, eps = 0.5) {
+    return a.x0 + eps < b.x1 && b.x0 + eps < a.x1 && a.y0 + eps < b.y1 && b.y0 + eps < a.y1;
+  }
+
+  test('sits centred under the Table / Ball pair and overlaps nothing', () => {
+    // Also with the dev-only Tune button present: the hand button mirrors
+    // its slot on the other side, so both layouts must stay collision-free.
+    for (const opts of [{}, { showTune: true }]) {
+      const menu = new WristMenu(opts);
+      const hand = menu.buttons.find((b) => b.id === 'dominantHand');
+      const table = menu.buttons.find((b) => b.id === 'tableColor');
+      const ball = menu.buttons.find((b) => b.id === 'ballColor');
+      expect(hand).toBeDefined();
+      // Centred under the pair, on the row below it.
+      expect(hand.x + hand.w / 2).toBe((table.x + ball.x + ball.w) / 2);
+      expect(hand.y).toBeGreaterThan(ball.y + ball.h);
+      // Clear of the mode tiles' crosshair ticks (x ≈ 822), the caption line
+      // (y ≈ 323) and the capsule's rounded end (x ≈ 992 at this height).
+      expect(hand.x).toBeGreaterThan(822);
+      expect(hand.y + hand.h).toBeLessThan(323);
+      expect(hand.x + hand.w).toBeLessThan(992);
+      // No button overlaps any other.
+      const boxes = menu.buttons.map((b) => [b.id, box(b)]);
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          expect(overlaps(boxes[i][1], boxes[j][1]) ? `${boxes[i][0]} × ${boxes[j][0]}` : null)
+            .toBeNull();
+        }
+      }
+    }
+  });
+
+  test('hit-tests, and a tap emits the OTHER hand', () => {
+    let hand = 'R';
+    const menu = new WristMenu({ getDominantHand: () => hand });
+    const seen = [];
+    menu.on('dominantHand', (p) => { seen.push(p.hand); hand = p.hand; });
+    expect(menu.hitTestUV(...uvOfButton(menu, 'dominantHand'))).toBe('dominantHand');
+    click(menu, 'dominantHand');
+    click(menu, 'dominantHand');
+    expect(seen).toEqual(['L', 'R']);
+  });
+
+  test('the icon and caption report the CURRENT hand through the getter', () => {
+    let hand = 'L';
+    const menu = new WristMenu({ getDominantHand: () => hand });
+    const drawn = () => {
+      const texts = [];
+      menu.ctx.fillText = (t) => texts.push(String(t));
+      menu.hovered = 'dominantHand';
+      menu.draw();
+      return texts.join(' | ');
+    };
+    expect(drawn()).toMatch(/Dominant Hand\s+—\s+Left/);
+    expect(drawn()).toMatch(/\| L \|/);
+    hand = 'R';   // changed elsewhere (settings screen / swing detection)
+    expect(drawn()).toMatch(/Dominant Hand\s+—\s+Right/);
+    expect(drawn()).toMatch(/\| R \|/);
+  });
+
+  test('defaults to right-handed when no getter is supplied', () => {
+    const menu = new WristMenu();
+    const seen = [];
+    menu.on('dominantHand', (p) => seen.push(p.hand));
+    click(menu, 'dominantHand');
+    expect(seen).toEqual(['L']);
+  });
+});
+
+describe('passthrough backdrop dock button', () => {
+  function box(b) {
+    if (b.shape === 'circle') {
+      return { x0: b.cx - b.r, y0: b.cy - b.r, x1: b.cx + b.r, y1: b.cy + b.r };
+    }
+    return { x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.h };
+  }
+  function overlaps(a, b, eps = 0.5) {
+    return a.x0 + eps < b.x1 && b.x0 + eps < a.x1 && a.y0 + eps < b.y1 && b.y0 + eps < a.y1;
+  }
+
+  test('exists only in MR sessions, and the layout is unchanged without it', () => {
+    // The Focus Room has its own back wall — no toggle there.
+    const vr = new WristMenu();
+    expect(vr.buttons.some((b) => b.id === 'mrBackdrop')).toBe(false);
+    const mr = new WristMenu({ showBackdrop: true });
+    expect(mr.buttons.some((b) => b.id === 'mrBackdrop')).toBe(true);
+    // Every other button sits exactly where it does without the toggle.
+    for (const b of vr.buttons) {
+      const same = mr.buttons.find((x) => x.id === b.id);
+      expect(same).toBeDefined();
+      expect(box(same)).toEqual(box(b));
+    }
+  });
+
+  test('sits beside the hand button on its row and overlaps nothing', () => {
+    for (const opts of [{ showBackdrop: true }, { showBackdrop: true, showTune: true }]) {
+      const menu = new WristMenu(opts);
+      const bd = menu.buttons.find((b) => b.id === 'mrBackdrop');
+      const hand = menu.buttons.find((b) => b.id === 'dominantHand');
+      const ball = menu.buttons.find((b) => b.id === 'ballColor');
+      // Same row as the hand, immediately to its left, under the top pair.
+      expect(bd.y).toBe(hand.y);
+      expect(bd.x + bd.w).toBeLessThan(hand.x);
+      expect(hand.x - (bd.x + bd.w)).toBeLessThanOrEqual(8);
+      expect(bd.y).toBeGreaterThan(ball.y + ball.h);
+      // Clear of the MULTI tile's ring at this height (x ≈ 799) and the
+      // caption line (y ≈ 323).
+      expect(bd.x).toBeGreaterThan(822);
+      expect(bd.y + bd.h).toBeLessThan(323);
+      const boxes = menu.buttons.map((b) => [b.id, box(b)]);
+      for (let i = 0; i < boxes.length; i++) {
+        for (let j = i + 1; j < boxes.length; j++) {
+          expect(overlaps(boxes[i][1], boxes[j][1]) ? `${boxes[i][0]} × ${boxes[j][0]}` : null)
+            .toBeNull();
+        }
+      }
+    }
+  });
+
+  test('hit-tests, and a tap emits the OTHER state read through the getter', () => {
+    let on = false;
+    const menu = new WristMenu({ showBackdrop: true, getBackdropOn: () => on });
+    const seen = [];
+    menu.on('mrBackdrop', (p) => { seen.push(p.on); on = p.on; });
+    expect(menu.hitTestUV(...uvOfButton(menu, 'mrBackdrop'))).toBe('mrBackdrop');
+    click(menu, 'mrBackdrop');
+    click(menu, 'mrBackdrop');
+    click(menu, 'mrBackdrop');
+    expect(seen).toEqual([true, false, true]);
+  });
+
+  test('the caption reports the CURRENT state through the getter', () => {
+    let on = false;
+    const menu = new WristMenu({ showBackdrop: true, getBackdropOn: () => on });
+    const drawn = () => {
+      const texts = [];
+      menu.ctx.fillText = (t) => texts.push(String(t));
+      menu.hovered = 'mrBackdrop';
+      menu.draw();
+      return texts.join(' | ');
+    };
+    expect(drawn()).toMatch(/Backdrop\s+—\s+Off/);
+    on = true;   // stored elsewhere (inGame.js owns the profile write)
+    expect(drawn()).toMatch(/Backdrop\s+—\s+On/);
+  });
+
+  test('draws without a getter (defaults to off) and does not throw', () => {
+    const menu = new WristMenu({ showBackdrop: true });
+    menu.hovered = 'mrBackdrop';
+    expect(() => menu.draw()).not.toThrow();
+    const seen = [];
+    menu.on('mrBackdrop', (p) => seen.push(p.on));
+    click(menu, 'mrBackdrop');
+    expect(seen).toEqual([true]);
   });
 });

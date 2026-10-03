@@ -17,6 +17,7 @@ import {
 // Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline — live in
 // beta while the GLB venues above stay tree-shaken.
 import { createFocusRoom } from '../scene/focusRoom.js';
+import { createMRBackdrop } from '../scene/mrBackdrop.js';
 import { warmWoodTile } from '../scene/woodFloor.js';
 import { warmWallTile } from '../scene/wallPanels.js';
 import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableColor, setNetXRMode } from '../scene/models.js';
@@ -397,6 +398,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // built once the venue GLB arrives, below. AR mode keeps the historical
   // transparent clear so passthrough shows.
   let arena = null;
+  // Passthrough backdrop (js/scene/mrBackdrop.js) — MR only, built after
+  // loadModels below, shown per the `mrBackdrop` profile setting.
+  let backdrop = null;
   if (isVR) {
     setArenaClear();
     setArenaLighting();
@@ -508,6 +512,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     scene.remove(loadPanel.mesh);
     loadPanel.dispose();
     if (arena) { arena.dispose(); arena = null; }
+    if (backdrop) { backdrop.dispose(); backdrop = null; }
     restoreARLighting();
     setSceneBackground(new THREE.Color(0x1a1a2e));
     if (loadingScreen) loadingScreen.style.display = 'none';
@@ -554,6 +559,16 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // Orange is the other ITTF-legal colour, so this trades nothing for
   // legibility. The wrist menu still overrides it either way.
   if (!isVR) setBallColor('orange');
+
+  // Passthrough backdrop: the Eleven-style screen behind the far end for
+  // players whose room they would rather not look at. Needs tableBox, so it
+  // runs after loadModels; synchronous like the Focus Room. Built every MR
+  // session and shown only when the profile says so, so the wrist-menu
+  // toggle is a visibility flip with nothing to load.
+  if (!isVR) {
+    backdrop = createMRBackdrop();
+    if (backdrop) backdrop.setVisible(profileStore.getSetting('mrBackdrop'));
+  }
 
   // Focus Room: procedural venue, needs tableBox so it can only run after
   // loadModels. Built synchronously — no download, no progress UI. Every
@@ -643,7 +658,14 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   };
 
   // --- Floating menu ---
-  const wristMenu = new WristMenu();
+  const wristMenu = new WristMenu({
+    // The hub's hand button shows the live profile value (it also changes
+    // from PLAY › SETTINGS and from first-swing detection).
+    getDominantHand: () => profileStore.getSetting('dominantHand'),
+    // The backdrop toggle exists only where there is a room to hide.
+    showBackdrop: !isVR,
+    getBackdropOn: () => !!profileStore.getSetting('mrBackdrop'),
+  });
   scene.add(wristMenu.mesh); // floating in world; billboarded each frame
 
   // The PLAY menu — a sub-menu of the wrist menu, not a replacement. Lists
@@ -804,6 +826,20 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   wristMenu.on('calibrate', () => enterTuner(calibWizard));
   wristMenu.on('ballColor', ({ colorId }) => setBallColor(colorId));
   wristMenu.on('tableColor', ({ colorId }) => setTableColor(colorId));
+  // Same profile key the PLAY › SETTINGS row writes; xrPaddle subscribes to
+  // the store and moves the paddle across on the next frame.
+  wristMenu.on('dominantHand', ({ hand }) => profileStore.setSetting('dominantHand', hand));
+  // The store is the source of truth (the button's icon reads it back), and
+  // the screen follows whatever the store actually kept.
+  wristMenu.on('mrBackdrop', ({ on }) => {
+    const kept = profileStore.setSetting('mrBackdrop', !!on);
+    if (backdrop) backdrop.setVisible(kept);
+  });
+  // A change from the settings screen or swing detection must show on the
+  // hub button too; redraw on any profile write (rare — a few per session).
+  // Released at session end below: the store outlives the session, and a
+  // stale subscriber would paint a disposed canvas.
+  const unsubscribeHandRedraw = profileStore.subscribe(() => wristMenu.draw());
   wristMenu.on('exit', () => endSession());
 
   // Panels that are MENUS rather than transient in-play tools. They get the
@@ -1328,6 +1364,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     endAnalyticsRun({});
     teardownDrill();
     clearStatsHud();
+    unsubscribeHandRedraw();
     wristMenu.hide();
     wristMenu.dispose();
     tuner.hide();
@@ -1349,6 +1386,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // Tear down arena mode if it was active. restoreARLighting is safe to
     // call unconditionally — it's a no-op relative to the AR defaults.
     if (arena) { arena.dispose(); arena = null; }
+    if (backdrop) { backdrop.dispose(); backdrop = null; }
     restoreARLighting();
     setSceneBackground(new THREE.Color(0x1a1a2e));
     if (overlay) overlay.style.display = 'flex';
