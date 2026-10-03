@@ -12,7 +12,10 @@
 //      "Generate new private key" → save the JSON somewhere OUTSIDE the repo
 //   2. export GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json
 //      (PowerShell: $env:GOOGLE_APPLICATION_CREDENTIALS = "C:\path\key.json")
-//   3. npm i -D firebase-admin
+//   3. npm i -D firebase-admin   (>= 12, for the named-database getFirestore)
+//
+// The key decides the project: a sportyxr-tech service account reads prod, a
+// sportyxr-test one reads test. Keep one of each outside the repo.
 //
 // Run:
 //   node scripts/query-sessions.mjs                # funnel + failures + feedback
@@ -49,7 +52,9 @@ async function db() {
     );
   }
   if (!admin.getApps().length) admin.initializeApp({ credential: admin.applicationDefault() });
-  return getFirestore();
+  // The named database, same as js/network/firebaseClient.js — the app never
+  // writes to '(default)', so a query there is always empty.
+  return getFirestore(admin.getApp(), 'tabletennis');
 }
 
 const pct = (n, d) => (d > 0 ? `${Math.round((n / d) * 100)}%`.padStart(4) : '   —');

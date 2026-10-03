@@ -4,7 +4,9 @@
 // path will work end-to-end. If it fails, the error tells us what to fix
 // (missing config, auth not enabled, rules not deployed, etc.).
 //
-// Run:  node scripts/check-firebase.mjs
+// Run:  node scripts/check-firebase.mjs                            (sportyxr-test)
+//       ENV_FILE=.env.prod.local node scripts/check-firebase.mjs   (sportyxr-tech)
+//       PowerShell: $env:ENV_FILE=".env.prod.local"; node scripts/check-firebase.mjs
 
 import { readFileSync } from 'node:fs';
 import { initializeApp } from 'firebase/app';
@@ -12,11 +14,21 @@ import {
   getFirestore, doc, setDoc, getDoc, deleteDoc, serverTimestamp,
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously } from 'firebase/auth';
+import { installDebugAppCheck } from './lib/appCheckDebug.mjs';
+
+// Must match js/network/firebaseClient.js. A named database, not '(default)':
+// the app never touches '(default)', so a smoke test there proves nothing.
+const DATABASE_ID = 'tabletennis';
+
+// Which project this runs against is whatever env file it reads. Default is
+// .env.local (sportyxr-test); ENV_FILE=.env.prod.local points it at prod, the
+// same file `npm run build:prod` uses — see .env.example.
+const ENV_FILE = process.env.ENV_FILE || '.env.local';
 
 function loadEnvLocal() {
   let raw;
-  try { raw = readFileSync(new URL('../.env.local', import.meta.url), 'utf8'); }
-  catch { throw new Error('.env.local not found in repo root'); }
+  try { raw = readFileSync(new URL(`../${ENV_FILE}`, import.meta.url), 'utf8'); }
+  catch { throw new Error(`${ENV_FILE} not found in repo root`); }
   const out = {};
   for (const line of raw.split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/i);
@@ -39,7 +51,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`[1/5] config loaded — projectId=${env.VITE_FIREBASE_PROJECT_ID}`);
+  console.log(`[1/5] config loaded from ${ENV_FILE} — projectId=${env.VITE_FIREBASE_PROJECT_ID}`);
 
   const app = initializeApp({
     apiKey:            env.VITE_FIREBASE_API_KEY,
@@ -50,6 +62,8 @@ async function main() {
     appId:             env.VITE_FIREBASE_APP_ID,
   });
   console.log('[2/5] firebase app initialized');
+  // Before getAuth/getFirestore, same as the browser (js/network/firebaseClient.js).
+  installDebugAppCheck(app, env);
 
   const auth = getAuth(app);
   let user;
@@ -63,7 +77,7 @@ async function main() {
   }
   console.log(`[3/5] signed in anonymously — uid=${user.uid.slice(0, 8)}…`);
 
-  const db = getFirestore(app);
+  const db = getFirestore(app, DATABASE_ID);
   const testId = `smoketest-${Date.now().toString(36)}`;
   const testRef = doc(db, 'rooms', testId);
   try {

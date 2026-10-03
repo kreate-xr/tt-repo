@@ -28,6 +28,24 @@ firebase deploy --only firestore:rules
 node scripts/check-firebase.mjs   # smoke-tests auth + rules end-to-end
 ```
 
+There are two Firebase projects and two env files (details in `.env.example`):
+
+| | project | Hosting site | env file | commands |
+|---|---|---|---|---|
+| test / beta | `sportyxr-test` | `sportyxr-test.web.app` | `.env.local` | `npm run dev`, `build`, `deploy:test`, the smoke scripts |
+| production | `sportyxr-tech` | `tt-sportyxr.web.app` → `tt.sportyxr.com` | `.env.prod.local` | `npm run dev:prod`, `build:prod`, `deploy:prod` |
+
+Test is the default everywhere — bare `npm run build` / `firebase deploy`
+never touch production; only the explicit `:prod` scripts (or
+`--project prod`) do. `.env.prod.local` must repeat every key with its prod
+value: Vite layers it over `.env.local`, so a key left out inherits the test
+value into the prod bundle. `vite --mode prod` refuses to run if the file is
+missing, and every build prints the project id it resolved.
+
+Before the first rules deploy to a project, the **`tabletennis` named
+database** must exist in it (Firestore → Add database); `firebase deploy
+--only firestore:rules` fails otherwise.
+
 ## Develop
 
 ```sh
@@ -56,13 +74,67 @@ npm run lint   # ESLint (flat config, eslint.config.mjs)
 ## Build & deploy
 
 ```sh
-npm run build                    # → dist/
-firebase deploy --only hosting   # serves dist/ (see firebase.json)
+npm run deploy:test    # build → dist/, deploy hosting + rules to sportyxr-test
+npm run deploy:prod    # build:prod → dist/, deploy hosting + rules to sportyxr-tech
 ```
 
-The Firebase project alias lives in `.firebaserc`. Firestore security rules
-(`firestore.rules`) are the entire security boundary of multiplayer — deploy
-them with `firebase deploy --only firestore:rules` whenever they change.
+Or by hand: `npm run build[:prod]` then `firebase deploy --only hosting
+--project test|prod` (hosting deploys go through the `app` target in
+`.firebaserc`, which maps to the `sportyxr-test` / `tt-sportyxr` site). The
+aliases live in `.firebaserc`; `default` is test on purpose. Firestore
+security rules (`firestore.rules`) are the entire security boundary of
+multiplayer — deploy them with `firebase deploy --only firestore:rules
+--project <alias>` whenever they change, to BOTH projects.
+
+Before the first prod build, `rm -rf dist .firebase` — an old `dist/` has the
+previous project's config baked in and `.firebase/` caches the previous
+hosting upload.
+
+## App Check
+
+The Firebase web config in the bundle is public by design; the rules decide
+what a write may look like, but anonymous accounts are free to mint, so
+without App Check one script can fill `sessions`, `feedback` and `signups` at
+our billing rate. `js/network/appCheck.js` attaches a reCAPTCHA Enterprise
+attestation to every Firestore request; **enforcement** — actually refusing
+unattested requests — is a switch in the Firebase console, flipped last.
+
+One-time setup, in this order — **per project**: keys, registrations and
+debug tokens belong to a Firebase project, so `sportyxr-test` and
+`sportyxr-tech` each need their own, going into `.env.local` and
+`.env.prod.local` respectively.
+
+1. **reCAPTCHA key.** GCP Console → Security → reCAPTCHA (enable the
+   reCAPTCHA Enterprise API if prompted) → Create key → Web, **score-based**
+   ("Use checkbox challenge" off). Domains: the Firebase Hosting domain(s)
+   and `localhost` — for prod that is `tt.sportyxr.com`,
+   `tt-sportyxr.web.app` and `tt-sportyxr.firebaseapp.com`. Copy the site key.
+2. **Register it.** Firebase Console → App Check → Apps → the web app →
+   reCAPTCHA Enterprise → paste the key, and set **Token TTL to 1 day** on
+   the same form (default is 1 hour). One reCAPTCHA assessment is spent per
+   token minted, not per request: a 1-hour TTL costs an open tab ~2 per
+   hour, a 1-day TTL costs a session at most one, and a return visit that
+   day none. The free tier is 10,000 assessments/month per organization.
+3. **Debug token** for the dev server, the Quest and the smoke scripts (the
+   dev origin is a LAN address reCAPTCHA cannot be registered for): same
+   page → ⋮ Manage debug tokens → Add → any UUID.
+4. `.env.local` (or `.env.prod.local`): `VITE_RECAPTCHA_ENTERPRISE_SITE_KEY=`
+   the site key, `APPCHECK_DEBUG_TOKEN=` the UUID. The token is not
+   `VITE_`-prefixed on purpose — `vite.config.js` substitutes it only under
+   the dev server (`npm run dev` / `dev:prod`), so a built bundle cannot
+   contain it.
+5. `npm run deploy:test` or `deploy:prod`. The CSP in `firebase.json` already
+   allows the reCAPTCHA script, frame and endpoint.
+6. **Wait.** App Check → Firestore shows verified vs unverified request
+   counts. Once the deployed build is producing verified tokens and the
+   unverified line is only old tabs, click **Enforce**. Enforcing first locks
+   out every visitor still on the previous build.
+
+A build with no site key logs a loud `[appCheck]` warning and runs unattested,
+which works until enforcement is on and is permission-denied everywhere after.
+The smoke scripts (`check-firebase.mjs`, `check-beta-collections.mjs`) use
+the debug token the same way the dev server does; without it they run bare.
+They read `.env.local` unless `ENV_FILE=.env.prod.local` is set.
 
 ## Project layout
 
@@ -76,7 +148,8 @@ js/
   modes/            Game modes: training drills, machine play, AI match, multiplayer
   scene/            Three.js scene, models, in-XR menus/panels, audio
   xr/               Session, controllers, paddle calibration, drift detection
-  network/          WebRTC + Firestore signaling (SignalingClient, NetworkManager)
+  network/          WebRTC + Firestore signaling (SignalingClient, NetworkManager),
+                    Firebase init + App Check attestation
   lobby/            Room codes / LobbyManager over the signaling stack
   ui/               DOM overlay (lobby UI + post-session card on the landing page)
   analytics/        Beta session collector (one Firestore doc per session)
@@ -126,7 +199,11 @@ proves what is actually deployed is, against the real project, with anonymous
 auth really enabled. It also asserts the negatives — if a client can read back
 its own feedback or signup row, the deployed rules are older than this repo and
 the beta is collecting email addresses anyone can fetch. It leaves tagged rows
-behind (the rules deny delete), so point it at the test project.
+behind (the rules deny delete), so run it only against the test project
+(the default). For prod, `ENV_FILE=.env.prod.local node
+scripts/check-firebase.mjs` is the smoke test — it cleans up after itself.
+`query-sessions.mjs` reads whichever project the service-account key in
+`GOOGLE_APPLICATION_CREDENTIALS` belongs to.
 
 Web analytics is separate and deliberately thin: a Google Tag Manager
 container, bootstrapped from `js/analytics/gtm.js` and configured with
@@ -168,9 +245,11 @@ Points worth knowing before changing any of it:
   deploy — symbolicate against your own `dist/` for the `appVersion` the
   session doc reports.
 
-Setup this depends on: a production Firebase project (not `sportyxr-test`), the
-`tabletennis` database existing in it with these rules deployed, and a
-Firestore TTL policy on `sessions`.
+Setup this depends on: the production project `sportyxr-tech` (public at
+`tt.sportyxr.com`), the `tabletennis` database existing in it with these rules
+deployed, Anonymous sign-in enabled, and a Firestore TTL policy on `sessions`
+(`endedAt`) — TTL policies, indexes and App Check registration are per project
+and do not carry over from `sportyxr-test`.
 
 ## Beta scope
 

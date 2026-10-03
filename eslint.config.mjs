@@ -18,10 +18,18 @@ export default [
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',
-      // Substituted at build time by vite.config.js's `define`. Both are read
-      // behind a typeof guard (js/analytics/session.js, js/analytics/gtm.js)
-      // so the modules also work under Jest, where nothing is substituted.
-      globals: { ...globals.browser, __APP_VERSION__: 'readonly', __GTM_CONTAINER_ID__: 'readonly' },
+      // Substituted at build time by vite.config.js's `define`. All are read
+      // behind a typeof guard (js/analytics/session.js, js/analytics/gtm.js,
+      // js/network/appCheck.js) so the modules also work under Jest, where
+      // nothing is substituted.
+      globals: {
+        ...globals.browser,
+        __APP_VERSION__: 'readonly',
+        __GTM_CONTAINER_ID__: 'readonly',
+        __RECAPTCHA_SITE_KEY__: 'readonly',
+        __APPCHECK_DEBUG_TOKEN__: 'readonly',
+        __IS_DEV_SERVER__: 'readonly',
+      },
     },
     rules: {
       'no-unused-vars': ['error', {

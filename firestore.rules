@@ -218,8 +218,9 @@ service cloud.firestore {
 
     // One row per account. The doc id IS the uid, so an anonymous account can
     // register interest exactly once — the only rate limit rules can express.
-    // Anonymous accounts are free to mint, so a determined actor can still
-    // spam; App Check is the real fix and is a launch-time item, not a beta one.
+    // Anonymous accounts are free to mint, so on their own these rules cannot
+    // stop a scripted flood; that is App Check's job (js/network/appCheck.js
+    // attests, enforcement is a console switch — see README "App Check").
     function validSignup() {
       return request.resource.data.keys()
           .hasOnly(['email', 'method', 'createdAt'])

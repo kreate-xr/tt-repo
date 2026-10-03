@@ -13,11 +13,14 @@
 //
 // Security note: the apiKey is PUBLIC and safe to expose to the client. What
 // protects your data is Firestore security rules (firestore.rules) plus the
-// Anonymous-auth gate. Never use open rules in production.
+// Anonymous-auth gate, plus App Check (js/network/appCheck.js), which is what
+// stops the config being replayed from outside a browser. Never use open
+// rules in production.
 
 import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore, doc, getDoc } from 'firebase/firestore';
 import { getAuth, signInAnonymously } from 'firebase/auth';
+import { installAppCheck } from './appCheck.js';
 import { traceBoot } from './connectTrace.js';
 
 function readConfig() {
@@ -63,6 +66,9 @@ export function initFirebase() {
   if (app) return { app, db, auth };
   const config = readConfig();
   app = getApps().length ? getApps()[0] : initializeApp(config);
+  // Order matters: App Check hooks the app BEFORE any service instance exists.
+  // A Firestore created first would keep sending unattested requests.
+  installAppCheck(app);
   db = getFirestore(app, DATABASE_ID);
   auth = getAuth(app);
   return { app, db, auth };

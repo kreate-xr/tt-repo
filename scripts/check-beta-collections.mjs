@@ -13,6 +13,7 @@
 // beta would be collecting email addresses that anyone can fetch back.
 //
 // Run:  node scripts/check-beta-collections.mjs
+//       (reads .env.local; ENV_FILE=<file> selects another, but see the NOTE)
 //
 // NOTE: it leaves rows behind — the rules deny delete by design, so the test
 // cannot clean up after itself. They are tagged xrMode 'smoke-test' and
@@ -27,15 +28,21 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { getAuth, signInAnonymously } from 'firebase/auth';
+import { installDebugAppCheck } from './lib/appCheckDebug.mjs';
 
 // Must match js/network/firebaseClient.js. A named database, not '(default)':
 // rules deployed to the wrong one leave every write permission-denied.
 const DATABASE_ID = 'tabletennis';
 
+// Which project this runs against is whatever env file it reads. Default is
+// .env.local (sportyxr-test); ENV_FILE=.env.prod.local points it at prod, the
+// same file `npm run build:prod` uses — see .env.example.
+const ENV_FILE = process.env.ENV_FILE || '.env.local';
+
 function loadEnvLocal() {
   let raw;
-  try { raw = readFileSync(new URL('../.env.local', import.meta.url), 'utf8'); }
-  catch { throw new Error('.env.local not found in repo root'); }
+  try { raw = readFileSync(new URL(`../${ENV_FILE}`, import.meta.url), 'utf8'); }
+  catch { throw new Error(`${ENV_FILE} not found in repo root`); }
   const out = {};
   for (const line of raw.split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/i);
@@ -89,6 +96,8 @@ async function main() {
     messagingSenderId: env.VITE_FIREBASE_MESSAGING_SENDER_ID,
     appId: env.VITE_FIREBASE_APP_ID,
   });
+  // Before getAuth/getFirestore, same as the browser (js/network/firebaseClient.js).
+  installDebugAppCheck(app, env);
 
   let user;
   try {
@@ -171,7 +180,9 @@ async function main() {
     console.error(`If writes were refused: deploy the rules to the '${DATABASE_ID}' database —`);
     console.error('  firebase deploy --only firestore:rules');
     console.error(`  (firebase.json must say "database": "${DATABASE_ID}")`);
-    console.error('If reads were ALLOWED: the deployed rules are older than this repo.\n');
+    console.error('If reads were ALLOWED: the deployed rules are older than this repo.');
+    console.error('If EVERYTHING was refused and the rules are deployed: App Check enforcement');
+    console.error(`  is on — set APPCHECK_DEBUG_TOKEN in ${ENV_FILE} (scripts/lib/appCheckDebug.mjs).\n`);
     process.exit(3);
   }
   console.log(`All checks passed against ${projectId}.`);

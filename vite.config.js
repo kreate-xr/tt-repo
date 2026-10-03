@@ -1,6 +1,7 @@
 import { defineConfig, loadEnv } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import { createRequire } from 'node:module';
+import { existsSync } from 'node:fs';
 
 // Stamped into every session doc (js/analytics/session.js) so an error can be
 // tied to the deploy it came from — otherwise a fixed crash is indistinguishable
@@ -12,7 +13,16 @@ const { version } = createRequire(import.meta.url)('./package.json');
 // mixed-content block when the page opens ws://localhost:8080 for signaling.
 const httpOnly = process.env.DEV_HTTP === '1';
 
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
+  // Two Firebase projects, selected by mode (see .env.example): the default
+  // mode reads .env.local (sportyxr-test); `--mode prod` layers .env.prod.local
+  // on top (sportyxr-tech). Vite loads .env.local in EVERY mode, so a prod run
+  // without .env.prod.local would silently build the test config under a prod
+  // label — refuse instead.
+  if (mode === 'prod' && !existsSync('.env.prod.local')) {
+    throw new Error('--mode prod needs .env.prod.local (copy .env.example and fill in the sportyxr-tech values)');
+  }
+
   // loadEnv reads .env / .env.local the same way import.meta.env would, but at
   // CONFIG time so the value can go through `define`. js/analytics/gtm.js
   // cannot read import.meta.env directly: babel-jest cannot transform
@@ -21,11 +31,26 @@ export default defineConfig(({ mode }) => {
   // id configurable AND the loader under test.
   const env = loadEnv(mode, process.cwd(), 'VITE_');
 
+  // App Check (js/network/appCheck.js). The debug token is loaded with an
+  // EMPTY prefix on purpose: it is not VITE_-prefixed, so import.meta.env can
+  // never inline it, and it is substituted only under the dev server
+  // (`command === 'serve'`) — `vite build` defines it as '' so no production
+  // bundle can contain it. The site key is public and ships in every build.
+  const isDevServer = command === 'serve';
+  const secrets = isDevServer ? loadEnv(mode, process.cwd(), '') : {};
+
+  // Every build/dev run states which project it targets, so a deploy log
+  // shows the mistake before `firebase deploy` does.
+  console.log(`[vite] mode=${mode} firebase project=${env.VITE_FIREBASE_PROJECT_ID || '(unset)'}`);
+
   return {
   plugins: httpOnly ? [] : [basicSsl()],
   define: {
     __APP_VERSION__: JSON.stringify(version),
     __GTM_CONTAINER_ID__: JSON.stringify(env.VITE_GTM_CONTAINER_ID || ''),
+    __RECAPTCHA_SITE_KEY__: JSON.stringify(env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY || ''),
+    __APPCHECK_DEBUG_TOKEN__: JSON.stringify(isDevServer ? (secrets.APPCHECK_DEBUG_TOKEN || '') : ''),
+    __IS_DEV_SERVER__: JSON.stringify(isDevServer),
   },
   server: {
     host: true,

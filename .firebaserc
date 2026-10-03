@@ -1,5 +1,19 @@
 {
   "projects": {
-    "default": "sportyxr-test"
+    "default": "sportyxr-test",
+    "test": "sportyxr-test",
+    "prod": "sportyxr-tech"
+  },
+  "targets": {
+    "sportyxr-test": {
+      "hosting": {
+        "app": ["sportyxr-test"]
+      }
+    },
+    "sportyxr-tech": {
+      "hosting": {
+        "app": ["tt-sportyxr"]
+      }
+    }
   }
 }
