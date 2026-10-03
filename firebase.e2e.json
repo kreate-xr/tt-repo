@@ -1,0 +1,21 @@
+{
+  "firestore": {
+    "database": "tabletennis",
+    "rules": "firestore.rules"
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "ignore": ["node_modules", ".git", "*.log", "test", "firebase.test.json"]
+    }
+  ],
+  "emulators": {
+    "auth": { "host": "127.0.0.1", "port": 9199 },
+    "firestore": { "host": "127.0.0.1", "port": 8189 },
+    "functions": { "host": "127.0.0.1", "port": 5101 },
+    "hub": { "port": 4419 },
+    "logging": { "port": 4519 },
+    "ui": { "enabled": false }
+  }
+}

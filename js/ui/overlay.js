@@ -18,6 +18,7 @@ function loadLobbyManager() {
   return import('../lobby/LobbyManager.js');
 }
 import { XR_MODES } from './xrModes.js';
+import { canEnter } from './accountPanel.js';
 
 export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, startDesktop */ }) {
   const createRoomBtn = document.getElementById('create-room');
@@ -115,6 +116,9 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
       setMpStatus('Still connecting to your opponent — wait for the ✓ Connected message (or click Create/Join again to start over).', true);
       return;
     }
+    // Free trial used up and not unlocked: the paywall opens instead.
+    // Synchronous on purpose — see canEnter in accountPanel.js.
+    if (!canEnter()) return;
     entering = true;
     const labelEl = btn.querySelector('.venue-label');
     const label = labelEl ? labelEl.textContent : '';

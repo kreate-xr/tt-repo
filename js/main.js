@@ -11,6 +11,7 @@ import { startInGame } from './modes/inGame.js';
 import { wireOverlay } from './ui/overlay.js';
 import { mark, recordError, installUnloadFlush } from './analytics/session.js';
 import { wirePostSession } from './ui/postSession.js';
+import { wireAccountPanel } from './ui/accountPanel.js';
 
 // Last-resort visibility for anything that slips past local handlers —
 // without these, a rejected promise in the network stack dies silently.
@@ -31,6 +32,7 @@ mark('pageLoad');
 // mid-session, browser killed. The 'end' handler is still the primary path.
 installUnloadFlush();
 wirePostSession();
+wireAccountPanel();
 
 const overlay = document.getElementById('overlay');
 const loadingScreen = document.getElementById('loading');

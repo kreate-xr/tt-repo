@@ -238,5 +238,28 @@ service cloud.firestore {
       allow create: if owns(uid) && validSignup();
       allow read, update, delete: if false;
     }
+
+    // ── Accounts, trial and payments ────────────────────────────────────────
+    //
+    // Written ONLY by the backend (functions/, Admin SDK, which bypasses these
+    // rules). The client may read its own trial clock and entitlement — that
+    // is how the game learns it was unlocked the moment the PayLayer webhook
+    // lands — and nothing else. A client write here would be a self-granted
+    // purchase or a reset trial, so every write is denied.
+
+    match /users/{uid} {
+      allow get: if owns(uid);
+      allow list, write: if false;
+    }
+
+    match /entitlements/{uid} {
+      allow get: if owns(uid);
+      allow list, write: if false;
+    }
+
+    // Server-only: order → uid mapping, webhook dedupe, per-IP trial counter.
+    match /orders/{orderId}        { allow read, write: if false; }
+    match /paylayerEvents/{eventId} { allow read, write: if false; }
+    match /trialIps/{bucket}       { allow read, write: if false; }
   }
 }

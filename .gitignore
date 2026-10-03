@@ -6,6 +6,9 @@ dist/
 .env.local
 .env.*.local
 
+# Cloud Functions emulator secrets (production secrets live in Secret Manager)
+functions/.secret.local
+
 # Claude Code machine-local settings
 .claude/settings.local.json
 
@@ -20,3 +23,6 @@ dist/
 
 # ngrok local config (if used for tunneling)
 ngrok.yml
+
+# e2e screenshots (e2e/accounts.e2e.mjs)
+e2e/.artifacts/

@@ -44,7 +44,7 @@
 // Nothing here may throw into app startup — a broken App Check is a Firestore
 // problem later, not a blank page now.
 
-import { initializeAppCheck, ReCaptchaEnterpriseProvider } from 'firebase/app-check';
+import { initializeAppCheck, ReCaptchaEnterpriseProvider, getToken } from 'firebase/app-check';
 
 const SITE_KEY =
   typeof __RECAPTCHA_SITE_KEY__ !== 'undefined' ? __RECAPTCHA_SITE_KEY__ : '';
@@ -91,6 +91,23 @@ export function planAppCheck({ siteKey = '', debugToken = '', isDevServer = fals
 }
 
 let installed = false;
+let instance = null;
+
+/**
+ * Current App Check token for a call to our own backend (/api/**), which
+ * verifies it the same way Firestore does. '' when App Check is off or the
+ * exchange fails — the backend decides whether that is acceptable
+ * (APP_CHECK_ENFORCE), so a missing token is never an error here.
+ */
+export async function getAppCheckTokenString() {
+  if (!instance) return '';
+  try {
+    const res = await getToken(instance, false);
+    return (res && res.token) || '';
+  } catch {
+    return '';
+  }
+}
 
 /**
  * Attach App Check to the Firebase app. Must run right after initializeApp()
@@ -126,7 +143,7 @@ export function installAppCheck(app, {
       // persist one in IndexedDB, log it", a string means "use exactly this".
       globals.FIREBASE_APPCHECK_DEBUG_TOKEN = plan.debugToken || true;
     }
-    initialize(app, {
+    instance = initialize(app, {
       provider: new Provider(plan.siteKey),
       // Without this the token silently expires after ~1h and a long session
       // (or a lobby left open) starts failing writes mid-match.
@@ -147,4 +164,5 @@ export function installAppCheck(app, {
 /** Test-only: forget that installAppCheck ran. */
 export function _resetAppCheckForTests() {
   installed = false;
+  instance = null;
 }

@@ -25,6 +25,8 @@ import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableC
 // session itself (below). Two different things with one obvious name.
 import { beginSession, endSession as endAnalyticsRun, mark } from '../analytics/session.js';
 import { showPostSession } from '../ui/postSession.js';
+import { showTrialOver, refreshAccessSoon } from '../ui/accountPanel.js';
+import { createTrialClock } from '../account/trialClock.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
 // FPS HUD disabled — import kept commented for easy restore.
 import {
@@ -652,6 +654,27 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   let drillFinished = false;
   let lastDrillParams = null;
   let prevStateBeforeTuner = 'menu'; // restore target when leaving the tuner
+
+  // --- Free trial (js/account/trialClock.js) ---
+  // Metered only while actually playing — free play or a drill/match, with
+  // the session visible; menus and the tuner are free. The frame loop feeds
+  // setPlaying() every frame (a no-op unless the answer changed). When the
+  // server says the trial is over, the current ball is allowed to finish
+  // (TRIAL_END_GRACE_MS at most) and the session ends; the 2D page then shows
+  // the paywall in place of the post-session dialog. The API module, and the
+  // Firebase SDK behind it, load on the first lease call — never on entry.
+  const TRIAL_END_GRACE_MS = 8000;
+  let trialExpiry = null; // { reason, atMs } once the server ends the trial
+  let trialEndRequested = false;
+  const trialClock = createTrialClock({
+    lease: (action) => import('../account/api.js').then((m) => m.postLease(action)),
+    onExpired: ({ reason }) => {
+      trialExpiry = { reason, atMs: performance.now() };
+      hudLog(`[trial] over (${reason}) — ending after the current ball`);
+    },
+    onWarn: (sec) => hudLog(`[trial] ${sec}s of free play left`),
+    log: (msg, err) => console.warn(msg, (err && (err.code || err.message)) || ''),
+  });
 
   const ballEvents = {
     onPaddleHit, onTableBounce, onNetHit, onBallLost,
@@ -1429,8 +1452,16 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     if (overlay) overlay.style.display = 'flex';
     // The overlay coming back used to be the whole of "the session ended".
     // The card goes up with it — see js/ui/postSession.js for why this
-    // moment and no other.
-    showPostSession();
+    // moment and no other. A session the free trial ended gets the paywall
+    // instead: one dialog at a time, and that one explains the exit.
+    trialClock.dispose();
+    if (trialExpiry) {
+      showTrialOver(trialExpiry.reason);
+    } else {
+      showPostSession();
+      // The landing page's trial line moved while we played.
+      refreshAccessSoon();
+    }
     renderer.setAnimationLoop(null);
     // Close the peer connection on session end so the room is released and
     // the remote peer is notified via the standard onclose path. Prefer the
@@ -1473,6 +1504,15 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // biggest "ball lags" artifact after a hiccup.
     if (dt > 0.1) dt = 0.1;
     physicsTimeS += dt;
+
+    trialClock.setPlaying((state === 'freePlay' || state === 'drill')
+      && session.visibilityState === 'visible');
+    if (trialExpiry && !trialEndRequested
+        && (!ballModel || !ballModel.visible
+            || performance.now() - trialExpiry.atMs > TRIAL_END_GRACE_MS)) {
+      trialEndRequested = true;
+      endSession();
+    }
 
     // Advance the tracking-loss guard first — its state feeds updatePaddleVisual
     // (freeze anchor on emulated) and tickPhysics (suppress contact). Reads

@@ -18,8 +18,8 @@
 // rules in production.
 
 import { initializeApp, getApps } from 'firebase/app';
-import { getFirestore, doc, getDoc } from 'firebase/firestore';
-import { getAuth, signInAnonymously } from 'firebase/auth';
+import { getFirestore, doc, getDoc, connectFirestoreEmulator } from 'firebase/firestore';
+import { getAuth, signInAnonymously, connectAuthEmulator } from 'firebase/auth';
 import { installAppCheck } from './appCheck.js';
 import { traceBoot } from './connectTrace.js';
 
@@ -62,16 +62,38 @@ let db = null;
 let auth = null;
 let signedInPromise = null;
 
+// Local emulators, for the end-to-end suite only (`vite --mode e2e`, see
+// e2e/README.md). Both hosts set → Auth and Firestore talk to the emulators
+// and App Check is skipped (its debug exchange would hit the real backend
+// with a demo project). Never set in .env.local / .env.prod.local.
+function readEmulators() {
+  const env = (typeof import.meta !== 'undefined' && import.meta.env) || {};
+  const authHost = env.VITE_EMULATOR_AUTH;
+  const firestoreHost = env.VITE_EMULATOR_FIRESTORE;
+  return authHost && firestoreHost ? { authHost, firestoreHost } : null;
+}
+
 export function initFirebase() {
   if (app) return { app, db, auth };
   const config = readConfig();
+  const emulators = readEmulators();
   app = getApps().length ? getApps()[0] : initializeApp(config);
   // Order matters: App Check hooks the app BEFORE any service instance exists.
   // A Firestore created first would keep sending unattested requests.
-  installAppCheck(app);
+  if (!emulators) installAppCheck(app);
   db = getFirestore(app, DATABASE_ID);
   auth = getAuth(app);
+  if (emulators) {
+    const [fsHost, fsPort] = emulators.firestoreHost.split(':');
+    connectFirestoreEmulator(db, fsHost, Number(fsPort));
+    connectAuthEmulator(auth, `http://${emulators.authHost}`, { disableWarnings: true });
+  }
   return { app, db, auth };
+}
+
+export function getFirebaseAuth() {
+  if (!auth) initFirebase();
+  return auth;
 }
 
 export function getDb() {
@@ -82,12 +104,22 @@ export function getDb() {
 
 // Idempotent anonymous sign-in — the SignalingClient calls this before any
 // Firestore read/write so security rules can require request.auth != null.
-export function ensureAnonymousAuth() {
+export async function ensureAnonymousAuth() {
   if (!auth) initFirebase();
-  if (auth.currentUser) return Promise.resolve(auth.currentUser);
+  // A returning player's session is restored from IndexedDB asynchronously;
+  // currentUser is null until that finishes. Signing in anonymously before it
+  // does would throw away a signed-in (possibly paid) account.
+  await auth.authStateReady();
+  if (auth.currentUser) return auth.currentUser;
   if (signedInPromise) return signedInPromise;
+  // Memoized only while in flight (concurrent callers share one sign-in).
+  // Kept after it settles, a sign-out would get the OLD resolved promise back
+  // and never sign in again — leaving currentUser null.
   signedInPromise = signInAnonymously(auth)
-    .then((cred) => cred.user)
+    .then((cred) => {
+      signedInPromise = null;
+      return cred.user;
+    })
     .catch((err) => {
       // Drop the memoized promise so a transient failure (offline, quota)
       // doesn't poison every later lobby attempt until a page reload.

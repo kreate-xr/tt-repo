@@ -29,6 +29,7 @@ export default [
         __RECAPTCHA_SITE_KEY__: 'readonly',
         __APPCHECK_DEBUG_TOKEN__: 'readonly',
         __IS_DEV_SERVER__: 'readonly',
+        __PAYLAYER_URL__: 'readonly',
       },
     },
     rules: {
@@ -44,6 +45,34 @@ export default [
   // Node-side: dev server, scripts, build config.
   {
     files: ['server/**/*.js', 'scripts/**/*.{js,mjs}', 'babel.config.cjs', 'vite.config.js'],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrors: 'none' }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
+    },
+  },
+  // Playwright e2e: Node, plus browser globals for the page.evaluate()
+  // callbacks that run inside the page.
+  {
+    files: ['e2e/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2024,
+      sourceType: 'module',
+      globals: { ...globals.node, ...globals.browser },
+    },
+    rules: {
+      'no-unused-vars': ['error', { argsIgnorePattern: '^_', caughtErrors: 'none' }],
+      'no-empty': ['error', { allowEmptyCatch: true }],
+    },
+  },
+
+  // Cloud Functions backend: Node 22, ESM ("type": "module").
+  {
+    files: ['functions/**/*.js'],
     languageOptions: {
       ecmaVersion: 2024,
       sourceType: 'module',

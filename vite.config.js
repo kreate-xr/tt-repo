@@ -51,10 +51,26 @@ export default defineConfig(({ mode, command }) => {
     __RECAPTCHA_SITE_KEY__: JSON.stringify(env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY || ''),
     __APPCHECK_DEBUG_TOKEN__: JSON.stringify(isDevServer ? (secrets.APPCHECK_DEBUG_TOKEN || '') : ''),
     __IS_DEV_SERVER__: JSON.stringify(isDevServer),
+    // PayLayer service origin; its browser SDK is loaded from here at checkout
+    // (js/account/account.js). Public. Test and prod use different PayLayer
+    // deployments (test-mode vs live Razorpay keys).
+    __PAYLAYER_URL__: JSON.stringify(env.VITE_PAYLAYER_URL || ''),
   },
   server: {
     host: true,
     port: 5173,
+    // The backend (functions/) is reached same-origin under /api and
+    // /webhooks — a Firebase Hosting rewrite in production. The dev server
+    // has no such rewrite, so API_PROXY_TARGET (not VITE_-prefixed: config
+    // only) forwards them: to the deployed test site
+    // (https://sportyxr-test.web.app) for headset dev, or to the Functions
+    // emulator's `api` URL for the e2e suite (e2e/README.md).
+    proxy: secrets.API_PROXY_TARGET
+      ? Object.fromEntries(['/api', '/webhooks'].map((p) => [p, {
+          target: secrets.API_PROXY_TARGET,
+          changeOrigin: true,
+        }]))
+      : undefined,
   },
   build: {
     // 'hidden' generates the maps but omits the //# sourceMappingURL comment,
