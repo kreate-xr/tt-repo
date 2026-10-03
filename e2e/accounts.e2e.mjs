@@ -171,7 +171,7 @@ async function main() {
       await page.click('.enter-venue.primary');
       await page.waitForFunction(() => !document.getElementById('account-modal').hidden);
       assert.equal(await modalView(page), 'signup');
-      assert.match(await page.locator('#account-sub').textContent(), /10-minute free trial is over/);
+      assert.match(await page.locator('#account-sub').textContent(), /free trial has ended/);
       await shot(page, '02-paywall-signup');
     });
 
@@ -188,9 +188,28 @@ async function main() {
       await page.waitForFunction(() => !document.getElementById('acct-view-buy').hidden, null, { timeout: 20_000 });
       assert.equal(await uidOf(page), trialUid, 'linkWithCredential must keep the uid');
       assert.equal((await page.locator('#account-chip').textContent()).trim(), email);
-      assert.equal((await page.locator('#acct-buy-email').textContent()).trim(), email);
-      assert.match(await page.locator('#acct-buy-price').textContent(), /₹499.*\$9\.99/);
+      assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '₹499');
+      // The price and the button follow the phone typed: +91 → INR, else USD.
+      await page.fill('#acct-buy-phone', '+1 415 555 0100');
+      assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '$9.99');
+      assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay $9.99');
+      await page.fill('#acct-buy-phone', '+91 98765 43210');
+      assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay ₹499');
+      await page.fill('#acct-buy-phone', '');
       await shot(page, '03-buy-form');
+    });
+
+    await step('paywall fits a short (zoomed) viewport without scrolling', async () => {
+      // About a 1280x860 window at 150% zoom — the report behind the compact layout.
+      await page.setViewportSize({ width: 853, height: 573 });
+      const fit = await page.evaluate(() => {
+        const d = document.querySelector('#account-modal .modal');
+        return { scroll: d.scrollHeight, client: d.clientHeight, top: d.getBoundingClientRect().top };
+      });
+      assert.ok(fit.scroll <= fit.client, `dialog scrolls: ${fit.scroll} > ${fit.client}`);
+      assert.ok(fit.top >= 0, 'dialog top is off-screen');
+      await shot(page, '03b-buy-form-zoomed');
+      await page.setViewportSize({ width: 1280, height: 860 });
     });
 
     await step('checkout: invalid phone is refused by the backend', async () => {

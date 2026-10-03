@@ -678,15 +678,43 @@
     .done-text { margin-top: 8px; font-size: 0.92rem; color: var(--ink-soft); line-height: 1.55; }
     .modal-done .btn-block { margin-top: 20px; }
 
-    /* Account dialog extras. */
+    /* Account / paywall dialog: tighter than the shared modal so every step
+       fits a short or zoomed viewport without scrolling. Scoped to
+       .acct-modal — the post-session dialog keeps its own spacing. */
+    .acct-modal { width: min(100%, 380px); padding: 22px 22px 18px; }
+    .acct-modal .modal-title { font-size: 1.15rem; }
+    .acct-modal .modal-sub { margin-top: 3px; font-size: 0.84rem; }
+    .acct-modal .modal-section { margin-top: 14px; }
+    .acct-modal .field { margin-top: 8px; padding: 10px 12px; font-size: 0.9rem; border-width: 1.5px; border-radius: 10px; }
+    .acct-modal .field:first-child { margin-top: 0; }
+    .acct-modal .btn-send { margin-top: 12px; }
+    .acct-modal .btn-block { padding: 10px 20px; }
+    .acct-modal .modal-status { margin-top: 10px; font-size: 0.82rem; min-height: 0; }
+    .acct-modal .modal-status:empty { display: none; }
+    .acct-modal .modal-done { padding: 4px 0 0; }
+    .acct-modal .done-title { margin-top: 8px; font-size: 1.1rem; }
+    .acct-modal .done-text { margin-top: 4px; font-size: 0.86rem; }
+    .acct-modal .modal-done .btn-block { margin-top: 14px; }
+
     .acct-links {
-      margin-top: 16px;
-      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-      font-size: 0.88rem; color: var(--ink-soft);
+      margin-top: 12px;
+      display: flex; justify-content: space-between; gap: 8px;
+      font-size: 0.84rem; color: var(--ink-soft);
     }
-    .acct-email { font-size: 1.02rem; font-weight: 700; color: var(--ink); word-break: break-all; }
-    .acct-price { font-size: 1.05rem; font-weight: 800; color: var(--ink); }
-    #acct-view-account .field-note { margin-top: 8px; }
+    .acct-email { font-size: 0.98rem; font-weight: 700; color: var(--ink); word-break: break-all; }
+    .acct-meta { margin-top: 4px; font-size: 0.84rem; color: var(--ink-soft); }
+
+    .acct-price-row {
+      display: flex; align-items: baseline; gap: 10px;
+      margin-bottom: 12px;
+    }
+    .acct-price { font-size: 1.6rem; font-weight: 800; color: var(--ink); line-height: 1; }
+    .acct-price-note { font-size: 0.82rem; color: var(--ink-soft); }
+    .acct-secure {
+      margin-top: 10px;
+      display: flex; align-items: center; justify-content: center; gap: 5px;
+      font-size: 0.74rem; color: #8a91ab;
+    }
 
     #room-code-input {
       padding: 12px 14px;
@@ -1060,7 +1088,7 @@
        2D page only — nothing here can run inside an immersive session, which
        is why the trial ending in the headset drops the player back here. -->
   <div id="account-modal" class="modal-backdrop" hidden>
-    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
+    <div class="modal acct-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
       <button type="button" id="account-dismiss" class="modal-close" aria-label="Close">&times;</button>
 
       <header class="modal-head">
@@ -1068,39 +1096,40 @@
         <p class="modal-sub" id="account-sub"></p>
       </header>
 
+      <!-- Placeholders stand in for visible labels (aria-label keeps every
+           field named for screen readers): the dialog has to fit a short or
+           zoomed viewport without scrolling. -->
       <section id="acct-view-signin" class="modal-section" hidden>
         <form id="acct-signin-form" novalidate>
-          <label class="field-label" for="acct-signin-email">Email</label>
-          <input id="acct-signin-email" type="email" class="field" autocomplete="email" inputmode="email" required>
-          <label class="field-label sr-gap" for="acct-signin-password">Password</label>
-          <input id="acct-signin-password" type="password" class="field" autocomplete="current-password" required>
+          <input id="acct-signin-email" type="email" class="field" autocomplete="email" inputmode="email"
+                 placeholder="Email" aria-label="Email" required>
+          <input id="acct-signin-password" type="password" class="field" autocomplete="current-password"
+                 placeholder="Password" aria-label="Password" required>
           <button type="submit" class="btn btn-primary btn-block btn-send">Sign in</button>
         </form>
         <p class="acct-links">
           <button type="button" class="link-btn" data-go="reset">Forgot password?</button>
-          <span aria-hidden="true">·</span>
-          <button type="button" class="link-btn" data-go="signup">Create an account</button>
+          <button type="button" class="link-btn" data-go="signup">Create account</button>
         </p>
       </section>
 
       <section id="acct-view-signup" class="modal-section" hidden>
-        <p class="field-note">Your purchase is tied to this account, so you can play on any headset or browser by signing in.</p>
         <form id="acct-signup-form" novalidate>
-          <label class="field-label sr-gap" for="acct-signup-email">Email</label>
-          <input id="acct-signup-email" type="email" class="field" autocomplete="email" inputmode="email" required>
-          <label class="field-label sr-gap" for="acct-signup-password">Password (8+ characters)</label>
-          <input id="acct-signup-password" type="password" class="field" autocomplete="new-password" minlength="8" required>
+          <input id="acct-signup-email" type="email" class="field" autocomplete="email" inputmode="email"
+                 placeholder="Email" aria-label="Email" required>
+          <input id="acct-signup-password" type="password" class="field" autocomplete="new-password" minlength="8"
+                 placeholder="Password (8+ characters)" aria-label="Password, at least 8 characters" required>
           <button type="submit" class="btn btn-primary btn-block btn-send">Create account</button>
         </form>
         <p class="acct-links">
-          Already have one? <button type="button" class="link-btn" data-go="signin">Sign in</button>
+          <span>Have an account? <button type="button" class="link-btn" data-go="signin">Sign in</button></span>
         </p>
       </section>
 
       <section id="acct-view-reset" class="modal-section" hidden>
         <form id="acct-reset-form" novalidate>
-          <label class="field-label" for="acct-reset-email">Email</label>
-          <input id="acct-reset-email" type="email" class="field" autocomplete="email" inputmode="email" required>
+          <input id="acct-reset-email" type="email" class="field" autocomplete="email" inputmode="email"
+                 placeholder="Email" aria-label="Email" required>
           <button type="submit" class="btn btn-primary btn-block btn-send">Send reset link</button>
         </form>
         <p class="acct-links"><button type="button" class="link-btn" data-go="signin">Back to sign in</button></p>
@@ -1108,30 +1137,37 @@
 
       <section id="acct-view-account" class="modal-section" hidden>
         <p class="acct-email" id="acct-email"></p>
-        <p class="field-note" id="acct-status-line"></p>
-        <p class="field-note" id="acct-verify-note" hidden>We sent a link to confirm this email — it is how you recover your account if you forget the password.</p>
+        <p class="acct-meta" id="acct-status-line"></p>
+        <p class="acct-meta" id="acct-verify-note" hidden>Check your inbox to confirm this email.</p>
         <button type="button" id="acct-buy" class="btn btn-primary btn-block btn-send">Unlock full game</button>
         <button type="button" id="acct-signout" class="btn btn-ghost btn-block">Sign out</button>
       </section>
 
       <section id="acct-view-buy" class="modal-section" hidden>
-        <p class="acct-price" id="acct-buy-price"></p>
-        <p class="field-note">Full game, every mode, lifetime. Signed in as <strong id="acct-buy-email"></strong>.</p>
+        <!-- The price follows the phone typed below (+91 → INR). Display
+             only: the server decides the charge (functions/src/pricing.js). -->
+        <div class="acct-price-row">
+          <span class="acct-price" id="acct-buy-price">₹499</span>
+          <span class="acct-price-note">one-time · lifetime access</span>
+        </div>
         <form id="acct-buy-form" novalidate>
-          <label class="field-label sr-gap" for="acct-buy-name">Name</label>
-          <input id="acct-buy-name" type="text" class="field" autocomplete="name" maxlength="100" required>
-          <label class="field-label sr-gap" for="acct-buy-phone">Phone, with country code</label>
-          <input id="acct-buy-phone" type="tel" class="field" autocomplete="tel" inputmode="tel" placeholder="+919876543210" required>
-          <p class="field-note consent">Needed by our payment provider for the receipt. Indian numbers pay in rupees; all others in US dollars. Payments are handled securely by Razorpay — card details never reach us.</p>
-          <button type="submit" class="btn btn-primary btn-block btn-send">Continue to payment</button>
+          <input id="acct-buy-name" type="text" class="field" autocomplete="name" maxlength="100"
+                 placeholder="Full name" aria-label="Full name" required>
+          <input id="acct-buy-phone" type="tel" class="field" autocomplete="tel" inputmode="tel"
+                 placeholder="Phone, e.g. +91 98765 43210" aria-label="Phone number with country code" required>
+          <button type="submit" class="btn btn-primary btn-block btn-send" id="acct-buy-submit">Pay ₹499</button>
         </form>
+        <p class="acct-secure">
+          <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z"/></svg>
+          Secure checkout by Razorpay
+        </p>
       </section>
 
       <section id="acct-view-done" class="modal-section modal-done" hidden>
         <div class="done-mark" aria-hidden="true">🏓</div>
         <h3 class="done-title">Full game unlocked</h3>
-        <p class="done-text">Thanks for supporting SportyXR! Sign in with this account on any headset to play.</p>
-        <button type="button" id="acct-done-close" class="btn btn-primary btn-block">Back to the game</button>
+        <p class="done-text">Sign in with this account on any headset to play.</p>
+        <button type="button" id="acct-done-close" class="btn btn-primary btn-block">Let's play</button>
       </section>
 
       <p id="account-status" class="modal-status" role="status" aria-live="polite"></p>
