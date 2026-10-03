@@ -7,11 +7,11 @@
 //   1. MIGRATION. calibration.js drops persisted state on a version mismatch
 //      (`if (parsed.version !== STORAGE_VERSION) return null`). That is fine
 //      for a transform the wizard can re-fit in 20 seconds; it is not fine for
-//      a player's saved presets and training history. Unknown-version payloads
+//      a player's settings and progress. Unknown-version payloads
 //      are migrated forward where possible and otherwise preserved untouched,
 //      never silently discarded.
 //   2. QUOTA HANDLING that the caller can see. A dropped calibration write is
-//      invisible and recoverable; a dropped preset save looks to the player
+//      invisible and recoverable; a dropped progress save looks to the player
 //      like the app lost their work, so the failure is recorded and readable
 //      via lastWriteError() for the UI to surface.
 //
@@ -26,9 +26,6 @@
 const STORAGE_KEY = 'p15.profile';
 export const SCHEMA_VERSION = 1;
 
-// Max saved presets, per M1 ("Saved Presets: up to 24").
-export const MAX_PRESETS = 24;
-
 // M10 global training settings. Each entry carries its own clamp so a hand
 // edited localStorage blob, an out-of-date deep link, or a future schema
 // change cannot inject a value the engine can't honour.
@@ -39,10 +36,12 @@ export const SETTING_SPECS = Object.freeze({
   hudDensity:          { type: 'enum', values: ['minimal', 'standard'], default: 'minimal' },
   units:               { type: 'enum', values: ['metric', 'imperial'], default: 'metric' },
   audioCues:           { type: 'boolean', default: true },
-  // Progress rather than preference, but it rides the settings blob: one
-  // boolean does not earn its own persistence path, and coerceSettings
-  // defaulting it to false makes old profiles correct with no migration.
-  tutorialComplete:    { type: 'boolean', default: false },
+  // Training Session best scores (0–100, 0 = never played), one per level.
+  // Progress rather than preference, but it rides the settings blob: two
+  // numbers do not earn their own persistence path, and coerceSettings
+  // defaulting them makes old profiles correct with no migration.
+  sessionBestBeginner: { type: 'number', min: 0, max: 100, default: 0 },
+  sessionBestPlayer:   { type: 'number', min: 0, max: 100, default: 0 },
 });
 
 function defaultSettings() {
@@ -151,7 +150,7 @@ export function load() {
   if (!result.ok) {
     _profile = emptyProfile();
     // A future-version blob is not an error the player caused; flag it so the
-    // UI can explain why their presets are missing instead of showing none.
+    // UI can explain why their settings are missing instead of showing none.
     _lastWriteError = result.reason === 'future-version'
       ? 'profile was written by a newer version — running with defaults'
       : null;
@@ -161,18 +160,13 @@ export function load() {
   _profile = {
     version: SCHEMA_VERSION,
     settings: coerceSettings(result.profile.settings),
-    presets: sanitizePresets(result.profile.presets),
+    // Saved presets from the removed Ball Machine editor. Nothing reads them
+    // any more; they are carried through untouched rather than dropped, so a
+    // write from this build never destroys data a player made.
+    presets: Array.isArray(result.profile.presets) ? result.profile.presets : [],
     handDetected: result.profile.handDetected === true,
   };
   return _profile;
-}
-
-function sanitizePresets(list) {
-  if (!Array.isArray(list)) return [];
-  return list
-    .filter((p) => p && typeof p === 'object' && typeof p.name === 'string' && p.config)
-    .slice(0, MAX_PRESETS)
-    .map((p) => ({ name: p.name.slice(0, 40), config: p.config }));
 }
 
 function persist() {
@@ -182,10 +176,10 @@ function persist() {
     return true;
   } catch (e) {
     // QuotaExceededError, or private-browsing storage denial. Unlike
-    // calibration.js we surface this — a preset the player named and saved
-    // vanishing without explanation reads as data loss.
+    // calibration.js we surface this — progress vanishing without
+    // explanation reads as data loss.
     _lastWriteError = (e && e.name === 'QuotaExceededError')
-      ? 'storage full — preset not saved'
+      ? 'storage full — changes not saved'
       : 'storage unavailable — changes not saved';
     return false;
   }
@@ -253,48 +247,10 @@ export function recordDetectedHand(hand) {
   return hand;
 }
 
-// --- Preset API -------------------------------------------------------------
-
-export function getPresets() {
-  ensureLoaded();
-  return _profile.presets.map((p) => ({ name: p.name, config: { ...p.config } }));
-}
-
-// Save (or overwrite by name). Returns { ok, reason } so the UI can tell
-// "full" apart from "storage refused the write" — two different messages.
-export function savePreset(name, config) {
-  ensureLoaded();
-  const trimmed = String(name || '').trim().slice(0, 40);
-  if (!trimmed) return { ok: false, reason: 'empty-name' };
-  if (!config || typeof config !== 'object') return { ok: false, reason: 'bad-config' };
-
-  const idx = _profile.presets.findIndex((p) => p.name === trimmed);
-  if (idx >= 0) {
-    _profile.presets[idx] = { name: trimmed, config: { ...config } };
-  } else {
-    if (_profile.presets.length >= MAX_PRESETS) return { ok: false, reason: 'full' };
-    _profile.presets.push({ name: trimmed, config: { ...config } });
-  }
-  if (!persist()) return { ok: false, reason: 'storage', message: _lastWriteError };
-  notify();
-  return { ok: true };
-}
-
-export function deletePreset(name) {
-  ensureLoaded();
-  const idx = _profile.presets.findIndex((p) => p.name === name);
-  if (idx < 0) return false;
-  _profile.presets.splice(idx, 1);
-  persist();
-  notify();
-  return true;
-}
-
 // --- Test / reset support ---------------------------------------------------
 
-// Drops in-memory state AND the persisted blob. Used by the tutorial's
-// "start over" and by tests; kept explicit so no code path resets a profile
-// as a side effect of something else.
+// Drops in-memory state AND the persisted blob. Used by tests; kept explicit
+// so no code path resets a profile as a side effect of something else.
 export function resetProfile() {
   _profile = emptyProfile();
   _loaded = true;

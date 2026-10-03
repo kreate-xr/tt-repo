@@ -2,8 +2,8 @@
 //
 // The specific risk: a feed the solver refuses puts no ball in play, so it
 // must not be charged to the player as a miss. That is silent when wrong —
-// nothing errors, the return rate is simply wrong — and it feeds M7's
-// weakness report, so a bad number there prescribes the wrong drills.
+// nothing errors, the return rate is simply wrong — and it feeds the
+// Training Session's score.
 
 const spawned = [];
 jest.mock('../js/scene/sceneSetup.js', () => ({ scene: { add: () => {}, remove: () => {} } }));
@@ -35,7 +35,7 @@ jest.mock('../js/scene/models.js', () => {
 
 const { createM1BallMachineDrill } = require('../js/modes/training/drills/m1BallMachine.js');
 const { validateConfig, INFINITE } = require('../js/modes/training/drillConfig.js');
-const { QUICK_FEED } = require('../js/modes/training/presets.js');
+const { WARMUP_FEED } = require('../js/modes/training/presets.js');
 
 // Minimal ballEvents shim matching what inGame.js supplies.
 function makeEvents() {
@@ -63,7 +63,7 @@ beforeEach(() => { spawned.length = 0; });
 describe('playable config', () => {
   test('feeds balls and spawns them', () => {
     const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
+      config: validateConfig({ ...WARMUP_FEED, burstCount: INFINITE }),
       ballEvents: makeEvents(),
     });
     run(drill, 12);
@@ -77,7 +77,7 @@ describe('playable config', () => {
   test('a returned ball counts once, however many paddle hits land', () => {
     const events = makeEvents();
     const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
+      config: validateConfig({ ...WARMUP_FEED, burstCount: INFINITE }),
       ballEvents: events,
     });
     run(drill, 4);
@@ -93,7 +93,7 @@ describe('unplayable config', () => {
   // 2 m/s cannot clear the net to any placement: max ballistic range is
   // v²/g ≈ 0.4 m. Every feed is refused.
   const impossible = () => validateConfig({
-    ...QUICK_FEED.Warmup.config, speed: 2,
+    ...WARMUP_FEED, speed: 2,
     placement: { kind: 'zone', zone: 8 }, depth: 'deep',
     feedOrigin: 'center-far', burstCount: INFINITE,
   });
@@ -137,7 +137,7 @@ describe('miss accounting across a mixed sequence', () => {
   // is always open and a short interval would feed several balls, each
   // legitimately counting as its own miss.
   const oneBallConfig = () => validateConfig({
-    ...QUICK_FEED.Warmup.config, interval: 6, burstCount: INFINITE,
+    ...WARMUP_FEED, interval: 6, burstCount: INFINITE,
   });
 
   test('an unreturned launched ball IS a miss', () => {
@@ -166,7 +166,7 @@ describe('miss accounting across a mixed sequence', () => {
     // fed − skipped should equal returned + missed once play has settled.
     const events = makeEvents();
     const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, interval: 1, burstCount: INFINITE }),
+      config: validateConfig({ ...WARMUP_FEED, interval: 1, burstCount: INFINITE }),
       ballEvents: events,
     });
     run(drill, 8);
@@ -188,7 +188,7 @@ describe('blade contact recording (M7 heatmap input)', () => {
   test('a paddle hit records its contact point', () => {
     const events = makeEvents();
     const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
+      config: validateConfig({ ...WARMUP_FEED, burstCount: INFINITE }),
       ballEvents: events,
     });
     run(drill, 3);
@@ -205,7 +205,7 @@ describe('blade contact recording (M7 heatmap input)', () => {
     // be filtered out by the "already returned" check.
     const events = makeEvents();
     const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
+      config: validateConfig({ ...WARMUP_FEED, burstCount: INFINITE }),
       ballEvents: events,
     });
     run(drill, 3);
@@ -219,7 +219,7 @@ describe('blade contact recording (M7 heatmap input)', () => {
   test('a hit with no contact data does not corrupt the log', () => {
     const events = makeEvents();
     const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
+      config: validateConfig({ ...WARMUP_FEED, burstCount: INFINITE }),
       ballEvents: events,
     });
     run(drill, 3);
@@ -233,7 +233,7 @@ describe('blade contact recording (M7 heatmap input)', () => {
   test('the mean offset is directional, so "low" survives to the advice', () => {
     const events = makeEvents();
     const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
+      config: validateConfig({ ...WARMUP_FEED, burstCount: INFINITE }),
       ballEvents: events,
     });
     run(drill, 3);
@@ -243,124 +243,54 @@ describe('blade contact recording (M7 heatmap input)', () => {
   });
 });
 
-describe('rapid fire: the machine sweeps between feed origins', () => {
-  // Rapid Fire's beat is the configured interval doubled (pattern paceMul 2),
-  // so interval 2.0 → one ball per second.
-  const rapidConfig = () => validateConfig({
-    ...QUICK_FEED.Warmup.config, speed: 8, interval: 2.0, burstCount: INFINITE,
-  });
+describe('config provider and pause (the Training Session hooks)', () => {
+  const base = () => validateConfig({ ...WARMUP_FEED, interval: 1, burstCount: INFINITE });
 
-  test('balls launch from both wings, all from behind the far rail', () => {
+  test('a provider picks every ball, called once per feed with its index', () => {
+    const calls = [];
     const drill = createM1BallMachineDrill({
-      config: rapidConfig(), ballEvents: makeEvents(), pattern: 'rapidFire',
+      config: base(), ballEvents: makeEvents(),
+      configProvider: (i) => {
+        calls.push(i);
+        return validateConfig({ ...base(), placement: { kind: 'zone', zone: i % 2 ? 7 : 9 } });
+      },
     });
-    run(drill, 15);
-    expect(spawned.length).toBeGreaterThanOrEqual(4);
-    const xs = spawned.map(([pos]) => pos.x);
-    // The sweep origins sit at ±0.6·halfWidth ≈ ±0.46; seeing both signs
-    // proves the per-feed origin actually reached the solver.
-    expect(Math.min(...xs)).toBeLessThan(-0.3);
-    expect(Math.max(...xs)).toBeGreaterThan(0.3);
-    for (const [pos] of spawned) expect(pos.z).toBeLessThan(-1.37);
+    run(drill, 3.5);
+    expect(calls).toEqual([...calls.keys()]);
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(drill.getSnapshot().lastFeed.config.placement.zone).toBe(calls.length % 2 ? 9 : 7);
     drill.dispose();
   });
 
-  test('the machine glides toward the next origin instead of teleporting', () => {
-    const drill = createM1BallMachineDrill({
-      config: rapidConfig(), ballEvents: makeEvents(), pattern: 'rapidFire',
-    });
-    // The drill snaps the figure to ball 0's origin (L-far, −x) at creation.
-    expect(drill.figure.group.position.x).toBeLessThan(-0.3);
-
-    // Track the figure between updates: after feeds start, its x must pass
-    // through intermediate values on the way to the next origin — a teleport
-    // would jump 0.46 m in a single 20 ms frame.
-    let maxFrameStep = 0;
-    let prevX = drill.figure.group.position.x;
-    for (let i = 0; i < 15 / 0.02; i++) {
-      drill.update(0.02);
-      const x = drill.figure.group.position.x;
-      maxFrameStep = Math.max(maxFrameStep, Math.abs(x - prevX));
-      prevX = x;
-    }
-    expect(drill.getSnapshot().fed).toBeGreaterThanOrEqual(4);
-    // beginSwing's authoritative aim() snap absorbs only residual travel, so
-    // no frame should move anywhere near a full origin hop.
-    expect(maxFrameStep).toBeLessThan(0.2);
-    drill.dispose();
-  });
-
-  test('feeds on the beat even while a ball is still in play', () => {
-    // The wait this removes: every other drill holds the next feed until the
-    // previous ball clears, so the cadence was really "ball lifetime", not
-    // the interval. Rapid Fire recycles the ball on the beat instead.
-    const { ballModel } = require('../js/scene/models.js');
-    ballModel.visible = true;   // a ball that never clears
-    try {
-      const drill = createM1BallMachineDrill({
-        config: rapidConfig(), ballEvents: makeEvents(), pattern: 'rapidFire',
-      });
-      run(drill, 10);
-      // 1 s beat → ~10 feeds in 10 s; anything close proves the gate is open.
-      expect(drill.getSnapshot().fed).toBeGreaterThanOrEqual(6);
-      drill.dispose();
-      ballModel.visible = true;   // dispose() hides the ball — re-pin it
-
-      // Control: a plain drill still waits for the ball to clear.
-      const plain = createM1BallMachineDrill({
-        config: rapidConfig(), ballEvents: makeEvents(),
-      });
-      run(plain, 10);
-      expect(plain.getSnapshot().fed).toBe(0);
-      plain.dispose();
-    } finally {
-      ballModel.visible = false;
-    }
-  });
-
-  test('a fixed-origin pattern still feeds from one spot', () => {
-    const drill = createM1BallMachineDrill({
-      config: rapidConfig(), ballEvents: makeEvents(), pattern: 'falkenberg',
-    });
-    run(drill, 12);
-    const xs = spawned.map(([pos]) => pos.x);
-    expect(spawned.length).toBeGreaterThan(1);
-    for (const x of xs) expect(x).toBeCloseTo(xs[0], 6);
-    drill.dispose();
-  });
-
-  test('a plain (no-pattern) drill is unaffected by the preview wiring', () => {
-    const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, burstCount: INFINITE }),
-      ballEvents: makeEvents(),
-    });
-    run(drill, 8);
-    expect(drill.getSnapshot().fed).toBeGreaterThan(0);
-    expect(drill.getSnapshot().skipped).toBe(0);
-    drill.dispose();
-  });
-
-  test('rapid fire survives a ladder tier change mid-run', () => {
+  test('verdicts carry the index of the ball they judge', () => {
+    const seen = [];
     const events = makeEvents();
     const drill = createM1BallMachineDrill({
-      config: rapidConfig(), ballEvents: events,
-      pattern: 'rapidFire', ladderTier: 'bronze',
+      config: base(), ballEvents: events, onOutcome: (o) => seen.push(o),
     });
-    // Return every ball so the ladder promotes after its 20-ball window.
-    for (let i = 0; i < 30 / 0.02; i++) {
-      drill.update(0.02);
-      events.firePaddleHit();
-    }
-    const snap = drill.getSnapshot();
-    expect(snap.fed).toBeGreaterThan(20);
-    expect(snap.tier).not.toBe('bronze');   // promoted without throwing
+    run(drill, 1.5);
+    events.fireBallLost();
+    run(drill, 1.5);
+    events.fireBallLost();
+    expect(seen.map((o) => o.ball)).toEqual([0, 1]);
+    drill.dispose();
+  });
+
+  test('pause holds the feed and resume restarts it', () => {
+    const drill = createM1BallMachineDrill({ config: base(), ballEvents: makeEvents() });
+    drill.pause();
+    run(drill, 3);
+    expect(spawned).toHaveLength(0);
+    drill.resume();
+    run(drill, 2);
+    expect(spawned.length).toBeGreaterThan(0);
     drill.dispose();
   });
 });
 
 describe('metadata', () => {
   test('it exposes the event log for M7', () => {
-    const drill = createM1BallMachineDrill({ config: QUICK_FEED.Warmup.config });
+    const drill = createM1BallMachineDrill({ config: WARMUP_FEED });
     expect(typeof drill.getLog).toBe('function');
     expect(drill.getSummary()).toHaveProperty('returnRate');
     drill.dispose();
@@ -373,7 +303,7 @@ describe('return quality: a touch is not a return', () => {
   // A long interval so exactly one ball is in play (see the miss-accounting
   // block above for why).
   const oneBallConfig = () => validateConfig({
-    ...QUICK_FEED.Warmup.config, interval: 6, burstCount: INFINITE,
+    ...WARMUP_FEED, interval: 6, burstCount: INFINITE,
   });
 
   // Outgoing state a real paddleHit carries. The judge rolls it through the
@@ -461,7 +391,7 @@ describe('return quality: a touch is not a return', () => {
   test('every launched ball is accounted for exactly once, errors included', () => {
     const events = makeEvents();
     const drill = createM1BallMachineDrill({
-      config: validateConfig({ ...QUICK_FEED.Warmup.config, interval: 1, burstCount: INFINITE }),
+      config: validateConfig({ ...WARMUP_FEED, interval: 1, burstCount: INFINITE }),
       ballEvents: events,
     });
     let flip = 0;
@@ -474,65 +404,6 @@ describe('return quality: a touch is not a return', () => {
     const snap = drill.getSnapshot();
     const counts = drill.getLog().outcomeCounts();
     expect(counts.returned + counts.miss + counts.error).toBe(snap.fed - snap.skipped);
-    drill.dispose();
-  });
-});
-
-describe('curriculum tuner wiring (M10 closes the loop)', () => {
-  const randomConfig = () => validateConfig({
-    ...QUICK_FEED.Warmup.config, speed: 8, interval: 1, burstCount: INFINITE,
-  });
-
-  test('a random pattern drill records verdicts into the tuner', () => {
-    const events = makeEvents();
-    const drill = createM1BallMachineDrill({
-      config: randomConfig(), ballEvents: events,
-      pattern: 'twoPoint', random: true,
-    });
-    for (let i = 0; i < 10 / 0.02; i++) {
-      drill.update(0.02);
-      events.firePaddleHit();   // bare touch → credited via the fallback
-    }
-    expect(drill.tuner).toBeTruthy();
-    const attempts = [...drill.tuner.stats.values()]
-      .reduce((a, s) => a + s.attempts, 0);
-    expect(attempts).toBeGreaterThan(0);
-    expect(attempts).toBe(drill.getSnapshot().returned);
-    expect(drill.getSnapshot().curriculum).not.toBeNull();
-    drill.dispose();
-  });
-
-  test('no tuner without a random pattern, and adaptive:false opts out', () => {
-    const sequenced = createM1BallMachineDrill({
-      config: randomConfig(), ballEvents: makeEvents(), pattern: 'twoPoint',
-    });
-    expect(sequenced.tuner).toBeNull();
-    sequenced.dispose();
-
-    const optedOut = createM1BallMachineDrill({
-      config: randomConfig(), ballEvents: makeEvents(),
-      pattern: 'twoPoint', random: true, adaptive: false,
-    });
-    expect(optedOut.tuner).toBeNull();
-    expect(optedOut.getSnapshot().curriculum).toBeNull();
-    optedOut.dispose();
-  });
-
-  test('the tuner survives a ladder tier change', () => {
-    // The runner is rebuilt on promotion; the tuner must NOT be — it would
-    // forget the success surface it just learned.
-    const events = makeEvents();
-    const drill = createM1BallMachineDrill({
-      config: randomConfig(), ballEvents: events,
-      pattern: 'twoPoint', random: true, ladderTier: 'bronze',
-    });
-    const tunerBefore = drill.tuner;
-    for (let i = 0; i < 30 / 0.02; i++) {
-      drill.update(0.02);
-      events.firePaddleHit();
-    }
-    expect(drill.getSnapshot().tier).not.toBe('bronze');
-    expect(drill.tuner).toBe(tunerBefore);
     drill.dispose();
   });
 });

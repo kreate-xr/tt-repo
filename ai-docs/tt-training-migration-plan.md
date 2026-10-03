@@ -283,11 +283,28 @@ an implementation:
 - **Parked M10 settings** (specs kept in `profile/store.js`, rows removed):
   ball speed multiplier, table height offset, HUD density, units, audio cues.
 
-**M9 Tutorial shipped small on purpose:** a ~3-minute, four-step scripted
-sequence (first return → 3 in a row → land 2 in a target zone → return one
-backspin feed) built as a config script over the M1 drill + `targets.js`
-(`training/tutorial.js` model, `drills/tutorial.js` wrapper), per rule 1.
-Completion persists as the `tutorialComplete` profile setting.
+**M9 Tutorial replaced by the Training Session (2026-09):** the four-step
+read-and-do tutorial was deleted in favour of a hands-on multiball session
+modelled on how coaches run practice — fixed sets (forehand, backhand),
+footwork (two-point, Falkenberg), mixed spin (push or block), then an
+irregular random feed — scored at the end with a button into the practice
+mode for the weakest block. All values are predefined; the only choice is the
+level (Beginner / Player), and pace adapts within a set. Built per rule 1 as
+the M1 drill's config provider (`training/session.js` model,
+`drills/session.js` wrapper); best scores persist as `sessionBestBeginner` /
+`sessionBestPlayer`. Serve + third-ball is the planned next block — it needs
+the AI receiver, not the machine.
+
+**Play reduced to the Training Session (2026-09):** the Play menu now lists
+only the session's two levels (plus Settings). Removed with their code and
+tests: Just Rally / Machine Play (Survival, Race), the Practice intents (Spin,
+Placement, Reaction, Movement, Level Up, Study a Shot, Fix My Weaknesses and
+its Why-Did-I-Miss analysis), the Ball Machine editor with saved presets, the
+`?drill=` deep link and its URL codec, and the M2 pattern runner / M10
+ladder + curriculum tuner inside the M1 drill. The M1 drill remains as the
+session's (and Free Play's) feeder; `presets.js` keeps only the Warmup feed.
+Players' previously saved presets are carried through the profile untouched.
+Sections of this plan describing the removed modes are historical.
 
 ## 8. Legacy feed path deleted; menu went intent-first (beta)
 

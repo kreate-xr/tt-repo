@@ -184,11 +184,9 @@ export const RULES_COLUMNS = Object.freeze([
 // layout; 332 centres an 18px line in it with ~13px clear on either side.
 const CAPTION_Y = 332;
 
-// The drill picker that used to live here is gone. Every drill — the ball
-// machine and the four legacy ones — is now reached through the TRAINING
-// tile, which opens the P15 M0 menu (scene/trainingMenu.js) with its own
-// nested menus for presets and settings. A flat ◀ NAME ▶ cycler cannot
-// express that tree, which is why it was replaced rather than kept alongside.
+// The drill picker that used to live here is gone. Training is reached
+// through the PLAY tile, which opens the Play menu (scene/trainingMenu.js):
+// the Training Session's levels plus a Settings screen.
 
 // Labels describe what the tier actually plays like. The middle rung is
 // tuned to international pace (loop 13 m/s, drive 16, smash 22 — see
@@ -207,14 +205,10 @@ const DIFFICULTIES = [
 // this list's length. Each has its own ring colour so the tile is instantly
 // telegraphed.
 //
-// PLAY is the one front door to the ball machine. It used to be two tiles —
-// TRAINING (drills menu) and PLAY (Machine Play menu) — both opening menus
-// over the same machine; the Machine Play menu's modes are now rows and an
-// end-condition cycler inside the unified menu, so the second tile had
-// nothing left to open. The id stays 'training' because it is the stable
-// event key inGame.js listens on.
+// PLAY opens the Training Session. The id stays 'training' because it is the
+// stable event key inGame.js listens on.
 const MODES = [
-  { id: 'training',    label: 'PLAY',  ring: '#ffc857', icon: 'ballMachine', subtitle: 'RALLY · DRILLS' },
+  { id: 'training',    label: 'PLAY',  ring: '#ffc857', icon: 'ballMachine', subtitle: 'TRAINING' },
   { id: 'aiMatch',     label: 'AI',    ring: '#3ddc97', icon: 'aiMatch',    subtitle: 'MATCH'  },
   { id: 'multiplayer', label: 'MULTI', ring: '#ff8a5b', icon: 'multiplayer', subtitle: 'PLAYER' },
 ];
@@ -417,7 +411,7 @@ export class WristMenu {
       map: this.texture,
       side: THREE.DoubleSide,
       transparent: true,
-      // Matches physicsTuner / trajectoryControl: with depthTest on, the
+      // Matches physicsTuner: with depthTest on, the
       // menu z-fights transparent geometry rendered before it (ball trail,
       // shadow, serve indicator, drill targets), which reads as shimmer.
       depthTest: false,

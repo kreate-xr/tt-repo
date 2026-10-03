@@ -1,6 +1,6 @@
 // End-of-match report panel — the mesh + input half of matchReportLayout.js.
 //
-// Same shape as the other in-XR panels (see trajectoryControl.js): a canvas
+// Same shape as the other in-XR panels (see trainingMenu.js): a canvas
 // texture on a plane, a panelKit Panel for hit geometry, and the
 // mesh/hovered/hitTestUV/setHovered/selectHovered surface inGame.js routes the
 // laser through. Both match modes construct one at drill start (hidden) and

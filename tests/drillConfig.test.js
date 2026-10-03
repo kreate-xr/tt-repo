@@ -1,10 +1,9 @@
-// Slice 6 — DrillConfig validation + URL codec (P15 §M1 deep-link requirement).
+// DrillConfig validation (P15 §M1).
 
 const {
-  SPIN_MAX_RAD_S, CONFIG_VERSION, INFINITE,
+  SPIN_MAX_RAD_S, INFINITE,
   SPIN_TYPES, DEPTHS, ARCS, FEED_ORIGINS, FIELD_SPECS, ARC_NET_CLEARANCE,
   defaultConfig, validateConfig, resolveSpinVector,
-  encodeConfig, decodeConfig, parseDeepLink, buildDeepLink,
 } = require('../js/modes/training/drillConfig.js');
 
 describe('defaults match the M1 attribute table', () => {
@@ -135,8 +134,7 @@ describe('placement', () => {
 });
 
 describe('canonicalisation', () => {
-  // Two configs that FEED identically must ENCODE identically, or M5's
-  // "seed the daily drill from the config string" property breaks.
+  // Two configs that FEED identically must compare equal.
   test('omega components are zeroed unless spinType is combo', () => {
     const c = validateConfig({ spinType: 'top', omegaX: 99, omegaY: 99, omegaZ: 99 });
     expect([c.omegaX, c.omegaY, c.omegaZ]).toEqual([0, 0, 0]);
@@ -147,10 +145,10 @@ describe('canonicalisation', () => {
     expect([c.omegaX, c.omegaY, c.omegaZ]).toEqual([30, -20, 10]);
   });
 
-  test('configs differing only in ignored omegas encode the same', () => {
+  test('configs differing only in ignored omegas validate the same', () => {
     const a = { spinType: 'back', spinMagnitude: 100, omegaX: 5 };
     const b = { spinType: 'back', spinMagnitude: 100, omegaX: -80 };
-    expect(encodeConfig(a)).toBe(encodeConfig(b));
+    expect(validateConfig(a)).toEqual(validateConfig(b));
   });
 });
 
@@ -175,158 +173,5 @@ describe('resolveSpinVector', () => {
     for (const comp of [v.x, v.y, v.z]) {
       expect(Math.abs(comp)).toBeLessThanOrEqual(SPIN_MAX_RAD_S);
     }
-  });
-});
-
-describe('URL codec round-trip', () => {
-  test('the default config round-trips exactly', () => {
-    const c = defaultConfig();
-    expect(decodeConfig(encodeConfig(c)).config).toEqual(c);
-  });
-
-  test('every spin type round-trips', () => {
-    for (const spinType of SPIN_TYPES) {
-      const c = validateConfig({ spinType, spinMagnitude: 90 });
-      expect(decodeConfig(encodeConfig(c)).config).toEqual(c);
-    }
-  });
-
-  test('every depth, arc and feed origin round-trips', () => {
-    for (const depth of DEPTHS) {
-      for (const arc of ARCS) {
-        for (const feedOrigin of FEED_ORIGINS) {
-          const c = validateConfig({ depth, arc, feedOrigin });
-          expect(decodeConfig(encodeConfig(c)).config).toEqual(c);
-        }
-      }
-    }
-  });
-
-  test('a fully custom config round-trips', () => {
-    const c = validateConfig({
-      speed: 17.5, spinType: 'combo',
-      omegaX: 40, omegaY: -30, omegaZ: 20,
-      placement: { kind: 'free', x: 0.25, z: -1.05 },
-      scatterSigma: 0.23, depth: 'short', arc: 'lob',
-      interval: 3.4, burstCount: 77, feedOrigin: 'R-near', audioCue: false,
-    });
-    expect(decodeConfig(encodeConfig(c)).config).toEqual(c);
-  });
-
-  test('infinite burst round-trips', () => {
-    const c = validateConfig({ burstCount: INFINITE });
-    const back = decodeConfig(encodeConfig(c)).config;
-    expect(back.burstCount).toBe(INFINITE);
-  });
-
-  test('free-point placement round-trips including negative coords', () => {
-    const c = validateConfig({ placement: { kind: 'free', x: -0.42, z: 1.33 } });
-    expect(decodeConfig(encodeConfig(c)).config.placement)
-      .toEqual({ kind: 'free', x: -0.42, z: 1.33 });
-  });
-
-  test('encoding is stable — re-encoding a decoded string is identical', () => {
-    // Guards against float drift making a shared link change on every hop.
-    const s = encodeConfig(validateConfig({ speed: 12.3, scatterSigma: 0.17, interval: 1.7 }));
-    expect(encodeConfig(decodeConfig(s).config)).toBe(s);
-  });
-
-  test('encoded strings carry the version prefix and stay compact', () => {
-    const s = encodeConfig(defaultConfig());
-    expect(s.startsWith(`${CONFIG_VERSION}.`)).toBe(true);
-    expect(s.length).toBeLessThan(80);
-  });
-});
-
-describe('codec robustness', () => {
-  test('empty and malformed strings yield a valid default config', () => {
-    for (const bad of ['', 'nonsense', null, undefined, 42, '.....']) {
-      const r = decodeConfig(bad);
-      expect(r.ok).toBe(false);
-      expect(r.config.speed).toBe(FIELD_SPECS.speed.default);
-    }
-  });
-
-  test('a truncated string still produces a usable config', () => {
-    // Half a link should still start a drill rather than dropping the player
-    // into nothing.
-    const r = decodeConfig('1.12,t,80');
-    expect(r.ok).toBe(false);
-    expect(r.reason).toBe('truncated');
-    expect(r.config.speed).toBe(12);
-    expect(r.config.spinType).toBe('top');
-    expect(r.config.spinMagnitude).toBe(80);
-    expect(r.config.interval).toBe(FIELD_SPECS.interval.default);
-  });
-
-  test('a future-version link decodes its stable leading fields', () => {
-    const s = encodeConfig(validateConfig({ speed: 9.5, spinType: 'back' }));
-    const future = `99.${s.slice(s.indexOf('.') + 1)}`;
-    const r = decodeConfig(future);
-    expect(r.reason).toBe('future-version');
-    expect(r.config.speed).toBe(9.5);
-    expect(r.config.spinType).toBe('back');
-  });
-
-  test('out-of-range values inside a link are clamped, not trusted', () => {
-    // A hand-edited link must not be able to inject a 900 rad/s feed.
-    const r = decodeConfig('1.999,t,900,0,0,0,z5,9,d,m,0.01,20,cf,1');
-    expect(r.config.speed).toBe(25);
-    expect(r.config.spinMagnitude).toBe(SPIN_MAX_RAD_S);
-    expect(r.config.scatterSigma).toBe(0.4);
-    expect(r.config.interval).toBe(0.8);
-  });
-
-  test('unknown enum codes in a link fall back to defaults', () => {
-    const r = decodeConfig('1.8,ZZ,150,0,0,0,z5,0.05,QQ,XX,2,20,YY,1');
-    expect(r.config.spinType).toBe('top');
-    expect(r.config.depth).toBe('deep');
-    expect(r.config.arc).toBe('medium');
-    expect(r.config.feedOrigin).toBe('center-far');
-  });
-
-  test('decode never throws', () => {
-    const nasties = ['1.', '1.,,,,,,,,,,,,,', '1.a,b,c,d,e,f,g,h,i,j,k,l,m,n', '-5.x', '1.'.repeat(50)];
-    for (const s of nasties) expect(() => decodeConfig(s)).not.toThrow();
-  });
-});
-
-describe('deep links', () => {
-  const BASE = 'https://example.com/tt/';
-
-  test('buildDeepLink then parseDeepLink round-trips', () => {
-    const c = validateConfig({ speed: 14, spinType: 'side-L', spinMagnitude: 120 });
-    const url = buildDeepLink(c, BASE);
-    const parsed = parseDeepLink(url);
-    expect(parsed.ok).toBe(true);
-    expect(parsed.config).toEqual(c);
-  });
-
-  test('a URL with no drill param returns null (absent, not failed)', () => {
-    expect(parseDeepLink(BASE)).toBeNull();
-    expect(parseDeepLink(`${BASE}?other=1`)).toBeNull();
-  });
-
-  test('a malformed drill param returns a failed parse, not null', () => {
-    const parsed = parseDeepLink(`${BASE}?drill=garbage`);
-    expect(parsed).not.toBeNull();
-    expect(parsed.ok).toBe(false);
-    expect(parsed.config).toBeTruthy();
-  });
-
-  test('an unparseable href returns null rather than throwing', () => {
-    expect(parseDeepLink('not a url')).toBeNull();
-  });
-
-  test('deep links survive URL encoding of the query string', () => {
-    const c = validateConfig({ placement: { kind: 'free', x: -0.5, z: 1.2 }, burstCount: INFINITE });
-    const url = buildDeepLink(c, BASE);
-    expect(parseDeepLink(url).config).toEqual(c);
-  });
-
-  test('buildDeepLink preserves existing query params', () => {
-    const url = buildDeepLink(defaultConfig(), `${BASE}?mode=ar`);
-    expect(url).toContain('mode=ar');
-    expect(parseDeepLink(url).ok).toBe(true);
   });
 });

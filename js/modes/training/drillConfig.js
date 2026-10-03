@@ -1,9 +1,8 @@
-// DrillConfig — the serializable description of a feed pattern (P15 §M1),
-// plus the compact URL codec behind the spec's deep-link requirement
-// ("every drill config must be serializable to a shareable URL string").
+// DrillConfig — the serializable description of one ball machine feed
+// (P15 §M1).
 //
-// This module is deliberately scene-free and physics-free: it validates and
-// encodes, it does not feed. FeedEngine consumes a DrillConfig; nothing here
+// This module is deliberately scene-free and physics-free: it validates, it
+// does not feed. FeedEngine consumes a DrillConfig; nothing here
 // imports js/scene/* (migration-plan D4) so it runs headless under Jest.
 //
 // ── SPIN RANGE ──────────────────────────────────────────────────────────────
@@ -43,9 +42,8 @@ export const ARC_NET_CLEARANCE = Object.freeze({
   lob: 0.5,
 });
 
-// Burst count sentinel for "∞". Encoded as `inf` in the URL string; kept as a
-// distinct value rather than 0/-1 so "feed forever" can never be confused
-// with "feed nothing".
+// Burst count sentinel for "∞"; kept as a distinct value rather than 0/-1 so
+// "feed forever" can never be confused with "feed nothing".
 export const INFINITE = Infinity;
 
 // Field specs — range, default and step, straight from M1's attribute table.
@@ -148,8 +146,8 @@ function coerceBurst(value) {
  * returns a partially-valid object: every field is either the caller's value
  * clamped into range, or the spec default.
  *
- * This is the ONLY way a config should enter the feed path — deep links, saved
- * presets and hand-edited localStorage all arrive untrusted.
+ * This is the ONLY way a config should enter the feed path, so nothing a
+ * caller builds can hand the engine a value it would reject.
  */
 export function validateConfig(raw) {
   const input = (raw && typeof raw === 'object') ? raw : {};
@@ -170,10 +168,8 @@ export function validateConfig(raw) {
     feedOrigin: coerceField('feedOrigin', input.feedOrigin),
     audioCue: coerceField('audioCue', input.audioCue),
   };
-  // The ω sliders only exist for 'combo' (M1: "combo exposes ω sliders").
-  // Zeroing them otherwise keeps the encoded form canonical, so two configs
-  // that feed identically also hash identically — which is what lets M5's
-  // Daily Drill seed from the config string.
+  // The ω components only mean anything for 'combo'. Zeroing them otherwise
+  // keeps the config canonical: two configs that feed identically are equal.
   if (out.spinType !== 'combo') {
     out.omegaX = 0; out.omegaY = 0; out.omegaZ = 0;
   }
@@ -198,154 +194,4 @@ export function resolveSpinVector(config) {
     case 'none':
     default:       return { x: 0, y: 0, z: 0 };
   }
-}
-
-// --- URL codec --------------------------------------------------------------
-//
-// Positional CSV behind a version prefix: compact, deterministic, and legible
-// enough to debug from a pasted link. Field ORDER is frozen per version —
-// a new field means CONFIG_VERSION + 1 and a new decoder branch, never an
-// insertion into the v1 order.
-//
-// NOTE on the ×2.5 spin rescale: spinMagnitude (and the ω components) are
-// serialized verbatim, so codes minted before the ×2.5 spin rescale carry
-// values ≤160 and now decode to visibly flatter feeds than intended. That is
-// accepted — the trajectory is still valid, just weaker-spun.
-
-const SPIN_CODES   = { none: 'n', top: 't', back: 'b', 'side-L': 'l', 'side-R': 'r', combo: 'c' };
-const DEPTH_CODES  = { short: 's', 'half-long': 'h', deep: 'd' };
-const ARC_CODES    = { flat: 'f', medium: 'm', lob: 'l' };
-const ORIGIN_CODES = {
-  'L-near': 'ln', 'L-far': 'lf', 'center-near': 'cn',
-  'center-far': 'cf', 'R-near': 'rn', 'R-far': 'rf',
-};
-const invert = (obj) => Object.fromEntries(Object.entries(obj).map(([k, v]) => [v, k]));
-const SPIN_FROM   = invert(SPIN_CODES);
-const DEPTH_FROM  = invert(DEPTH_CODES);
-const ARC_FROM    = invert(ARC_CODES);
-const ORIGIN_FROM = invert(ORIGIN_CODES);
-
-// Trim float noise so encode(decode(s)) === s. Without this, 0.1 + 0.2 style
-// drift would make a round-tripped link differ from the original by a digit.
-const num = (n) => String(Math.round(n * 1000) / 1000);
-
-function encodePlacement(p) {
-  return p.kind === 'free' ? `f${num(p.x)}_${num(p.z)}` : `z${p.zone}`;
-}
-
-function decodePlacement(token) {
-  if (typeof token !== 'string') return null;
-  if (token.startsWith('z')) return { kind: 'zone', zone: Number(token.slice(1)) };
-  if (token.startsWith('f')) {
-    const [x, z] = token.slice(1).split('_');
-    return { kind: 'free', x: Number(x), z: Number(z) };
-  }
-  return null;
-}
-
-/**
- * Encode a DrillConfig to a compact shareable string.
- * Input is validated first, so encoding a hand-built object is always safe.
- */
-export function encodeConfig(config) {
-  const c = validateConfig(config);
-  const fields = [
-    num(c.speed),
-    SPIN_CODES[c.spinType],
-    num(c.spinMagnitude),
-    num(c.omegaX),
-    num(c.omegaY),
-    num(c.omegaZ),
-    encodePlacement(c.placement),
-    num(c.scatterSigma),
-    DEPTH_CODES[c.depth],
-    ARC_CODES[c.arc],
-    num(c.interval),
-    c.burstCount === INFINITE ? 'inf' : String(c.burstCount),
-    ORIGIN_CODES[c.feedOrigin],
-    c.audioCue ? '1' : '0',
-  ];
-  return `${CONFIG_VERSION}.${fields.join(',')}`;
-}
-
-/**
- * Decode a shareable string back to a DrillConfig.
- *
- * Returns a VALID config for any input — a truncated, corrupted or
- * future-version string yields defaults for the fields it could not read
- * rather than null. A deep link that half-parses should still start a drill;
- * silently dropping the player into nothing is the worse failure.
- *
- * @returns {{config: object, ok: boolean, reason?: string}}
- */
-export function decodeConfig(str) {
-  if (typeof str !== 'string' || str.length === 0) {
-    return { config: defaultConfig(), ok: false, reason: 'empty' };
-  }
-  const dot = str.indexOf('.');
-  if (dot < 0) return { config: defaultConfig(), ok: false, reason: 'no-version' };
-
-  const version = Number(str.slice(0, dot));
-  if (!Number.isInteger(version)) {
-    return { config: defaultConfig(), ok: false, reason: 'bad-version' };
-  }
-  if (version > CONFIG_VERSION) {
-    // A link from a newer build. Decode what the v1 order guarantees is
-    // present rather than refusing outright — the leading fields are stable
-    // by construction, so the drill still resembles what was shared.
-    return { ...decodeV1(str.slice(dot + 1)), ok: false, reason: 'future-version' };
-  }
-  return decodeV1(str.slice(dot + 1));
-}
-
-function decodeV1(body) {
-  const f = body.split(',');
-  const placement = decodePlacement(f[6]);
-  const config = validateConfig({
-    speed: f[0],
-    spinType: SPIN_FROM[f[1]],
-    spinMagnitude: f[2],
-    omegaX: f[3],
-    omegaY: f[4],
-    omegaZ: f[5],
-    placement: placement || undefined,
-    scatterSigma: f[7],
-    depth: DEPTH_FROM[f[8]],
-    arc: ARC_FROM[f[9]],
-    interval: f[10],
-    burstCount: f[11] === 'inf' ? INFINITE : f[11],
-    feedOrigin: ORIGIN_FROM[f[12]],
-    audioCue: f[13] === undefined ? undefined : f[13] === '1',
-  });
-  // 14 fields is a complete v1 string; fewer means truncation, which the
-  // caller may want to report even though we produced a usable config.
-  const ok = f.length >= 14;
-  return ok ? { config, ok: true } : { config, ok: false, reason: 'truncated' };
-}
-
-// --- Deep link --------------------------------------------------------------
-
-const DEEP_LINK_PARAM = 'drill';
-
-/**
- * Read a drill config from a URL's query string. Returns null when the
- * parameter is absent, so boot code can tell "no deep link" from "a deep link
- * that failed to parse" (the latter returns a config with ok: false).
- */
-export function parseDeepLink(href) {
-  try {
-    const url = new URL(href);
-    const raw = url.searchParams.get(DEEP_LINK_PARAM);
-    if (!raw) return null;
-    return decodeConfig(raw);
-  } catch (e) {
-    return null;
-  }
-}
-
-/** Build a shareable absolute URL for a config against a base href. */
-export function buildDeepLink(config, baseHref) {
-  const url = new URL(baseHref);
-  url.searchParams.set(DEEP_LINK_PARAM, encodeConfig(config));
-  return url.toString();
 }

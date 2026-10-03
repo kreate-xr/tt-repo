@@ -25,11 +25,10 @@ globalThis.localStorage = new MemoryStorage();
 
 const store = require('../js/profile/store.js');
 const {
-  SCHEMA_VERSION, MAX_PRESETS, SETTING_SPECS,
+  SCHEMA_VERSION, SETTING_SPECS,
   migrate, coerceSetting,
   load, resetProfile, snapshot, subscribe, lastWriteError,
   getSettings, getSetting, setSetting, recordDetectedHand,
-  getPresets, savePreset, deletePreset,
 } = store;
 
 const STORAGE_KEY = 'p15.profile';
@@ -54,10 +53,6 @@ describe('defaults', () => {
     // absence rather than leaving it to reappear by accident.
     expect(SETTING_SPECS.assistLevel).toBeUndefined();
     expect(getSettings().assistLevel).toBeUndefined();
-  });
-
-  test('fresh profile has no presets', () => {
-    expect(getPresets()).toEqual([]);
   });
 });
 
@@ -110,15 +105,6 @@ describe('persistence roundtrip', () => {
     expect(getSetting('units')).toBe('imperial');
   });
 
-  test('presets survive a reload', () => {
-    savePreset('My Warmup', { speed: 7, spinType: 'top' });
-    load();
-    const presets = getPresets();
-    expect(presets).toHaveLength(1);
-    expect(presets[0].name).toBe('My Warmup');
-    expect(presets[0].config.speed).toBe(7);
-  });
-
   test('corrupt JSON in storage falls back to defaults without throwing', () => {
     globalThis.localStorage.setItem(STORAGE_KEY, '{not json at all');
     expect(() => load()).not.toThrow();
@@ -136,22 +122,16 @@ describe('persistence roundtrip', () => {
     expect(getSetting('hudDensity')).toBe('minimal');
   });
 
-  test('malformed preset entries are dropped on load', () => {
+  test('presets saved by an older build survive a load and a write', () => {
+    // The Ball Machine editor that made them is gone, but a write from this
+    // build must not destroy data a player made.
+    const saved = [{ name: 'old', config: { speed: 5 } }];
     globalThis.localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      version: SCHEMA_VERSION,
-      settings: {},
-      presets: [
-        { name: 'good', config: { speed: 5 } },
-        { name: 'no config' },
-        { config: { speed: 1 } },
-        null,
-        'nonsense',
-      ],
+      version: SCHEMA_VERSION, settings: {}, presets: saved,
     }));
     load();
-    const presets = getPresets();
-    expect(presets).toHaveLength(1);
-    expect(presets[0].name).toBe('good');
+    setSetting('units', 'imperial');
+    expect(JSON.parse(globalThis.localStorage.getItem(STORAGE_KEY)).presets).toEqual(saved);
   });
 });
 
@@ -182,7 +162,6 @@ describe('migration', () => {
     load();
     // Runs on defaults for the session...
     expect(getSetting('ballSpeedMultiplier')).toBe(1.0);
-    expect(getPresets()).toEqual([]);
     // ...but the player's data is still on disk, untouched.
     expect(globalThis.localStorage.getItem(STORAGE_KEY)).toBe(futureBlob);
     expect(lastWriteError()).toMatch(/newer version/);
@@ -195,72 +174,16 @@ describe('migration', () => {
   });
 });
 
-describe('presets', () => {
-  test('saving by an existing name overwrites rather than duplicating', () => {
-    savePreset('Warmup', { speed: 5 });
-    savePreset('Warmup', { speed: 9 });
-    const presets = getPresets();
-    expect(presets).toHaveLength(1);
-    expect(presets[0].config.speed).toBe(9);
-  });
-
-  test(`caps at ${MAX_PRESETS} and reports 'full'`, () => {
-    for (let i = 0; i < MAX_PRESETS; i++) {
-      expect(savePreset(`preset ${i}`, { speed: i }).ok).toBe(true);
-    }
-    const overflow = savePreset('one too many', { speed: 0 });
-    expect(overflow.ok).toBe(false);
-    expect(overflow.reason).toBe('full');
-    expect(getPresets()).toHaveLength(MAX_PRESETS);
-  });
-
-  test('overwriting still works when at the cap', () => {
-    for (let i = 0; i < MAX_PRESETS; i++) savePreset(`preset ${i}`, { speed: i });
-    const res = savePreset('preset 0', { speed: 999 });
-    expect(res.ok).toBe(true);
-    expect(getPresets().find((p) => p.name === 'preset 0').config.speed).toBe(999);
-  });
-
-  test('empty or whitespace names are refused', () => {
-    expect(savePreset('', { speed: 1 }).reason).toBe('empty-name');
-    expect(savePreset('   ', { speed: 1 }).reason).toBe('empty-name');
-    expect(savePreset(null, { speed: 1 }).reason).toBe('empty-name');
-  });
-
-  test('a missing config is refused', () => {
-    expect(savePreset('name only', null).reason).toBe('bad-config');
-  });
-
-  test('getPresets returns copies — mutating them cannot corrupt the store', () => {
-    savePreset('Warmup', { speed: 5 });
-    const presets = getPresets();
-    presets[0].config.speed = 999;
-    presets[0].name = 'hacked';
-    expect(getPresets()[0].config.speed).toBe(5);
-    expect(getPresets()[0].name).toBe('Warmup');
-  });
-
-  test('deletePreset removes it and reports whether it existed', () => {
-    savePreset('Warmup', { speed: 5 });
-    expect(deletePreset('Warmup')).toBe(true);
-    expect(getPresets()).toEqual([]);
-    expect(deletePreset('Warmup')).toBe(false);
-  });
-});
-
 describe('quota failure is visible', () => {
-  test('a quota error surfaces through the return value and lastWriteError', () => {
+  test('a quota error surfaces through lastWriteError', () => {
     globalThis.localStorage.failNextWrite = 'QuotaExceededError';
-    const res = savePreset('Big', { speed: 5 });
-    expect(res.ok).toBe(false);
-    expect(res.reason).toBe('storage');
+    setSetting('units', 'imperial');
     expect(lastWriteError()).toMatch(/storage full/);
   });
 
   test('a generic storage denial reports differently from a quota error', () => {
     globalThis.localStorage.failNextWrite = 'SecurityError';
-    const res = savePreset('Big', { speed: 5 });
-    expect(res.ok).toBe(false);
+    setSetting('units', 'imperial');
     expect(lastWriteError()).toMatch(/unavailable/);
   });
 
@@ -272,9 +195,9 @@ describe('quota failure is visible', () => {
 
   test('a later successful write clears the error', () => {
     globalThis.localStorage.failNextWrite = 'QuotaExceededError';
-    savePreset('A', { speed: 1 });
+    setSetting('units', 'imperial');
     expect(lastWriteError()).toBeTruthy();
-    savePreset('B', { speed: 2 });
+    setSetting('units', 'metric');
     expect(lastWriteError()).toBeNull();
   });
 });
@@ -305,16 +228,15 @@ describe('dominant hand detection (M10)', () => {
 });
 
 describe('subscribe', () => {
-  test('fires on setting and preset changes', () => {
+  test('fires on setting changes, and stops after unsubscribing', () => {
     let calls = 0;
     const unsub = subscribe(() => { calls++; });
     setSetting('units', 'imperial');
-    savePreset('A', { speed: 1 });
-    deletePreset('A');
-    expect(calls).toBe(3);
+    setSetting('dominantHand', 'L');
+    expect(calls).toBe(2);
     unsub();
     setSetting('units', 'metric');
-    expect(calls).toBe(3);
+    expect(calls).toBe(2);
   });
 
   test('does not fire when a set is a no-op', () => {

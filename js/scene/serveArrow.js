@@ -20,9 +20,8 @@
 //                 ball) and on rally/match end.
 //   update(dt)  — fade ramp + opacity pulse + chevron flow. Called from tick.
 //
-// Rendering: one PlaneGeometry per half lying 2mm above the felt (targets.js
-// offset convention) with a canvas-drawn chevron tile repeated 3× along its
-// length. The flow animation is pure UV scroll — no canvas redraws after init.
+// Rendering: one PlaneGeometry per half lying 2mm above the felt, with a
+// canvas-drawn chevron tile repeated 3× along its length. The flow animation is pure UV scroll — no canvas redraws after init.
 
 import * as THREE from 'three';
 import { scene } from './sceneSetup.js';
@@ -35,8 +34,8 @@ const ARROW_W_M = 0.45;
 const ARROW_L_M = 0.90;
 const CHEVRON_REPEATS = 3;
 
-// Same 2mm lift targets.js uses for its zone quads — above the felt but
-// below any plausible ball-contact height, and no z-fighting.
+// 2mm lift — above the felt but below any plausible ball-contact height,
+// and no z-fighting.
 const SURFACE_LIFT_M = 0.002;
 
 // Opacity = fadeProgress * (BASE + pulse). The pulse swings around BASE so

@@ -80,41 +80,22 @@ import { getProfile } from './training/difficulty.js';
 import {
   initStatsHud, setLiveLine, hideLiveLine, showSummary, hideSummary, clearStatsHud,
 } from '../scene/statsHud.js';
-import {
-  createM1BallMachineDrill, M1_BALL_MACHINE, buildEnv as buildFeedEnv,
-} from './training/drills/m1BallMachine.js';
-import { solveFeed } from './training/feedEngine.js';
-import { getQuickFeed } from './training/presets.js';
-import { validateConfig, INFINITE, parseDeepLink } from './training/drillConfig.js';
-import { createSpinPracticeDrill, SPIN_PRACTICE } from './training/drills/spinPractice.js';
-import { createPlacementPracticeDrill, PLACEMENT_PRACTICE } from './training/drills/placementPractice.js';
-import { createTrajectoryPracticeDrill, TRAJECTORY_PRACTICE } from './training/drills/trajectoryPractice.js';
-import { createTutorialDrill, TUTORIAL } from './training/drills/tutorial.js';
+import { createM1BallMachineDrill } from './training/drills/m1BallMachine.js';
+import { WARMUP_FEED } from './training/presets.js';
+import { validateConfig, INFINITE } from './training/drillConfig.js';
+import { createSessionDrill, SESSION } from './training/drills/session.js';
 import { createMultiplayerDrill, MULTIPLAYER } from './multiplayer/multiplayer.js';
 import { createAIMatchDrill, AI_MATCH } from './aiMatch/aiMatch.js';
-import { createMachinePlayDrill, MACHINE_PLAY } from './machinePlay/machinePlay.js';
 import * as AudioContextBridge from '../network/AudioContextBridge.js';
 import { updateAudioListener, prewarmAudio } from '../scene/audio.js';
 import * as haptics from '../xr/haptics.js';
 
 const DRILL_FACTORIES = {
-  // M1 Ball Machine (P15). Replaces the legacy direct-spawn ball machine —
-  // its file is deleted rather than left alongside, per rule 3 of
-  // tt-training-migration-plan.md (never two live paths for one behaviour).
-  ballMachine:        { meta: M1_BALL_MACHINE,     create: createM1BallMachineDrill },
-  // M9 Tutorial — a 4-step config script over the M1 machine + target zones.
-  tutorial:           { meta: TUTORIAL,            create: createTutorialDrill },
-  // Practice intents — wrappers over the M1 machine (see each file). These
-  // replaced the legacy targetPractice / spinReader / reactionRally drills,
-  // and with them the last consumers of the old feeder.js, which is deleted.
-  spinPractice:       { meta: SPIN_PRACTICE,       create: createSpinPracticeDrill },
-  placementPractice:  { meta: PLACEMENT_PRACTICE,  create: createPlacementPracticeDrill },
-  trajectoryPractice: { meta: TRAJECTORY_PRACTICE, create: createTrajectoryPracticeDrill },
+  // Play: the Training Session — a scored multiball session (warm-up,
+  // footwork, spin, random) run as the M1 ball machine's config provider.
+  session:            { meta: SESSION,             create: createSessionDrill },
   multiplayer:        { meta: MULTIPLAYER,         create: createMultiplayerDrill },
   aiMatch:            { meta: AI_MATCH,            create: createAIMatchDrill },
-  // Playing AGAINST the machine rather than drilling with it — a scorer around
-  // the same M1 feed, not a second feeder. See machinePlay/machinePlay.js.
-  machinePlay:        { meta: MACHINE_PLAY,        create: createMachinePlayDrill },
 };
 
 // Ceiling on the display rate we ask the runtime for. A Quest WebXR session
@@ -705,40 +686,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   const wristMenu = new WristMenu();
   scene.add(wristMenu.mesh); // floating in world; billboarded each frame
 
-  // The PLAY menu (P15 M0's training menu, which absorbed the P17 Machine
-  // Play menu) — a sub-menu of the wrist menu, not a replacement. One front
-  // door for everything the ball machine does: rally, drills, survival and
-  // score-challenge end conditions, free play.
-  // Backed by the profile store so Saved Presets persist.
-  // `lastSessionLog` is captured at teardown so M7 can review a drill AFTER
-  // it ends — reading drillInstance directly would find it already disposed.
-  let lastSessionLog = null;
-  let lastContacts = null;
-  const trainingMenu = new TrainingMenu({
-    presets: profileStore,
-    // Same module, separate slot — the settings screen reads/writes M10
-    // globals (dominant hand today) through this one.
-    settings: profileStore,
-    getSessionLog: () => lastSessionLog,
-    // Prefer the LIVE drill's contacts so review works mid-session too;
-    // fall back to the last finished drill's.
-    getRecentContacts: () => (
-      (drillInstance && drillInstance.getRecentContacts)
-        ? drillInstance.getRecentContacts()
-        : lastContacts
-    ),
-  });
-  // Custom Feed feasibility warning: dry-run the feed solver (no scatter, so
-  // it is deterministic) whenever the config is edited, and put the same hint
-  // the drill would show into the panel's message line. Without this an
-  // unfeedable config only reveals itself after START, as a machine that
-  // silently never fires.
-  trainingMenu.setFeasibilityProbe((config) => {
-    if (!tableBox) return null;   // arena not loaded yet — nothing to check
-    const feed = solveFeed(config, buildFeedEnv());
-    return feed.feasible ? null
-      : 'Too slow to clear the net at that placement — raise speed or pick a shorter zone';
-  });
+  // The PLAY menu — a sub-menu of the wrist menu, not a replacement. Lists
+  // the Training Session's levels; its Settings screen reads and writes the
+  // M10 globals (dominant hand today) through the profile store.
+  const trainingMenu = new TrainingMenu({ settings: profileStore });
   scene.add(trainingMenu.mesh);
 
   wristMenu.show(); // visible from the moment the session starts
@@ -815,7 +766,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   uiInputReady = true;
 
   // --- Wrist menu actions ---
-  wristMenu.on('start', ({ drill, preset, difficulty, config, options }) => {
+  wristMenu.on('start', ({ drill, difficulty, config, options }) => {
     // MULTI with no live peer connection opens the in-XR lobby panel instead
     // of bouncing off enterDrill's gate — before that panel existed, the tile
     // was a dead button in any solo session. With a connection already up
@@ -831,13 +782,11 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       enterTuner(mpMenu);
       return;
     }
-    // `config` arrives fully edited from Custom Feed; `preset` is set only
-    // when the config came straight from a preset and was not modified.
     // `options` carries the wrist menu's competition-rules flag (and any
     // future per-launch flags) into the drill factory via enterDrill's
     // spread.
-    lastDrillParams = { drill, preset, difficulty, config, options };
-    enterDrill(drill, difficulty, preset, config, options);
+    lastDrillParams = { drill, difficulty, config, options };
+    enterDrill(drill, difficulty, config, options);
   });
   // The PLAY menu, opened from the wrist menu's PLAY tile as a SUB-menu. It
   // rides the same currentTuner machinery the physics tuner and calibration
@@ -850,11 +799,11 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     enterTuner(trainingMenu);
   });
   trainingMenu.on('back', onTunerBack);
-  trainingMenu.on('start', ({ drill, preset, difficulty, config, options }) => {
+  trainingMenu.on('start', ({ drill, difficulty, config, options }) => {
     trainingMenu.hide();
     currentTuner = null;
-    lastDrillParams = { drill, preset, difficulty, config, options };
-    enterDrill(drill, difficulty, preset, config, options);
+    lastDrillParams = { drill, difficulty, config, options };
+    enterDrill(drill, difficulty, config, options);
   });
   // The footer shortcuts hand off to the existing panels rather than
   // reimplementing them.
@@ -925,21 +874,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // regression is visible from inside the headset rather than silently
     // dropping into solo.
     hudLog('multiplayer: connection not ready at MR entry — entered solo');
-  } else {
-    // P15 deep link: `?drill=<code>` starts the ball machine on that config.
-    // The codec and its 42 tests already existed; nothing called it, so every
-    // shared link silently did nothing. Only honoured when not entering a
-    // multiplayer session, which owns the entry path.
-    const link = parseDeepLink(typeof window !== 'undefined' ? window.location.href : '');
-    if (link) {
-      queueMicrotask(() => {
-        lastDrillParams = { drill: 'ballMachine', difficulty: null, config: link.config };
-        enterDrill('ballMachine', null, null, link.config);
-        // A half-parsed link still starts a drill (decode never returns null),
-        // so say when the settings are not exactly what was shared.
-        hudLog(link.ok ? 'started from shared link' : `shared link was ${link.reason} — using defaults where unreadable`);
-      });
-    }
   }
 
   function enterMenu() {
@@ -984,7 +918,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // the machine doesn't wait forever on a ball that will never be returned.
     if (ballModel) ballModel.visible = false;
     const config = validateConfig({
-      ...getQuickFeed('Warmup').config,
+      ...WARMUP_FEED,
       burstCount: INFINITE,
     });
     try {
@@ -997,18 +931,20 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
   }
 
-  function enterDrill(drill, difficulty, preset, config, options) {
+  function enterDrill(drill, difficulty, config, options) {
     teardownDrill();
     hideSummary();
-    const factory = DRILL_FACTORIES[drill] || DRILL_FACTORIES.ballMachine;
+    const factory = DRILL_FACTORIES[drill];
+    if (!factory) {
+      hudLog(`unknown drill: ${drill}`);
+      enterMenu();
+      return;
+    }
     const profile = getProfile(difficulty);
     const factoryArgs = {
-      ballEvents, profile,
-      // M1 drills are driven by a DrillConfig rather than a difficulty
-      // profile. Other drills ignore this slot.
-      config: config || (preset ? getQuickFeed(preset).config : null),
-      // M2 pattern / random / ladder selection. Drills that don't understand
-      // these ignore them.
+      ballEvents, profile, config: config || null,
+      // Per-drill options (the session's level and hand, a match's best-of).
+      // Drills that don't understand a key ignore it.
       ...(options || {}),
       xr,
       // `restart` re-enters the SAME drill with the same parameters — what the
@@ -1021,7 +957,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
         restart: () => {
           if (!lastDrillParams) return;
           enterDrill(lastDrillParams.drill, lastDrillParams.difficulty,
-            lastDrillParams.preset, lastDrillParams.config, lastDrillParams.options);
+            lastDrillParams.config, lastDrillParams.options);
         },
       },
       // Populated only when a venue GLB with named walls is loaded (tt-arena).
@@ -1071,15 +1007,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // every exit path — entering a drill, returning to the menu, or ending the
     // session — not just when Free Play is re-entered.
     stopFreePlayFeeder();
-    // Keep the finished session's events for M7 before the drill goes away.
-    if (drillInstance && drillInstance.getLog) {
-      const log = drillInstance.getLog();
-      if (log && log.feedCount > 0) lastSessionLog = log;
-    }
-    if (drillInstance && drillInstance.getRecentContacts) {
-      const c = drillInstance.getRecentContacts();
-      if (c && c.contacts.length > 0) lastContacts = c;
-    }
     if (drillInstance && drillInstance.dispose) drillInstance.dispose();
     drillInstance = null;
     clearListeners();
@@ -1098,15 +1025,25 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // log; anything else that ever reports finished just skips the panel.
     if (!drillInstance || typeof drillInstance.getSummary !== 'function') return;
     const factory = DRILL_FACTORIES[lastDrillParams && lastDrillParams.drill];
+    // The Training Session adds its score card, whose button starts the
+    // practice mode for the player's weakest block.
+    const report = drillInstance.getReport ? drillInstance.getReport() : null;
     showSummary({
       ...drillInstance.getSummary(),
       drillLabel: factory ? factory.meta.label : null,
       difficultyLabel: getProfile(lastDrillParams && lastDrillParams.difficulty).label,
+      report,
     }, {
+      onTrainNext: report && report.next ? () => {
+        const { drill, config, options } = report.next;
+        const difficulty = lastDrillParams && lastDrillParams.difficulty;
+        lastDrillParams = { drill, difficulty, config, options };
+        enterDrill(drill, difficulty, config, options);
+      } : null,
       onRetry: () => {
         if (lastDrillParams) {
           enterDrill(lastDrillParams.drill, lastDrillParams.difficulty,
-            lastDrillParams.preset, lastDrillParams.config, lastDrillParams.options);
+            lastDrillParams.config, lastDrillParams.options);
         }
       },
       onChangeDrill: () => enterMenu(),

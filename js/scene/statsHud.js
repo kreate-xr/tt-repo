@@ -68,8 +68,12 @@ export function hideLiveLine() {
  * about how a session went — which is exactly how the old SessionStats
  * copy drifted (drills that fed the log but not the stats showed zeros).
  */
-export function showSummary(summary, { onRetry, onChangeDrill, onExit }) {
+export function showSummary(summary, { onRetry, onChangeDrill, onExit, onTrainNext }) {
   if (!summaryEl) initStatsHud();
+  if (summary.report) {
+    showSessionCard(summary, { onRetry, onChangeDrill, onExit, onTrainNext });
+    return;
+  }
 
   const dur = ((summary.durationMs || 0) / 1000).toFixed(1);
   const returnPct = Math.round((summary.returnRate || 0) * 100);
@@ -99,6 +103,56 @@ export function showSummary(summary, { onRetry, onChangeDrill, onExit }) {
   summaryEl.style.display = 'block';
   hideLiveLine();
 
+  summaryEl.querySelector('[data-action="retry"]').onclick = () => { hideSummary(); onRetry?.(); };
+  summaryEl.querySelector('[data-action="change"]').onclick = () => { hideSummary(); onChangeDrill?.(); };
+  summaryEl.querySelector('[data-action="exit"]').onclick = () => { hideSummary(); onExit?.(); };
+}
+
+// The Training Session's score card: one headline score against the best,
+// a row per block, and one button into the practice mode for the weakest.
+function showSessionCard(summary, { onRetry, onChangeDrill, onExit, onTrainNext }) {
+  const r = summary.report;
+  // A focus run repeats one set; it has no best to beat.
+  let bestLine;
+  if (r.focus) bestLine = `Focus: ${r.focusLabel}`;
+  else if (r.newBest) {
+    bestLine = r.previousBest > 0 ? `New best! (was ${r.previousBest}%)` : 'First score — beat it next time';
+  } else bestLine = `Best ${r.best}%`;
+  const rows = [
+    ['Balls returned', `${r.score}%`],
+    ['Deep returns', r.depth == null ? '—' : `${r.depth}%`],
+    ['Longest streak', `${r.bestStreak}`],
+  ];
+  const blocks = r.blocks.filter((b) => b.fed > 0);
+  const next = r.next;
+
+  summaryEl.innerHTML = `
+    <h2 style="margin:0 0 4px 0;color:#00ff88;font-size:1.4rem;">${r.focus ? 'Focus Complete' : 'Session Complete'}</h2>
+    <div style="color:#aaa;font-size:0.9rem;margin-bottom:12px;">${r.levelLabel}</div>
+    <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:12px;">
+      <div style="font-size:2.6rem;font-weight:700;">${r.score}%</div>
+      <div style="color:${r.newBest ? '#00ff88' : '#aaa'};">${bestLine}</div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:6px 24px;margin-bottom:14px;">
+      ${blocks.map((b) => `
+        <div>${b.label}${b.id === r.weakest && blocks.length > 1 ? ' <span style="color:#ffb347;">· work on this</span>' : ''}</div>
+        <div style="text-align:right;font-weight:600;">${b.score}%</div>`).join('')}
+    </div>
+    <div style="display:grid;grid-template-columns:1fr auto;gap:6px 24px;font-size:0.9rem;color:#ccc;margin-bottom:16px;">
+      ${rows.map(([label, value]) => `<div>${label}</div><div style="text-align:right;">${value}</div>`).join('')}
+    </div>
+    <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+      ${next && onTrainNext ? `<button data-action="next" style="padding:9px 18px;border:none;border-radius:8px;background:linear-gradient(135deg,#00ff88,#00aaff);color:#000;font-weight:700;cursor:pointer;">Train: ${next.label}</button>` : ''}
+      <button data-action="retry" style="padding:9px 18px;border:1px solid rgba(255,255,255,0.25);border-radius:8px;background:transparent;color:#fff;cursor:pointer;">Again</button>
+      <button data-action="change" style="padding:9px 18px;border:1px solid rgba(255,255,255,0.25);border-radius:8px;background:transparent;color:#fff;cursor:pointer;">Menu</button>
+      <button data-action="exit" style="padding:9px 18px;border:1px solid rgba(255,90,90,0.35);border-radius:8px;background:transparent;color:#ff8888;cursor:pointer;">Exit</button>
+    </div>
+  `;
+  summaryEl.style.display = 'block';
+  hideLiveLine();
+
+  const nextBtn = summaryEl.querySelector('[data-action="next"]');
+  if (nextBtn) nextBtn.onclick = () => { hideSummary(); onTrainNext(); };
   summaryEl.querySelector('[data-action="retry"]').onclick = () => { hideSummary(); onRetry?.(); };
   summaryEl.querySelector('[data-action="change"]').onclick = () => { hideSummary(); onChangeDrill?.(); };
   summaryEl.querySelector('[data-action="exit"]').onclick = () => { hideSummary(); onExit?.(); };

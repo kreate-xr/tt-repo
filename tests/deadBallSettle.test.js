@@ -5,7 +5,7 @@
 // impact below ~3.9 m/s, so an unplayed ball lost only 5% of its vertical
 // speed per bounce and took ~2v/(g(1−e)) ≈ 15+ seconds to dwindle below the
 // stuck-ball detector. Every feeder waits on ballLost before the next feed,
-// so the tutorial (and any drill) visibly stalled behind a ball bouncing in
+// so every drill visibly stalled behind a ball bouncing in
 // place. The fix (DEAD_BALL_BOUNCES / DEAD_BALL_COR_SCALE in constants.js)
 // bleeds extra energy from the third bounce since the last paddle contact —
 // dead in every mode — while leaving the first two live bounces on the full

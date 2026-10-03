@@ -1,4 +1,4 @@
-// M0 training menu — the renderer.
+// Play menu — the renderer.
 //
 // Draws whatever TrainingMenuModel reports and routes input back to it. All
 // navigation and editing logic lives in the model (and is unit-tested); this
@@ -18,11 +18,7 @@ import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
 import * as haptics from '../xr/haptics.js';
 import { Panel, WIDGETS } from './panelKit.js';
 import { COLORS, F, roundRect } from './panelStyle.js';
-import { layoutFeedEditor, drawFeedEditor } from './feedEditor.js';
-import {
-  TrainingMenuModel, SCREENS, endConditionLabel,
-} from '../modes/training/menuModel.js';
-import { bladeHeatmap } from '../modes/training/analysis.js';
+import { TrainingMenuModel, SCREENS } from '../modes/training/menuModel.js';
 import { TUNER_ENABLED } from './hud.js';
 
 const CANVAS_W = 1024;
@@ -43,19 +39,14 @@ const BODY_Y = HEADER_H + 12;
 const FOOTER_IDS = ['settings', 'calibrate', 'tune', 'exit'];
 
 export class TrainingMenu {
-  constructor({ presets = null, settings = null, difficulties = null,
-    getSessionLog = null, getRecentContacts = null,
-    showTune = TUNER_ENABLED } = {}) {
+  constructor({ settings = null, difficulties = null, showTune = TUNER_ENABLED } = {}) {
     this.footerIds = showTune ? FOOTER_IDS : FOOTER_IDS.filter((id) => id !== 'tune');
-    this.model = new TrainingMenuModel({
-      presets, settings, getSessionLog, getRecentContacts,
-    });
+    this.model = new TrainingMenuModel({ settings });
     this.panel = new Panel({ width: CANVAS_W, height: CANVAS_H });
     this.listeners = new Map();
     this.pokeCursor = null;
-    // Host-injected `(config) => warning|null`, run after Custom Feed edits so
-    // an unfeedable config is called out on the panel, not just in-drill.
-    this.feasibilityProbe = null;
+    // The wrist menu's tier rides along on every start (the host labels the
+    // end-of-set panel with it); this menu has no control of its own for it.
     this.difficulties = difficulties || [
       { id: 'beginner', label: 'CLUB' },
       { id: 'intermediate', label: 'INTERNATIONAL' },
@@ -109,24 +100,7 @@ export class TrainingMenu {
   hide() { this.mesh.visible = false; this.panel.hide(); this.pokeCursor = null; }
   isVisible() { return this.mesh.visible; }
 
-  hitTestUV(u, v) {
-    // Remember where the ray is pointing. setHovered() only receives an id,
-    // so without this a slider press would know WHICH slider but not WHERE
-    // along it — and would have nothing to set the value from.
-    this._lastUV = { u, v };
-    return this.panel.hitTestUV(u, v);
-  }
-
-  setFeasibilityProbe(fn) { this.feasibilityProbe = fn; }
-
-  _refreshFeasibility() {
-    if (!this.feasibilityProbe || this.model.screen !== SCREENS.CUSTOM_FEED) return;
-    try {
-      this.model.message = this.feasibilityProbe(this.model.config) || null;
-    } catch (e) {
-      console.error('feasibility probe threw:', e);
-    }
-  }
+  hitTestUV(u, v) { return this.panel.hitTestUV(u, v); }
 
   /** Adopt the tier the wrist menu already has selected, so opening training
    *  doesn't silently reset it to CLUB. */
@@ -193,115 +167,21 @@ export class TrainingMenu {
     // "CLOSE" rather than "EXIT": this leaves training and returns to the
     // wrist menu; it does not end the XR session.
     if (id === 'footer:exit') return this.emit('back');
-    if (id.startsWith('diff:')) {
-      this.difficultyIndex = Number(id.slice(5));
-      return this.rebuild();
-    }
-
     if (id.startsWith('item:')) {
       const res = m.selectItem(id.slice(5));
       if (res && res.action === 'start') {
-        return this.start(res.config, res.preset, res.drill, res.options);
+        return this.start(res.drill, res.config, res.options);
       }
-      this._refreshFeasibility();
-      return this.rebuild();
-    }
-
-    if (id.startsWith('preset:')) {
-      m.cyclePreset(Number(id.slice(7)));
-      // The model leaves the loaded preset's one-line description in the
-      // message slot; a feasibility warning (which the description can never
-      // outrank) replaces it when the probe has one.
-      const desc = m.message;
-      this._refreshFeasibility();
-      if (!m.message) m.message = desc;
-      return this.rebuild();
-    }
-
-    // START on the editor goes through the model, which shapes the action by
-    // the end condition: a plain drill starts the ball machine; Survival and
-    // Race start the machine-play scorer over the same config.
-    if (id === 'start') {
-      const res = m.startCurrent();
-      return this.start(res.config, res.preset, res.drill, res.options);
-    }
-    if (id === 'save') {
-      // Auto-named: in-headset text entry does not exist, and blocking the
-      // save behind a keyboard would make the feature unreachable.
-      const n = (this.model.presetsApi ? this.model.presetsApi.getPresets().length : 0) + 1;
-      m.savePreset(`Custom ${n}`);
-      return this.rebuild();
-    }
-
-    // Tapping anywhere on a slider track jumps to that value. Without this a
-    // slider could ONLY be moved by a successful drag, so a plain press did
-    // nothing at all — which is how it reads as "drag is not working".
-    if (id.startsWith('slider:') && this._lastUV) {
-      this.dragAt(this._lastUV.u, this._lastUV.v);
-      return undefined;
-    }
-
-    if (id.startsWith('end:')) {
-      m.cycleEndCondition(Number(id.slice(4)));
-      return this.rebuild();
-    }
-    if (id.startsWith('zone:')) {
-      m.setZone(Number(id.slice(5)));
-      this._refreshFeasibility();
-      return this.rebuild();
-    }
-    if (id.startsWith('cycle:')) {
-      const [, key, dir] = id.split(':');
-      if (key === 'burstCount') m.stepBurst(Number(dir));
-      else m.cycleField(key, Number(dir));
-      this._refreshFeasibility();
-      return this.rebuild();
-    }
-    if (id.startsWith('toggle:')) {
-      const key = id.slice(7);
-      m.setField(key, !m.config[key]);
-      this._refreshFeasibility();
       return this.rebuild();
     }
     return undefined;
   }
 
-  /**
-   * Slider drag, driven by the host while the trigger is held.
-   *
-   * `sliderId` pins the drag to the slider that was originally grabbed.
-   * Re-hit-testing every frame instead would hand control to whatever the ray
-   * happens to be over, and since the track is only ~18 px tall the smallest
-   * vertical wobble would silently drop the drag — or worse, start editing a
-   * neighbouring field.
-   */
-  dragAt(u, v, sliderId = null) {
-    const id = sliderId || this.panel.hitTestUV(u, v);
-    if (!id || !id.startsWith('slider:')) return false;
-    const w = this.panel.get(id);
-    if (!w || w.disabled) return false;
-    const before = w.value;
-    this.panel.dragSliderUV(id, u, v);
-    if (w.value === before) return false;
-    this.model.setField(id.slice(7), w.value);
-    this._refreshFeasibility();
-    this.rebuild();
-    return true;
-  }
-
-  /** Slider id under a UV point, or null — lets the host start a drag. */
-  sliderAt(u, v) {
-    const id = this.panel.hitTestUV(u, v);
-    return id && id.startsWith('slider:') ? id : null;
-  }
-
-  // `drill` defaults to the ball machine; the legacy drills pass their own id.
-  // `options` carries M2's pattern / random / ladder selection.
-  start(config, preset, drill = 'ballMachine', options = null) {
+  // `options` carries the session's level and hand.
+  start(drill, config, options = null) {
     this.emit('start', {
       drill,
       config,
-      preset,
       options,
       difficulty: this.difficulties[this.difficultyIndex].id,
     });
@@ -318,8 +198,7 @@ export class TrainingMenu {
     // Back / close, always present so there is never a dead end.
     p.add({ id: 'back', kind: WIDGETS.BUTTON, shape: 'rect', x: 24, y: 20, w: 120, h: 40 });
 
-    if (this.model.screen === SCREENS.CUSTOM_FEED) this.layoutCustom();
-    else this.layoutList();
+    this.layoutList();
 
     // Footer.
     const fw = 200;
@@ -343,14 +222,10 @@ export class TrainingMenu {
     // Row height is DERIVED from the space between the header and the footer,
     // not fixed. At a fixed 56 px the nine root items ran to y=684 while the
     // footer starts at 566, so the last two sat underneath the footer buttons
-    // — and because the footer is registered later it won the hit test, making
-    // "Free Play" and "Tutorial" unclickable (a click on Free Play activated
-    // PHYSICS instead). Fitting to the available height makes that structural.
-    //
-    // The cap works the other way too: with the root trimmed to four rows
-    // (Machine Play's rows and Free Play folded elsewhere), a 56 px cap left
-    // the bottom third of the panel empty. 96 px lets a short list spread
-    // into that space — bigger targets, same fit guarantee for long lists.
+    // — and because the footer is registered later it won the hit test,
+    // making them unclickable. Fitting to the available height makes that
+    // structural. The 96 px cap lets a short list (the two level rows) spread
+    // into the space — bigger targets, same fit guarantee for long lists.
     const available = (FOOTER_Y - 18) - top;
     const rowH = Math.max(
       36,
@@ -370,26 +245,6 @@ export class TrainingMenu {
     }
   }
 
-  layoutCustom() {
-    // The editor itself is shared with the Machine Play menu's settings
-    // screen (scene/feedEditor.js). The difficulty segment rides along here
-    // because it is still meaningful on this screen: it selects the AI tier
-    // the ladders and match modes use. The preset cycler is this screen's
-    // own: quick feeds and saved presets are starting points for the editor,
-    // not separate screens.
-    this._editor = layoutFeedEditor(this.panel, {
-      model: this.model,
-      difficulties: this.difficulties,
-      canvasW: CANVAS_W,
-      bodyY: BODY_Y,
-      showSave: true,
-      presetRow: true,
-      // How the session ends — drill / survival / race — absorbed from the
-      // old Machine Play menu, where each end condition was a separate row.
-      endRow: true,
-    });
-  }
-
   // --- drawing --------------------------------------------------------------
 
   draw() {
@@ -400,11 +255,7 @@ export class TrainingMenu {
     ctx.fill();
 
     this.drawHeader();
-    if (this.model.screen === SCREENS.CUSTOM_FEED) this.drawCustom();
-    else {
-      this.drawList();
-      if (this.model.screen === SCREENS.REVIEW) this.drawBladeHeatmap();
-    }
+    this.drawList();
     this.drawFooter();
     this.drawPoke();
 
@@ -496,83 +347,6 @@ export class TrainingMenu {
         ctx.fillText('›', rect.x + rect.w - 22, rect.y + rect.h / 2);
       }
     }
-  }
-
-  drawCustom() {
-    if (!this._editor) return;
-    drawFeedEditor(this.ctx, this.panel, {
-      model: this.model,
-      layout: this._editor,
-      difficulties: this.difficulties,
-      difficultyIndex: this.difficultyIndex,
-      startLabel: 'START',
-      presetLabel: this.model.presetLabel,
-      endLabel: endConditionLabel(this.model.endCondition),
-    });
-  }
-
-  /**
-   * M7 Blade Heatmap — contact-point density on the paddle face.
-   *
-   * Drawn beside the weakness list rather than as a row, because it is the
-   * one piece of M7 that is genuinely spatial: "your contacts cluster low and
-   * toward the handle" is a picture, and rendering it as a sentence throws
-   * away what makes it useful.
-   */
-  drawBladeHeatmap() {
-    const log = this.model.getSessionLog ? this.model.getSessionLog() : null;
-    if (!log) return;
-    const points = log.contactPoints();
-    if (points.length === 0) return;
-
-    const ctx = this.ctx;
-    const map = bladeHeatmap(points, { bins: 9 });
-    const size = 168;
-    const x = CANVAS_W - size - 60;
-    const y = BODY_Y + 16;
-
-    ctx.fillStyle = COLORS.muted;
-    ctx.font = F(600, 14);
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'alphabetic';
-    ctx.fillText('BLADE CONTACT', x, y - 10);
-
-    // Face backdrop.
-    ctx.fillStyle = 'rgba(255,255,255,0.06)';
-    roundRect(ctx, x, y, size, size, 12);
-    ctx.fill();
-
-    const cell = size / map.bins;
-    const peak = Math.max(1, map.hotspot ? map.hotspot.count : 1);
-    for (let iy = 0; iy < map.bins; iy++) {
-      for (let ix = 0; ix < map.bins; ix++) {
-        const n = map.grid[iy][ix];
-        if (n === 0) continue;
-        // Row 0 of the grid is the BOTTOM of the blade (local y = -extent),
-        // and canvas y grows downward, so rows are drawn inverted — without
-        // this the heatmap is vertically mirrored and "low" reads as "high".
-        const px = x + ix * cell;
-        const py = y + (map.bins - 1 - iy) * cell;
-        ctx.fillStyle = `rgba(61,220,151,${0.18 + 0.72 * (n / peak)})`;
-        ctx.fillRect(px + 1, py + 1, cell - 2, cell - 2);
-      }
-    }
-
-    // Blade centre, so the offset is readable against a reference.
-    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x + size / 2, y);
-    ctx.lineTo(x + size / 2, y + size);
-    ctx.moveTo(x, y + size / 2);
-    ctx.lineTo(x + size, y + size / 2);
-    ctx.stroke();
-
-    ctx.fillStyle = COLORS.muted;
-    ctx.font = F(500, 13);
-    let note = `${map.total} contacts`;
-    if (map.offBlade > 0) note += ` · ${map.offBlade} off blade`;
-    ctx.fillText(note, x, y + size + 20);
   }
 
   drawFooter() {

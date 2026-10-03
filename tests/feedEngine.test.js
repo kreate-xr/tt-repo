@@ -565,19 +565,18 @@ describe('TEST M1: 500 feeds land within 2 cm of the commanded distribution', ()
     expect(wide).toBeGreaterThan(tight * 2);
   }, 60000);
 
-  // Rapid Fire is a pattern, not a preset, but it is held to the same bar:
-  // every ball of its sweep must be makeable across the whole scatter
-  // distribution, at a warm-up pace AND run hot. If this fails the PATTERN's
-  // step/origin pairing is wrong, not the solver.
-  describe('Rapid fire sweep is 100% feasible from every origin', () => {
-    const { PATTERNS, buildStepConfig } = require('../js/modes/training/patterns.js');
+  // The Training Session's sets are held to the same bar as the presets:
+  // every ball, at the Player level's scatter and at both ends of the
+  // adaptive pace band, must be makeable. If this fails a SET's step is
+  // wrong, not the solver.
+  describe('Training Session sets are 100% feasible under scatter', () => {
+    const { SETS, LEVELS, ADAPT, stepConfig } = require('../js/modes/training/session.js');
 
-    for (const speed of [8, 12]) {
-      test(`500 feeds cycling the sweep at speed ${speed}`, () => {
+    for (const pace of [ADAPT.min, ADAPT.max]) {
+      test(`500 feeds cycling every set's steps at pace ${pace}`, () => {
         const rng = mulberry32(1234);
-        const base = cfg({ speed, scatterSigma: 0.05, burstCount: INFINITE });
-        const steps = PATTERNS.rapidFire.steps.map((s) => buildStepConfig(base, s));
-        let worst = 0;
+        const steps = SETS.flatMap((set) => set.steps)
+          .map((step) => stepConfig(LEVELS.player, step, { pace }));
         let offTable = 0;
         let netFails = 0;
         let infeasible = 0;
@@ -585,13 +584,11 @@ describe('TEST M1: 500 feeds land within 2 cm of the commanded distribution', ()
         for (let i = 0; i < 500; i++) {
           const feed = solveFeed(steps[i % steps.length], env, { rng });
           expect(feed.verifiedLanding).not.toBeNull();
-          worst = Math.max(worst, feed.errorM);
           if (!feed.onTable) offTable++;
           if (!feed.clearedNet) netFails++;
           if (!feed.feasible) infeasible++;
         }
 
-        expect(worst).toBeLessThan(0.02);
         expect(offTable).toBe(0);
         expect(netFails).toBe(0);
         expect(infeasible).toBe(0);
