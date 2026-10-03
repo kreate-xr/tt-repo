@@ -593,16 +593,6 @@
     .field:focus { border-color: var(--brand-1); box-shadow: 0 0 0 4px rgba(79, 70, 229, 0.12); }
     .field::placeholder { color: #a6adc8; }
 
-    /* Input + button share a row until the dialog gets narrow, then stack so
-       neither is squeezed below a usable width. */
-    .field-row { display: flex; gap: 9px; align-items: stretch; margin-top: 9px; }
-    .field-row .field { margin-top: 0; flex: 1 1 auto; min-width: 0; }
-    .field-row .btn { flex: 0 0 auto; }
-    @media (max-width: 380px) {
-      .field-row { flex-direction: column; }
-      .field-row .btn { width: 100%; }
-    }
-
     .btn {
       padding: 11px 22px;
       font: inherit; font-size: 0.93rem; font-weight: 700;
@@ -623,12 +613,21 @@
     }
     .btn-ghost:hover:not(:disabled) { background: rgba(79, 70, 229, 0.07); }
 
+    .btn-send { margin-top: 22px; }
+
     .modal-status {
       margin-top: 14px;
       font-size: 0.86rem; font-weight: 600; color: var(--brand-1);
       min-height: 1.2em;
     }
     .modal-status.error { color: #dc2626; }
+
+    /* The thank-you view that stands in for the form after a send. */
+    .modal-done { text-align: center; padding: 14px 4px 4px; }
+    .done-mark { font-size: 2.6rem; line-height: 1; }
+    .done-title { margin-top: 12px; font-size: 1.3rem; font-weight: 800; color: var(--ink); }
+    .done-text { margin-top: 8px; font-size: 0.92rem; color: var(--ink-soft); line-height: 1.55; }
+    .modal-done .btn-block { margin-top: 20px; }
 
     #room-code-input {
       padding: 12px 14px;
@@ -885,6 +884,7 @@
         <p class="modal-sub" id="post-summary"></p>
       </header>
 
+      <div id="post-form">
       <section class="modal-section">
         <h3 class="field-label">How was it?</h3>
         <div class="rating-row" id="post-rating" role="radiogroup" aria-label="Rate this session">
@@ -908,24 +908,33 @@
         <label class="field-label sr-gap" for="post-feedback">Anything we should know?</label>
         <textarea id="post-feedback" class="field" rows="3" maxlength="2000"
                   placeholder="Broken, confusing, or great — all useful."></textarea>
-        <button type="button" id="post-feedback-send" class="btn btn-ghost btn-block">Send feedback</button>
       </section>
 
       <section class="modal-section bordered" id="post-signup">
         <h3 class="field-label">Get early access</h3>
-        <p class="field-note">One email when the full version is ready. Nothing else, ever.</p>
-        <div class="field-row">
-          <input id="post-email" type="email" class="field" inputmode="email"
-                 autocomplete="email" placeholder="you@example.com">
-          <button type="button" id="post-email-send" class="btn btn-primary">Join</button>
-        </div>
+        <p class="field-note">Leave your email and we'll send one message when the full version is ready. Nothing else, ever.</p>
+        <input id="post-email" type="email" class="field" inputmode="email"
+               autocomplete="email" placeholder="you@example.com (optional)">
         <p class="field-note consent">
-          By joining you agree we may email you about the launch. See our
+          By leaving your email you agree we may contact you about the launch. See our
           <a href="/privacy.html" target="_blank" rel="noopener">privacy notice</a>.
         </p>
       </section>
 
+      <!-- One button for the whole form: rating, note and email all go out
+           together, and only the parts that were filled in are sent. -->
+      <button type="button" id="post-send" class="btn btn-primary btn-block btn-send">Send</button>
+
       <p id="post-status" class="modal-status" role="status" aria-live="polite"></p>
+      </div>
+
+      <!-- Replaces the form once everything has gone through. -->
+      <div class="modal-done" id="post-done" hidden>
+        <div class="done-mark" aria-hidden="true">🏓</div>
+        <h3 class="done-title" id="post-done-title">Thank you!</h3>
+        <p class="done-text" id="post-done-text"></p>
+        <button type="button" id="post-done-close" class="btn btn-primary btn-block">Back to the game</button>
+      </div>
     </div>
   </div>
 
