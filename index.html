@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SportyXR — Table Tennis</title>
+  <title>SportyXR — Table Tennis (Beta)</title>
   <meta name="description" content="Play table tennis in mixed reality. Realistic physics, AI opponents from club to elite level, training drills, and live multiplayer — on Meta Quest.">
   <meta name="theme-color" content="#4f46e5">
   <link rel="icon" href="/favicon.ico" sizes="48x48">
@@ -30,10 +30,11 @@
   <link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
   <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
   <link rel="preconnect" href="https://securetoken.googleapis.com" crossorigin>
-  <!-- og:url / twitter:site are omitted on purpose: the production domain
-       isn't final yet. Crawlers fall back to the request URL. -->
+  <!-- twitter:site is omitted on purpose: no handle yet. og:url is the public
+       production domain (tt.sportyxr.com), not the *.web.app alias. -->
+  <meta property="og:url" content="https://tt.sportyxr.com/">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="SportyXR — Table Tennis">
+  <meta property="og:title" content="SportyXR — Table Tennis (Beta)">
   <meta property="og:description" content="Play table tennis in mixed reality. Realistic physics, AI opponents, training drills, and live multiplayer — on Meta Quest.">
   <meta property="og:image" content="/og.jpg">
   <meta property="og:image:width" content="1200">
@@ -204,6 +205,15 @@
       font-size: 0.82rem;
     }
     .badge .chip svg { width: 15px; height: 15px; }
+    /* Beta chip: amber, not brand-indigo, so it reads as a status flag and
+       not as a second feature chip beside "WebXR". */
+    .badge .chip.beta {
+      background: rgba(245, 138, 42, 0.14);
+      color: #c2410c;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-size: 0.74rem;
+    }
 
     .hero h1 {
       font-size: clamp(2rem, 4vw, 3.2rem);
@@ -669,6 +679,38 @@
       text-align: center;
     }
 
+    /* Discord row under the multiplayer panel. Kept small: it is a way to
+       find an opponent, not a third way to start a match. */
+    .mp-community {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 12px 18px;
+      margin-top: 22px;
+      padding-top: 20px;
+      border-top: 1px solid var(--line);
+      color: var(--ink-soft);
+      font-size: 0.9rem;
+      text-align: center;
+    }
+    .discord-btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 16px;
+      border-radius: 999px;
+      background: #5865f2;     /* Discord blurple */
+      color: #fff;
+      font-size: 0.88rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+      transition: background 0.15s, transform 0.15s;
+    }
+    .discord-btn:hover { background: #4752c4; transform: translateY(-1px); }
+    .discord-btn:focus-visible { outline: 3px solid rgba(88, 101, 242, 0.4); outline-offset: 2px; }
+
     .footer {
       text-align: center;
       color: #a6adc8;
@@ -745,7 +787,8 @@
               <svg viewBox="0 0 24 16" fill="currentColor"><path d="M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>
               WebXR
             </span>
-            Play Instantly in Your Browser
+            Free to Play in Your Browser
+            <span class="chip beta">Beta</span>
           </div>
 
           <h1>Table Tennis,<br><span class="grad">Anytime, Anywhere.</span></h1>
@@ -854,6 +897,20 @@
           </div>
 
           <div id="multiplayer-status"></div>
+
+          <!-- Community row: room codes only work if you have someone to
+               send one to. The Discord is where players without a second
+               headset at home find an opponent. Plain link — a navigation,
+               so the CSP's connect-src does not apply. -->
+          <div class="mp-community">
+            <span>No one to play with? Find opponents and share room codes on our Discord.</span>
+            <a class="discord-btn" href="https://discord.gg/EMqg3JDncu" target="_blank" rel="noopener">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" focusable="false">
+                <path fill="currentColor" d="M4.5 3.5h15A2.5 2.5 0 0 1 22 6v9a2.5 2.5 0 0 1-2.5 2.5H12l-4.6 3.7a.6.6 0 0 1-1-.47V17.5h-1.9A2.5 2.5 0 0 1 2 15V6a2.5 2.5 0 0 1 2.5-2.5Zm4 5.5a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Zm7 0a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3Z"/>
+              </svg>
+              Join our Discord
+            </a>
+          </div>
         </div>
       </section>
     </main>
