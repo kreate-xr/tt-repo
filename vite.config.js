@@ -68,6 +68,24 @@ export default defineConfig(({ mode, command }) => {
     // **/*.map out of the deploy. Symbolicate from your own dist, matching the
     // appVersion the session doc reports.
     sourcemap: 'hidden',
+
+    // three.js is ~600 kB minified and is needed before the first frame, so it
+    // can never leave the startup path — but it changes only when the package
+    // is bumped. In its own chunk its content hash survives every game-code
+    // deploy, so a returning headset re-fetches only the ~430 kB game half
+    // instead of the whole 1 MB bundle. Firebase is already lazy
+    // (js/analytics/session.js, js/data/submissions.js) and stays out of both.
+    rolldownOptions: {
+      output: {
+        codeSplitting: {
+          groups: [{ name: 'three', test: /[/]node_modules[/]three[/]/ }],
+        },
+      },
+    },
+    // Default is 500 kB, which the three chunk alone exceeds by design (above).
+    // 700 keeps the expected build silent while still catching a regression
+    // such as Firestore (~380 kB) getting statically imported into `index`.
+    chunkSizeWarningLimit: 700,
   },
   };
 });
