@@ -60,7 +60,7 @@ export function createBallSeamTexture() {
   // PURE WHITE BASE — do not tint this. The base is a pure multiplier on
   // material.color, so any value below 255 silently darkens every ball
   // colour the game offers. It used to be rgb(215), which cut BALL_COLORS'
-  // measured ITTF orange (#ff6600) down to ~#d75600 and made the ball read
+  // orange of the time (#ff6600) down to ~#d75600 and made the ball read
   // as burnt orange rather than tournament orange. The measurement in
   // BALL_COLORS is meaningless if this multiplies it away.
   //

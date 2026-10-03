@@ -110,11 +110,16 @@ let modelsLoaded = false;
 // instead of wagon-wheeling. Prior versions with a bare sphere suffered
 // the wagon-wheel artifact above ~15 Hz rotation.
 export const BALL_COLORS = {
-  // Measured average of ITTF-approved balls (Nittaku Premium 40+, Butterfly
-  // R40+, DHS D40+). Not a spec — ITTF rule 2.03 only says "orange, and matt"
-  // without a Pantone/hex reference — but reads correctly as tournament
-  // orange on-screen while staying close to real ball hue.
-  orange: { id: 'orange', base: '#ff6600' },
+  // Albedo of a real ITTF-approved orange 40+ (sampled from a Nittaku Nexcel
+  // photo: shadowed edge #EF8A2E / #F18723, hue ~30°, i.e. yellow-orange
+  // "apricot", never B=0). ITTF rule 2.03 only says "orange, and matt" with
+  // no Pantone/hex, but Nittaku/Butterfly/DHS all sit in this band. The
+  // previous #ff6600 (hue 24°, B=0) read as neon safety-orange rather than
+  // a matt plastic ball. This is the SHADOW-side value on purpose: the lit
+  // side gets its yellower #FABA58-ish tones from the scene lights + env
+  // wrap at render time, exactly as studio lighting does in the photo, so
+  // targeting the highlight colour here would overshoot into yellow.
+  orange: { id: 'orange', base: '#f58a2a' },
   white:  { id: 'white',  base: '#fafafa' },
 };
 
