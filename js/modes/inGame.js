@@ -72,6 +72,7 @@ import * as profileStore from '../profile/store.js';
 import { PhysicsTuner } from '../scene/physicsTuner.js';
 import { CalibrationWizard } from '../scene/calibrationWizard.js';
 import { CalibrationTuner } from '../scene/calibrationTuner.js';
+import { PaddleQuickFit } from '../scene/paddleQuickFit.js';
 import { paddleAngularVelocity } from '../physics/ball.js';
 import { update as updateTrackingLossGuard } from '../xr/trackingLossGuard.js';
 import { getProfile } from './training/difficulty.js';
@@ -721,6 +722,24 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   });
   calibTuner.on('back', onTunerBack);
 
+  // Quick Fit — what CALIBRATE opens. One screen, thumbsticks move the bat
+  // live (pollQuickFitSticks); the wizard and the stepper panel stay one tap
+  // away for players who want them. hide() commits, so onTunerBack (Done or
+  // A/X) and the hand-offs below all save the live edit.
+  const quickFit = new PaddleQuickFit();
+  scene.add(quickFit.mesh);
+  quickFit.on('back', onTunerBack);
+  quickFit.on('wizard', () => {
+    quickFit.hide();
+    currentTuner = calibWizard;
+    calibWizard.show();
+  });
+  quickFit.on('fineTune', () => {
+    quickFit.hide();
+    currentTuner = calibTuner;
+    calibTuner.show();
+  });
+
   const raycaster = new THREE.Raycaster();
   const tmpQuat = new THREE.Quaternion();
   const tmpVec = new THREE.Vector3();
@@ -789,7 +808,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   });
   // The footer shortcuts hand off to the existing panels rather than
   // reimplementing them.
-  trainingMenu.on('calibrate', () => { trainingMenu.hide(); enterTuner(calibWizard); });
+  trainingMenu.on('calibrate', () => { trainingMenu.hide(); enterTuner(quickFit); });
   // Physics tuner mutates live physics constants (gravity, drag, restitution) —
   // in multiplayer the two clients would silently disagree. Dev-only (?selftest).
   trainingMenu.on('tune', () => { if (TUNER_ENABLED) { trainingMenu.hide(); enterTuner(tuner); } });
@@ -823,7 +842,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   });
 
   wristMenu.on('tune', () => { if (TUNER_ENABLED) enterTuner(tuner); });
-  wristMenu.on('calibrate', () => enterTuner(calibWizard));
+  wristMenu.on('calibrate', () => enterTuner(quickFit));
   wristMenu.on('ballColor', ({ colorId }) => setBallColor(colorId));
   wristMenu.on('tableColor', ({ colorId }) => setTableColor(colorId));
   // Same profile key the PLAY › SETTINGS row writes; xrPaddle subscribes to
@@ -1091,6 +1110,24 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       new THREE.Vector3(0, 0, 0),
     );
     hudLog('ball served');
+  }
+
+  // --- Quick Fit thumbsticks. Only read while that panel is up, so the sticks
+  // stay free everywhere else. xr-standard mapping: axes[2]/[3] = thumbstick
+  // X/Y. Before the paddle binds there is no "paddle hand"; right is assumed,
+  // matching the right-handed default in xrPaddle.js.
+  function pollQuickFitSticks(dt) {
+    if (!session || state !== 'tuner' || currentTuner !== quickFit) return;
+    const paddleHand = xr.getActiveHandedness() || 'right';
+    let faceX = 0, batY = 0, slideY = 0;
+    for (const src of session.inputSources) {
+      const axes = src.gamepad && src.gamepad.axes;
+      if (!axes || axes.length < 4) continue;
+      if (src.handedness === paddleHand) { faceX = axes[2]; batY = axes[3]; }
+      else if (src.handedness === 'left' || src.handedness === 'right') slideY = axes[3];
+    }
+    quickFit.applyStick(faceX, batY, slideY, dt);
+    quickFit.update(dt);
   }
 
   // --- Paddle-hand A/X toggle (rising edge). Works with a single controller. ---
@@ -1519,6 +1556,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     wristMenu.update(dt);
     // Expire transient wizard messages ("hold still" prompts, etc.).
     if (calibWizard.isVisible()) calibWizard.tick(performance.now());
+    pollQuickFitSticks(dt);
 
     // Live HUD line
     if (state === 'drill' && drillInstance && !drillFinished) {
@@ -1535,7 +1573,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       // right once training gained its own sub-menu tree.
       setLiveLine(isMenuPanel(currentTuner)
         ? 'Aim laser at a row  —  trigger to select  —  A/X to close'
-        : 'Physics Tuner  —  changes apply live  —  A/X to close');
+        : currentTuner === quickFit
+          ? 'Paddle Fit  —  thumbsticks move the paddle  —  A/X to save & close'
+          : 'Physics Tuner  —  changes apply live  —  A/X to close');
     }
 
     if (state === 'drill' && !drillFinished && drillInstance && drillInstance.isFinished()) {

@@ -157,3 +157,106 @@ describe('calibration persistence (spec §C5)', () => {
     expect(raw).not.toBeNull();
   });
 });
+
+describe('per-hand storage, first-launch seed, Quick Fit', () => {
+  const {
+    setCalibration, commitCalibration, getAdjust, isUncommitted, QUICK_FIT_PRESET,
+  } = require('../js/xr/calibration.js');
+  const { applyAdjust } = require('../js/xr/paddleAdjust.js');
+  const { PRESETS } = require('../js/xr/calibrationPresets.js');
+
+  const HG = {
+    posOffset: new THREE.Vector3(0, 0.01, 0.05),
+    rotOffset: new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), 0.3),
+  };
+
+  beforeEach(() => {
+    resetStorage();
+    registerDerivedPreset('handle_grip', HG);
+    loadForProfile('__test_reset__');
+  });
+
+  test('first launch seeds the measured handle_grip fit', () => {
+    loadForProfile('fresh-profile', 'right');
+    expect(getPresetName()).toBe('handle_grip');
+    expect(getPosOffset().distanceTo(HG.posOffset)).toBeLessThan(1e-12);
+  });
+
+  test('without a registered measured fit, first launch still falls back to default', () => {
+    const saved = PRESETS.handle_grip;
+    delete PRESETS.handle_grip;
+    try {
+      loadForProfile('no-model-profile', 'right');
+      expect(getPresetName()).toBe('default');
+    } finally {
+      PRESETS.handle_grip = saved;
+    }
+  });
+
+  test('left and right hands keep independent fits under one profile string', () => {
+    loadForProfile('oculus-touch-v3', 'right');
+    setPreset('shakehand');
+    loadForProfile('oculus-touch-v3', 'left');
+    setPreset('penhold');
+
+    expect(globalThis.localStorage.getItem('p13.calibration.oculus-touch-v3.right')).not.toBeNull();
+    expect(globalThis.localStorage.getItem('p13.calibration.oculus-touch-v3.left')).not.toBeNull();
+
+    loadForProfile('oculus-touch-v3', 'right');
+    expect(getPresetName()).toBe('shakehand');
+    loadForProfile('oculus-touch-v3', 'left');
+    expect(getPresetName()).toBe('penhold');
+  });
+
+  test('legacy profile-only entry migrates to the per-hand key', () => {
+    loadForProfile('legacy-profile');          // no hand → legacy key
+    setPreset('shakehand');
+    loadForProfile('legacy-profile', 'left');
+    expect(getPresetName()).toBe('shakehand');
+    const migrated = globalThis.localStorage.getItem('p13.calibration.legacy-profile.left');
+    expect(JSON.parse(migrated).preset).toBe('shakehand');
+  });
+
+  test('live edit applies without persisting until commit', () => {
+    loadForProfile('live-profile', 'right');
+    const adj = { faceDeg: 12, batDeg: -8, slideM: 0.01 };
+    const res = applyAdjust(HG, adj);
+    setCalibration({ ...res, presetName: QUICK_FIT_PRESET, adjust: adj, persist: false });
+
+    expect(isUncommitted()).toBe(true);
+    expect(getPosOffset().distanceTo(res.posOffset)).toBeLessThan(1e-12);
+    expect(globalThis.localStorage.getItem('p13.calibration.live-profile.right')).toBeNull();
+
+    commitCalibration();
+    expect(isUncommitted()).toBe(false);
+    const after = JSON.parse(globalThis.localStorage.getItem('p13.calibration.live-profile.right'));
+    expect(after.preset).toBe(QUICK_FIT_PRESET);
+    expect(after.adjust).toEqual(adj);
+  });
+
+  test('Quick Fit reloads from the LIVE measured fit plus stored knobs', () => {
+    loadForProfile('qf-profile', 'right');
+    const adj = { faceDeg: 10, batDeg: 5, slideM: 0.02 };
+    setCalibration({ ...applyAdjust(HG, adj), presetName: QUICK_FIT_PRESET, adjust: adj });
+
+    // Model re-export changes the measured fit between sessions.
+    const HG2 = { posOffset: new THREE.Vector3(0, 0, 0.07), rotOffset: new THREE.Quaternion() };
+    registerDerivedPreset('handle_grip', HG2);
+    loadForProfile('__scramble__');
+    loadForProfile('qf-profile', 'right');
+
+    expect(getPresetName()).toBe(QUICK_FIT_PRESET);
+    expect(getAdjust()).toEqual(adj);
+    const expected = applyAdjust(HG2, adj);
+    expect(getPosOffset().distanceTo(expected.posOffset)).toBeLessThan(1e-9);
+  });
+
+  test('any manual setter clears the Quick Fit knobs', () => {
+    loadForProfile('clear-profile', 'right');
+    const adj = { faceDeg: 10, batDeg: 0, slideM: 0 };
+    setCalibration({ ...applyAdjust(HG, adj), presetName: QUICK_FIT_PRESET, adjust: adj });
+    setPosOffset(new THREE.Vector3(0, 0, 0.03));
+    expect(getPresetName()).toBe('custom');
+    expect(getAdjust()).toBeNull();
+  });
+});

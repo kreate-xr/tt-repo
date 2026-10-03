@@ -35,6 +35,9 @@ import {
   subscribe as subscribeCalibration,
   getPosOffset as getCalibPosOffset,
   getRotOffset as getCalibRotOffset,
+  isUncommitted as isCalibUncommitted,
+  QUICK_FIT_PRESET,
+  QUICK_FIT_BASE,
 } from '../xr/calibration.js';
 import { presetWeightClass } from '../xr/calibrationPresets.js';
 import {
@@ -65,7 +68,9 @@ setCalibFilterFlushHandler(resetPaddleTracking);
 subscribeCalibration(() => {
   const cls = presetWeightClass(getCalibPresetName());
   if (cls) setPaddleWeightClass(cls);
-  logCalibrationState();
+  // Quick Fit applies every stick frame without persisting; log once on the
+  // commit instead of flooding the HUD.
+  if (!isCalibUncommitted()) logCalibrationState();
 });
 
 // T_cal is persisted per device (localStorage, keyed by controller profile)
@@ -80,9 +85,14 @@ function logCalibrationState() {
   const rot = getCalibRotOffset();
   const cm = off.length() * 100;
   const deg = 2 * Math.acos(Math.min(1, Math.abs(rot.w))) * (180 / Math.PI);
-  hudLog(`[cal] preset=${getCalibPresetName()}  offset=${cm.toFixed(1)}cm  tilt=${deg.toFixed(0)}deg`);
-  if (cm > CAL_WARN_OFFSET_CM || deg > CAL_WARN_TILT_DEG) {
-    hudLog('[cal] LARGE OFFSET ACTIVE — paddle will sit away from the controller. If unintended, set calibration preset to "default" in the menu');
+  const name = getCalibPresetName();
+  hudLog(`[cal] preset=${name}  offset=${cm.toFixed(1)}cm  tilt=${deg.toFixed(0)}deg`);
+  // The measured fit (and Quick Fit on top of it) is large BY CONSTRUCTION —
+  // it moves the bat's own origin to the fist — so the stale-transform
+  // warning only applies to presets that aren't derived from the model.
+  const measured = name === QUICK_FIT_BASE || name === QUICK_FIT_PRESET;
+  if (!measured && (cm > CAL_WARN_OFFSET_CM || deg > CAL_WARN_TILT_DEG)) {
+    hudLog('[cal] LARGE OFFSET ACTIVE — paddle will sit away from the controller. If unintended, Reset in Calibrate');
   }
 }
 
@@ -279,10 +289,12 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     //
     // event.data.profiles is an ordered array (most-specific first — e.g.
     // ["oculus-touch-v3", "oculus-touch", "generic-trigger"]); the first entry
-    // is the storage key.
+    // is the storage key, scoped by paddle hand — both Quest controllers
+    // report the same profile string, and a fit tuned for one hand is
+    // mis-handed on the other.
     const profiles = (activeInputSource && activeInputSource.profiles) || [];
     if (profiles[0]) {
-      try { loadCalibForProfile(profiles[0]); }
+      try { loadCalibForProfile(profiles[0], activeHandedness); }
       catch (e) { hudLog('calibration load failed: ' + (e && e.message)); }
     }
     // Announce the T_cal in effect for this binding even when loadForProfile
