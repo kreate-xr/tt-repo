@@ -13,7 +13,9 @@
     "test": "jest",
     "test:rules": "firebase emulators:exec --only firestore --project demo-rules-test \"jest -c tests-rules/jest.config.cjs\"",
     "lint": "eslint .",
-    "test:e2e": "node e2e/run.mjs"
+    "test:e2e": "node e2e/run.mjs",
+    "dev:local": "node scripts/dev-local.mjs",
+    "dev:local:expire": "node scripts/dev-local-expire.mjs"
   },
   "engines": {
     "node": ">=20.19"

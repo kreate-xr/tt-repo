@@ -26,3 +26,6 @@ ngrok.yml
 
 # e2e screenshots (e2e/accounts.e2e.mjs)
 e2e/.artifacts/
+
+# Firebase emulator data for npm run dev:local
+.emulator-data/
