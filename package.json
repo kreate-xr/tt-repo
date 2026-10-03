@@ -4,7 +4,11 @@
   "private": true,
   "scripts": {
     "dev": "vite",
+    "dev:prod": "vite --mode prod",
     "build": "vite build",
+    "build:prod": "vite build --mode prod",
+    "deploy:test": "vite build && firebase deploy --only hosting,firestore:rules --project test",
+    "deploy:prod": "vite build --mode prod && firebase deploy --only hosting,firestore:rules --project prod",
     "preview": "vite preview",
     "test": "jest",
     "test:rules": "firebase emulators:exec --only firestore --project demo-rules-test \"jest -c tests-rules/jest.config.cjs\"",
