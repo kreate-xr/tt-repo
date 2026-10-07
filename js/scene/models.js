@@ -5,16 +5,8 @@ import { SELF_TEST } from './hud.js';
 import { detectDiscCollision } from '../physics/collisions.js';
 // compositeSpinMarkings stamps spin-legibility markings (cert dots + faint
 // arcs) onto Ball.glb's baked base-color map at load — the authored map is a
-// near-uniform gray whose rotation is invisible without them. The procedural
-// createBallSeamTexture is only used by the commented-out fallback ball.
+// near-uniform gray whose rotation is invisible without them.
 import { compositeSpinMarkings } from './ballTexture.js';
-// import { createBallSeamTexture } from './ballTexture.js';
-// TEMP (headset A/B): both depth cues are disabled at their call sites below,
-// so their imports are commented out too — same convention as the fallback
-// ball texture above and the parked desktop mode in js/main.js. Restore these
-// two lines together with the createBallShadow/createBallGhost calls.
-// import { createBallShadow } from './ballShadow.js';
-// import { createBallGhost } from './ballGhost.js';
 import { refineBallGeometry } from './ballGeometry.js';
 import { ballEnvMap } from './sceneSetup.js';
 import { enhancePaddleMaterial } from './paddleMaterial.js';
@@ -46,14 +38,6 @@ function useGlbPaddle() {
   if (typeof location === 'undefined') return true;
   return new URLSearchParams(location.search).get('paddle') !== 'procedural';
 }
-
-// Previous selection — procedural by default, GLB behind `?paddle=glb`. Kept
-// commented rather than deleted so flipping the default back is a one-line
-// swap if the new asset regresses in headset.
-// function useGlbPaddle() {
-//   if (typeof location === 'undefined') return false;
-//   return new URLSearchParams(location.search).get('paddle') === 'glb';
-// }
 
 // Model refs (assigned in loadModels). Live ESM bindings — readers see updates.
 export let paddleModel = null;
@@ -769,9 +753,9 @@ export async function loadModels(loadingScreen, statusEl) {
     // which reads as a polygon instead of a circle in the last ~30 cm before
     // paddle contact. Subdivide-and-reproject to ≥3000 tris at load (see
     // ballGeometry.js). MUST run here, before the squash system caches vertex
-    // positions and before createBallGhost captures the geometry reference,
-    // so every consumer sees the refined buffer. Radius is preserved exactly,
-    // so the 40 mm physics/visual match check below is unaffected.
+    // positions, so every consumer sees the refined buffer. Radius is
+    // preserved exactly, so the 40 mm physics/visual match check below is
+    // unaffected.
     for (const mesh of ballMeshes) {
       const refined = refineBallGeometry(mesh.geometry);
       if (refined !== mesh.geometry) {
@@ -846,34 +830,9 @@ export async function loadModels(loadingScreen, statusEl) {
       mesh.castShadow = false;
       mesh.receiveShadow = false;
     }
-    // Only consumer is the parked createBallGhost call below — restore with it.
-    // const ballMesh = ballMeshes[0];
     ballModel.add(ballRoot);
     ballModel.visible = false;
     scene.add(ballModel);
-
-    // Previous ball — a procedural 32×24 sphere carrying the generated
-    // seam+logo texture from scene/ballTexture.js. Superseded by Ball.glb.
-    // NOTE: an earlier version of this comment claimed the GLB "bakes an
-    // equivalent off-axis marking into its own map" — it does not (measured:
-    // near-uniform gray, one logo on one hemisphere, nothing on the other),
-    // which is why compositeSpinMarkings above adds the rotational-symmetry
-    // break at load. Kept commented as the fallback if the GLB is pulled.
-    // const ballGeom = new THREE.SphereGeometry(0.02, 32, 24);
-    // const ballTex  = createBallSeamTexture();
-    // const ballMat = new THREE.MeshStandardMaterial({
-    //   map: ballTex,
-    //   color: new THREE.Color(BALL_COLORS[currentBallColorId].base),
-    //   roughness: 0.6,
-    //   metalness: 0.0,
-    //   envMap: ballEnvMap,
-    //   envMapIntensity: 0.40,
-    //   toneMapped: true,
-    // });
-    // const ballMesh = new THREE.Mesh(ballGeom, ballMat);
-    // ballMesh.castShadow = false;
-    // ballMesh.receiveShadow = false;
-    // ballModel.add(ballMesh);
 
     // Register every ball mesh for wrist-menu color swap (setBallColor mutates
     // mat.color on every entry). The GLB authors no baseColorFactor, so its
@@ -905,27 +864,6 @@ export async function loadModels(loadingScreen, statusEl) {
         `${ballRadius} m — re-export the asset at 40 mm diameter.`);
     }
     logInfo('Ball radius:', ballRadius, '(Ball.glb measured', measuredRadius.toFixed(4), ')');
-
-    // Blob shadow — soft radial-gradient quad on the table surface that
-    // follows the ball's XZ and fades/shrinks with height. Load-bearing
-    // depth cue for a 4 cm object flying at the player in VR; see
-    // ballShadow.js. Needs tableSurfaceY, already extracted above, and
-    // tableBox so the blob hides once the ball leaves the table footprint
-    // instead of hanging at surface height in mid-air.
-    // TEMP (headset A/B): blob disabled to judge how the table reads without
-    // it. Skipping creation is enough — updateBallShadow/resetBallShadow both
-    // early-return while the blob is null, so no call sites need touching.
-    // createBallShadow(scene, tableSurfaceY, tableBox);
-
-    // Mirror-ghost reflection (P16 §3.2) — dim mirrored copy below the
-    // table plane, visible only when ball is within 0.5 m over the table
-    // AND within the table rect. Companion depth cue to the blob for the
-    // near-bounce moment. Needs the ball mesh (for shared geometry + map
-    // + live color) and tableBox (rect gate).
-    // TEMP (headset A/B): disabled alongside the blob so the ball carries no
-    // added ground cue at all. Same mechanism — updateBallGhost/resetBallGhost
-    // early-return while the ghost is null.
-    // createBallGhost(scene, ballMesh, tableSurfaceY, tableBox);
 
     // Net AABB — derived from NetCenter (top-center of the net) plus the
     // regulation post overhang. NetCenter.y is the *top* of the net, the

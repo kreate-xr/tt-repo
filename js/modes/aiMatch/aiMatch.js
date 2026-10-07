@@ -50,15 +50,7 @@ import { createScoreboard } from '../../scene/scoreboard.js';
 import { createMatchReport } from '../../scene/matchReport.js';
 import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
 import { mark, setMatchSummary } from '../../analytics/session.js';
-// BETA LAUNCH: stadium venue disabled (see js/ui/overlay.js) — these imports
-// are commented out so the stadium/crowd modules are tree-shaken out of the
-// shipped bundle. Restore together with the mount block further down.
-// arenaLighting is live again: the Focus Room exposes ceiling fixtures.
-// import { createStadiumScoreboard } from '../../scene/stadiumScoreboard.js';
-// import { createCrowdAudio } from '../../scene/crowdAudio.js';
-// import { createCrowdWave } from '../../scene/crowdWave.js';
 import { createArenaLighting } from '../../scene/arenaLighting.js';
-// import { createSponsorBoards } from '../../scene/sponsorBoards.js';
 import { faultRuleText } from '../../scene/faultText.js';
 import { createServeArrow } from '../../scene/serveArrow.js';
 import { createPointBurst } from '../../scene/pointBurst.js';
@@ -510,77 +502,6 @@ export function createAIMatchDrill({
       }
     }
   }
-  // BETA LAUNCH: stadium mounts disabled with the imports above. `arena` is
-  // non-null only for the Focus Room, which exposes no screens/crowd
-  // anchors, so this block still could never run; every reference below
-  // (update/dispose/event hooks) null-guards.
-  /*
-  if (arena && arena.getStadiumScreens && arena.getCrowdAnchors) {
-    const screens = arena.getStadiumScreens();
-    if (screens && screens.length > 0) {
-      stadiumScoreboard = createStadiumScoreboard({
-        screenMeshes: screens,
-        config: { bestOf },
-      });
-      if (stadiumScoreboard) {
-        hudLog(`[arena] stadium scoreboard mounted on ${stadiumScoreboard.screenCount} screen(s)`);
-      }
-    }
-    const anchors = arena.getCrowdAnchors();
-    if (anchors && anchors.length > 0 && tableBox) {
-      const tableCenterZ = (tableBox.min.z + tableBox.max.z) / 2;
-      crowdAudio = createCrowdAudio({ anchors, tableCenterZ });
-      if (crowdAudio) {
-        hudLog(`[arena] crowd audio mounted with ${crowdAudio.anchorCount} anchor(s)`);
-        // Fire the PA-style match-start anthem as soon as the MP3s decode.
-        // The first serve is delayed by NEXT_SERVE_DELAY_MS (2500ms) after
-        // rallyManager.start(), so a ~1-2s network fetch + decode still
-        // lands the anthem BEFORE the first rally begins.
-        crowdAudio.ready.then(() => {
-          if (crowdAudio && crowdAudio.isLoaded()) crowdAudio.playMatchStart();
-        });
-      }
-      // Visual counterpart to the audio: sweeping color pulse across the
-      // 24 seat sections. Same anchor list — the crowdWave module uses
-      // the .node field to walk into each section's meshes and pulse
-      // their material. tableCenter (Vector3) sorts sections by angle so
-      // the wave sweeps continuously around the ring.
-      const tableCenter = new THREE.Vector3(
-        (tableBox.min.x + tableBox.max.x) / 2,
-        0,
-        tableCenterZ,
-      );
-      crowdWave = createCrowdWave({ sections: anchors, tableCenter });
-      if (crowdWave) {
-        hudLog(`[arena] crowd wave mounted with ${crowdWave.sectionCount} section(s)`);
-        // Kick off a welcoming wave a moment after the anthem starts —
-        // 1.5s in so the audio lands first, then the visual joins.
-        setTimeout(() => {
-          if (crowdWave) crowdWave.startWave({ laps: 2, direction: 'ccw' });
-        }, 1500);
-      }
-    }
-    if (arena.getStadiumFixtures) {
-      const fixtures = arena.getStadiumFixtures();
-      if (fixtures && fixtures.length > 0) {
-        arenaLighting = createArenaLighting({ fixtures });
-        if (arenaLighting) {
-          hudLog(`[arena] reactive lighting on ${arenaLighting.fixtureCount} fixture(s)`);
-        }
-      }
-    }
-    if (arena.getBrandingBoards) {
-      const boards = arena.getBrandingBoards();
-      if (boards && boards.length > 0) {
-        sponsorBoards = createSponsorBoards({ boardMeshes: boards });
-        if (sponsorBoards) {
-          hudLog(`[arena] sponsor rotation on ${sponsorBoards.boardCount} board(s)`);
-        }
-      }
-    }
-  }
-  */
-
   // Single patch point for both scoreboard surfaces (floating/wall panel +
   // stadium TVs) so every producer below keeps them in sync with one call.
   function updateBoards(patch) {

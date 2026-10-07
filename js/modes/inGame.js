@@ -9,13 +9,7 @@ import {
   setArenaLighting, restoreARLighting,
   applyMRFallbackLighting, applyLightEstimate,
 } from '../scene/sceneSetup.js';
-// BETA LAUNCH: arena/stadium venues disabled — import commented out so the
-// venue code (and its strings) is tree-shaken out of the shipped bundle
-// entirely. Restore together with the venue picker in js/ui/overlay.js and
-// the arena block in startInGame below.
-// import { createArena, onArenaLoadProgress } from '../scene/arena.js';
-// Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline — live in
-// beta while the GLB venues above stay tree-shaken.
+// Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline.
 import { createFocusRoom } from '../scene/focusRoom.js';
 import { createMRBackdrop } from '../scene/mrBackdrop.js';
 import { warmWoodTile } from '../scene/woodFloor.js';
@@ -283,12 +277,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // Focus Room venue (js/scene/focusRoom.js). WebXR session type is fixed
   // at request time, so this is a pre-session choice, driven by the toggle
   // on the start screen.
-  //
-  // BETA LAUNCH: the GLB venues ('vr' stadium / 'vr-tt') stay disabled —
-  // restore the commented line below together with the createArena import
-  // and the full venue picker in overlay.js.
   const isVR = xrMode === 'vr-focus';
-  // const isVR = xrMode === 'vr' || xrMode === 'vr-tt' || xrMode === 'vr-focus';
   const sessionType = isVR ? 'immersive-vr' : 'immersive-ar';
   const supported = await navigator.xr.isSessionSupported(sessionType);
   if (!supported) {
@@ -590,41 +579,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     renderer.compileAsync(scene, camera)
       .catch((err) => console.warn('[XR] shader precompile failed:', err));
   }
-
-  // BETA LAUNCH: GLB venue loading stays disabled with the createArena
-  // import above ('vr' / 'vr-tt' never reach this build's isVR check).
-  // Restore into an xrMode dispatch alongside the Focus Room block.
-  /*
-  if (isVR) {
-    // createArena needs tableBox, so it can only run after loadModels.
-    arena = createArena(xrMode === 'vr-tt' ? 'tt' : 'stadium');
-    if (arena) arena.show();
-    if (arena && arena.ready) {
-      const loadingMsg = loadingScreen ? loadingScreen.querySelector('p') : null;
-      if (loadingScreen) {
-        if (loadingMsg) loadingMsg.textContent = 'Loading arena…';
-        loadingScreen.style.display = 'flex';
-      }
-      loadPanel.setText('Loading arena…');
-      const unsubscribe = onArenaLoadProgress((loaded, total, pct) => {
-        const line = `Loading arena… ${Math.floor(pct)}% ` +
-          `(${(loaded / 1e6).toFixed(1)} / ${(total / 1e6).toFixed(1)} MB)`;
-        if (loadingMsg) loadingMsg.textContent = line;
-        loadPanel.setText(line);
-      });
-      try {
-        await arena.ready;
-      } catch (err) {
-        console.error('Arena failed to load:', err);
-        unsubscribe();
-        abortEntry('Failed to load arena: ' + (err?.message || err));
-        return;
-      }
-      unsubscribe();
-      if (loadingScreen) loadingScreen.style.display = 'none';
-    }
-  }
-  */
 
   scene.remove(loadPanel.mesh);
   loadPanel.dispose();
