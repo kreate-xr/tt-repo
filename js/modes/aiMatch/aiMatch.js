@@ -180,9 +180,8 @@ function resetPlayerVelocity() {
 
 // `scoreboardAnchor` / `env` were `arenaAnchor` / `arena` pre-beta — renamed
 // because destructured keys survive minification and the beta bundle must not
-// hint at the unreleased venues. `env` is live again for the Focus Room's
-// venue handle (wall-anchored scoreboard + fixture lighting); the GLB
-// stadium mount block below stays commented out.
+// hint at the unreleased venues. `env` is the Focus Room's venue handle
+// (wall-anchored scoreboard + fixture lighting); null in MR.
 export function createAIMatchDrill({
   ballEvents, profile, xr, hooks = null, scoreboardAnchor = null, env = null,
   competition = true, bestOf: bestOfIn = null,
@@ -474,22 +473,12 @@ export function createAIMatchDrill({
   // state (so the first-serve indicator lights up before any events fire),
   // then patched from each event.
   const initialScore = rallyManager.getScore();
-  // scoreboardAnchor is populated by venues with a named back wall — the
-  // Focus Room (js/scene/focusRoom.js) and the tt-arena GLB (js/scene/
-  // arena.js getBackWallAnchor). Other modes leave it null and the
+  // scoreboardAnchor is populated by the Focus Room's back wall
+  // (js/scene/focusRoom.js getBackWallAnchor). MR leaves it null and the
   // scoreboard falls back to its floating position behind the AI baseline.
   const scoreboard = createScoreboard({ config: { bestOf }, anchor: scoreboardAnchor });
 
-  // Stadium-only enhancements. When the player is inside the broadcast-
-  // stadium venue, mirror the scoreboard onto the venue's TV / Screen /
-  // Billboard meshes so the game reads like a live-televised match, and
-  // anchor positional crowd cheers to each of the 24 audience sections.
-  // Both are no-ops in AR mode or in the tt-arena variant.
-  let stadiumScoreboard = null;
-  let crowdAudio = null;
-  let crowdWave = null;
   let arenaLighting = null;
-  let sponsorBoards = null;
   // Any venue exposing ceiling fixtures (currently the Focus Room) gets
   // celebration pulses on its light panels — pulsePoint / pulseMatchPoint /
   // celebrateMatch call sites below are live and null-guarded already.
@@ -502,11 +491,10 @@ export function createAIMatchDrill({
       }
     }
   }
-  // Single patch point for both scoreboard surfaces (floating/wall panel +
-  // stadium TVs) so every producer below keeps them in sync with one call.
+  // Single patch point for the scoreboard so every producer below goes
+  // through one call.
   function updateBoards(patch) {
     if (scoreboard) scoreboard.update(patch);
-    if (stadiumScoreboard) stadiumScoreboard.update(patch);
   }
   // Match-long stats feeding the SportyXR layout's history + stats rows.
   // gameHistory holds each finished game's final score in play order.
@@ -524,7 +512,7 @@ export function createAIMatchDrill({
   const statTracker = createMatchStats({ now: () => performance.now() });
   // The end-of-match card. Built here (hidden) rather than at match end so the
   // canvas + texture upload doesn't land on the frame that also runs the
-  // celebration lighting and crowd audio.
+  // celebration lighting.
   const report = createMatchReport();
   // Flips when the card first goes up. Gates the drill's `panel` getter (see
   // the return block) so the panel only exists once there is a match to report.
@@ -588,23 +576,6 @@ export function createAIMatchDrill({
       playFoulWhistle();
       hudLog(`[FOUL] ${faultRuleText(e.reason, e.detail)}`);
     }
-    // Crowd reaction. Escalate intensity as the game gets closer:
-    //   deuce (≥10-10) or match point → 'big'
-    //   game point (server one from taking the game) → 'medium'
-    //   otherwise 'small'
-    // Cheer fires on the WINNER's side of the arena — real venues split
-    // that way when a home crowd has favorites; here the player-side stands
-    // are the player's supporters and the AI-side are the AI's.
-    if (crowdAudio) {
-      const top = Math.max(e.playerScore, e.aiScore);
-      const isDeuce = e.playerScore >= 10 && e.aiScore >= 10;
-      const nearGame = top >= 10;
-      const intensity = (isDeuce || nearGame) ? 'big' : (top >= 8 ? 'medium' : 'small');
-      // reactToPoint plays pointWin.mp3 on the winner's stands and
-      // disapointment.mp3 on the loser's stands so both sides audibly
-      // respond to the point.
-      crowdAudio.reactToPoint(e.winner, intensity);
-    }
     // Match-point pulse: the point just scored may have brought a side to
     // match point (score 10 in the final game, one win from the match).
     // Rally manager's onPointScored fires with the CURRENT-game score
@@ -655,15 +626,6 @@ export function createAIMatchDrill({
       aiScore: 0,
       gameHistory: matchStats.gameHistory.slice(),
     });
-    // Game-end warrants a big cheer on the winner's side (bigger than a
-    // regular point). Scattered applause too — the whole arena
-    // acknowledges the game.
-    if (crowdAudio) {
-      crowdAudio.cheerForSide(e.winner, 'big');
-      setTimeout(() => crowdAudio.playScatteredApplause(), 800);
-    }
-    // One lap of the wave — quick acknowledgement, not full celebration.
-    if (crowdWave) crowdWave.startWave({ laps: 1, direction: 'ccw' });
     // Fresh game → clear serve placement history so pattern-progression
     // doesn't carry over "you served left too much LAST game" bias.
     if (server && server.resetPlacementPattern) server.resetPlacementPattern();
@@ -679,25 +641,13 @@ export function createAIMatchDrill({
     // masked the live score with a box shorter than the 270px digits, so the
     // numbers poked out under it. The result belongs on the report card
     // (showReport's title), which is where the player looks next anyway.
-    // Full-arena celebration: sustained roar on the winner's side + polite
-    // applause on the loser's side (see crowdAudio.playMatchWon).
-    if (crowdAudio) crowdAudio.playMatchWon(e.winner);
     if (arenaLighting) arenaLighting.celebrateMatch(e.winner);
-    // Match-end: 3-lap wave — sustained visual to match the sustained
-    // audio celebration. Alternates direction on the second call for a
-    // "waves crossing" effect.
-    if (crowdWave) {
-      crowdWave.startWave({ laps: 3, direction: 'ccw' });
-      setTimeout(() => {
-        if (crowdWave) crowdWave.startWave({ laps: 2, direction: 'cw' });
-      }, 700);
-    }
     // Match's over — retire the serve cue.
     if (serveArrow) serveArrow.hide();
     // End-of-match card, immediately: with the scoreboard banner gone this is
     // the only place the result is announced, so it goes up on the same frame
     // the match ends rather than after a delay that read as a hang. The
-    // celebration (crowd roar, lighting sweep) plays on behind it.
+    // celebration (lighting sweep) plays on behind it.
     statTracker.stop();
     showReport(e);
   });
@@ -749,13 +699,6 @@ export function createAIMatchDrill({
   // arrow (stays visible until launch() hides it) and buzz the paddle-hand
   // as an attention cue.
   rallyManager.on('onServeRequested', (e) => {
-    // Crowd quiets down as the server steps up — natural broadcast
-    // pattern (cheer after a point → hush before the next serve). Fades
-    // every currently-playing cheer / disappointment / anthem source over
-    // ~500ms so nothing gets hard-cut mid-word. Also fades the match-
-    // start anthem the first time this fires, which is exactly the
-    // right feel (crowd settles as the umpire calls play).
-    if (crowdAudio) crowdAudio.quietDown();
     if (e.server === 'player') {
       if (serveArrow) serveArrow.show('player');
       pulseActive(0.6, 100);
@@ -771,13 +714,8 @@ export function createAIMatchDrill({
 
   // --- Drill interface -----------------------------------------------------
   function update(dt) {
-    // Advance arena-enhancement animations. All three are cheap when idle
-    // (arenaLighting.update / crowdWave.update return immediately if no
-    // active pulse; sponsorBoards.update only redraws canvases inside
-    // the fade window).
+    // Advance venue lighting pulses (returns immediately when idle).
     if (arenaLighting) arenaLighting.update(dt);
-    if (crowdWave) crowdWave.update(dt);
-    if (sponsorBoards) sponsorBoards.update(dt);
     // Sample player paddle position each frame and update the smoothed
     // velocity EMA. Read at request-target time to feed the tactical
     // wrong-footing model.
@@ -832,11 +770,7 @@ export function createAIMatchDrill({
     clearInterval(clockTimer);
     report.dispose();
     if (scoreboard) scoreboard.dispose();
-    if (stadiumScoreboard) stadiumScoreboard.dispose();
-    if (crowdAudio) crowdAudio.dispose();
-    if (crowdWave) crowdWave.dispose();
     if (arenaLighting) arenaLighting.dispose();
-    if (sponsorBoards) sponsorBoards.dispose();
     if (serveArrow) serveArrow.dispose();
     if (pointBurst) pointBurst.dispose();
     server.dispose();

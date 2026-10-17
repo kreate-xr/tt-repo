@@ -10,12 +10,10 @@
 // tiling, so the ring is gone and the mark moved to the end walls. The floor's
 // navy court border is now what marks the court.
 //
-// Deliberately NOT an ARENA_VARIANTS entry in arena.js: that module is a
-// GLB pipeline (GLTFLoader + DRACO, download caches, async ready) and stays
-// tree-shaken out of the beta bundle. This builder is synchronous, weighs
-// nothing on the wire, and returns the exact same handle shape as
-// createArena() so every consumer (inGame.js factoryArgs, aiMatch.js,
-// session-end cleanup) works unchanged.
+// Procedural rather than a GLB: the builder is synchronous and weighs nothing
+// on the wire. Its handle (show / hide / dispose / getBackWallAnchor /
+// getStadiumFixtures) is what inGame.js factoryArgs, aiMatch.js and
+// session-end cleanup consume.
 //
 // Lighting contract. No lights are added here at all, and none can be:
 // three.js has no per-mesh light masking. In WebGLRenderer the only layer
@@ -30,8 +28,8 @@
 // This room therefore lights itself: every material sets `emissive` to its
 // own color at ROOM.SELF_LIT intensity, which is an ambient term scoped to
 // these materials and unreachable by gameplay meshes. On top of that the
-// meshes still keep ARENA_LIGHT_LAYER enabled alongside layer 0 (arena.js
-// marks venue geometry the same way, and tests assert it).
+// meshes still keep ARENA_LIGHT_LAYER enabled alongside layer 0 (marks venue
+// geometry; tests assert it).
 //
 // Screen values this produces, under hemiLight @2.2 + NeutralToneMapping.
 // A surface's value depends on which way it FACES: the hemisphere gives an
@@ -51,8 +49,7 @@
 // Barriers were listed here once; the court surround is gone and the floor
 // border band is all that marks the court now.
 //
-// The "luminaires" stay unlit meshes, same trick as the stadium's fixtures
-// (real SpotLights tanked Quest frame rate and strobed the ball's specular
+// The "luminaires" stay unlit meshes (real SpotLights tanked Quest frame rate and strobed the ball's specular
 // — arenaLighting.js header).
 
 import * as THREE from 'three';
@@ -431,8 +428,7 @@ export function createFocusRoom() {
   function show() { group.visible = true; }
   function hide() { group.visible = false; }
 
-  // Unlike arena.js (whose geometry/materials live in a cross-session GLB
-  // cache), everything here is owned by this instance — dispose it all.
+  // Everything here is owned by this instance — dispose it all.
   // Rebuilding next session is sub-millisecond.
   function dispose() {
     disposed = true;
@@ -461,9 +457,6 @@ export function createFocusRoom() {
     group,
     ready: Promise.resolve(),
     getBackWallAnchor() { return layout.backWallAnchor; },
-    getStadiumScreens() { return []; },
-    getCrowdAnchors() { return []; },
     getStadiumFixtures() { return fixtures; },
-    getBrandingBoards() { return []; },
   };
 }

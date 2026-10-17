@@ -3,20 +3,19 @@
 // inGame.js's updateMenuPlacement.
 //
 // Composition (left → right):
-//   - Left dock: how the game plays — Calibrate Paddle, Competition Rules.
+//   - Left dock: Rules (?).
 //   - Center row: three large circular mode tiles (Play / AI / Multi),
 //     each with a coloured crosshair ring, icon, main label + subtitle.
-//   - Right dock: how it looks — Table Color, Ball Color — with Dominant
-//     Hand centred beneath the pair.
+//   - Right dock: Settings (gear).
 //   - Top pills: difficulty segmented control, and match length (BEST OF).
 //   - Below the tiles: hover caption naming the dock button under the cursor.
 //   - Bottom pill: Exit.
 //
-// The two docks are deliberately the same size (2 × 56px each, sharing the
-// mode row's centreline) — a lone button on one side against a cluster on the
-// other reads as a layout that ran out of room. The hand button hangs
-// centred under the right pair (a T, not an L): a third button IN the row
-// would reach the MULTI tile's crosshair ticks.
+// Three screens share the one canvas: the main controls above, the rules
+// card behind ?, and the Settings page behind the gear — ball colour, table
+// colour, dominant hand, MR backdrop, Paddle Fit (and Tune Physics in dev
+// sessions) as a row of labelled tiles. They used to be icon-only dock
+// buttons, and the dock ran out of room for them.
 //
 // Input paths: laser raycast, plus off-hand poke via inGame.js's
 // updatePokeInput. Both flow through hitTestUV, which supports circles
@@ -112,15 +111,7 @@ const chordHalf = (r, dy) => Math.sqrt(Math.max(0, r * r - dy * dy));
 // Wording is "what it does", not "what it is", because that is the question
 // a player hovering an unfamiliar icon is actually asking.
 const DOCK_CAPTIONS = {
-  tune:       'Tune Physics  —  live A/B on ball & paddle constants',
-  calibrate:  'Calibrate Paddle  —  align the bat with your controller',
-  ballColor:  'Ball Color  —  orange or white, both ITTF legal',
-  tableColor: 'Table Color  —  blue or green, both ITTF approved',
-  // Stateful: the live line is composed in drawDockCaption so it names the
-  // CURRENT hand, which the icon alone shows only as one letter.
-  dominantHand: 'Dominant Hand  —  which hand holds the paddle',
-  // Stateful like the hand: the live line says whether the screen is up.
-  mrBackdrop: 'Backdrop  —  a screen behind the far end that hides your room',
+  settings:   'Settings  —  ball, table, hand, backdrop, paddle fit',
   help:       'Rules  —  how the serve, the rally and the score are judged',
 };
 
@@ -435,6 +426,28 @@ const ICONS = {
   },
 };
 
+const capitalize = (s) => (s ? s[0].toUpperCase() + s.slice(1) : '');
+
+// The Settings page's tiles, in display order. Ids are the same ones the dock
+// buttons used, so activate() and every listener in inGame.js are unchanged.
+// `value(menu)` is read on every draw — like the swatch icons, each tile
+// reports the CURRENT state, which can also change from PLAY › SETTINGS or
+// first-swing detection. `when` gates the session-specific tiles.
+const SETTINGS_TILES = [
+  { id: 'ballColor',    icon: 'ballSwatch',  label: 'Ball Color',
+    value: () => capitalize(getBallColorId()) },
+  { id: 'tableColor',   icon: 'tableSwatch', label: 'Table Color',
+    value: () => capitalize(getTableColorId()) },
+  { id: 'dominantHand', icon: 'hand',        label: 'Dominant Hand',
+    value: (m) => (m.getDominantHand() === 'L' ? 'Left' : 'Right') },
+  { id: 'mrBackdrop',   icon: 'backdrop',    label: 'Backdrop',
+    value: (m) => (m.getBackdropOn() ? 'On' : 'Off'), when: (m) => m.showBackdrop },
+  { id: 'calibrate',    icon: 'paddle',      label: 'Paddle Fit',
+    value: (m) => (m._driftFlagCache ? 'Recheck ›' : 'Adjust ›') },
+  { id: 'tune',         icon: 'gear',        label: 'Tune Physics',
+    value: () => 'Dev ›', when: (m) => m.showTune },
+];
+
 export class WristMenu {
   // `getDominantHand` reports the current 'L' / 'R' for the hand button's
   // icon and caption. Read on every draw rather than copied: the setting
@@ -526,12 +539,12 @@ export class WristMenu {
     this._diffPill = null;
     this._formatPill = null;
 
-    // The rules card is a second SCREEN on the same canvas, not an overlay:
-    // it replaces the button set and the chrome rather than floating over
-    // them. A translucent panel of text on top of a panel of controls is
-    // unreadable in a headset, where the whole thing is already being read
-    // through passthrough.
-    this.helpOpen = false;
+    // The rules card and the Settings page are SCREENS on the same canvas,
+    // not overlays: each replaces the button set and the chrome rather than
+    // floating over them. A translucent panel of text on top of a panel of
+    // controls is unreadable in a headset, where the whole thing is already
+    // being read through passthrough. 'main' | 'help' | 'settings'.
+    this.screen = 'main';
 
     this.buttons = [];
     this.layoutButtons();
@@ -574,22 +587,30 @@ export class WristMenu {
     this.mesh.scale.setScalar(1);
     // Reopening the menu lands on the main screen. A player who closed it
     // while reading the rules wants the controls back next time, not the
-    // card they already read.
-    if (this.helpOpen) {
-      this.helpOpen = false;
+    // card they already read. (inGame.js reopens Settings explicitly after
+    // Paddle Fit, which was launched from there.)
+    if (this.screen !== 'main') {
+      this.screen = 'main';
       this.layoutButtons();
     }
   }
 
+  get helpOpen() { return this.screen === 'help'; }
+  get settingsOpen() { return this.screen === 'settings'; }
+
   // Swap screens: relay the buttons out, drop any hover held on a control
   // that no longer exists, and repaint.
-  setHelpOpen(open) {
-    if (this.helpOpen === open) return;
-    this.helpOpen = open;
+  setScreen(screen) {
+    if (this.screen === screen) return;
+    this.screen = screen;
     this.hovered = null;
     this.hoverProgress = 0;
     this.layoutButtons();
     this.draw();
+  }
+  setHelpOpen(open) {
+    if (open) this.setScreen('help');
+    else if (this.screen === 'help') this.setScreen('main');
   }
   isVisible() { return this.mesh.visible; }
 
@@ -659,16 +680,18 @@ export class WristMenu {
     // rules card's BACK pill and keep them clickable.
     this.buttons = [];
 
-    // Rules screen: one BACK pill and nothing else. Nulling the pill chrome
-    // is what keeps the difficulty/format containers from painting through
-    // from the main screen — draw() gates on those fields, not on helpOpen.
-    if (this.helpOpen) {
+    // Rules and Settings screens: their own content plus one BACK pill.
+    // Nulling the pill chrome is what keeps the difficulty/format containers
+    // from painting through from the main screen — draw() gates on those
+    // fields, not on the screen.
+    if (this.screen !== 'main') {
       this._diffPill = null;
       this._formatPill = null;
+      if (this.screen === 'settings') this.layoutSettingsTiles();
       const BACK_W = 110;
       const BACK_H = 34;
       this.buttons.push({
-        id: 'help-close', kind: 'exit', label: 'BACK',
+        id: this.screen === 'help' ? 'help-close' : 'settings-close', kind: 'exit', label: 'BACK',
         shape: 'rect', x: (CANVAS_W - BACK_W) / 2, y: CANVAS_H - BACK_H - 20,
         w: BACK_W, h: BACK_H,
       });
@@ -745,89 +768,26 @@ export class WristMenu {
       });
     }
 
-    // --- Docks: a pair of 56px buttons on each side, sharing the mode row's
-    // centreline. The two sides used to be one button on the left against
-    // three on the right arranged in an L (two across, one hanging below
-    // centred), which read as an unfinished layout rather than a deliberate
-    // one — the eye has nothing to pair the lone left button with.
-    //
-    // The split is by what the button changes, so each side is one idea:
-    //   left  — how the game plays (calibrate the bat, competition rules)
-    //   right — how the table looks (table colour, ball colour)
+    // --- Docks: one 56px button on each side, on the mode row's centreline,
+    // each centred where the old pair of buttons was. Rules on the left,
+    // Settings on the right; everything Settings holds used to be icon-only
+    // dock buttons here (see SETTINGS_TILES). Both clear the mode row's
+    // crosshair ticks (x ≈ 202…822) by 80px.
     const DOCK = 56;
     const DOCK_GAP = 8;
     const DOCK_Y = CIRCLE_Y - DOCK / 2;
     const DOCK_MARGIN = 32;
-    // Outer edges clear the mode row's crosshair ticks (which span
-    // x ≈ 202…822) by 50px on both sides.
-    const leftX  = DOCK_MARGIN;
-    const rightX = CANVAS_W - DOCK_MARGIN - DOCK;
+    const leftX  = DOCK_MARGIN + (DOCK + DOCK_GAP) / 2;
+    const rightX = CANVAS_W - DOCK_MARGIN - DOCK - (DOCK + DOCK_GAP) / 2;
 
-    this.buttons.push({
-      id: 'calibrate', kind: 'dock', icon: 'paddle',
-      shape: 'rect', x: leftX, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
-    });
-    // The competition-rules trophy used to sit here. It is gone — ITTF rules
-    // are always on, so it had nothing left to toggle — and the slot goes to
-    // the rules card, which keeps the left dock as "how the game plays" and
-    // keeps the pair-per-side balance the layout was built around.
     this.buttons.push({
       id: 'help', kind: 'dock', icon: 'help',
-      shape: 'rect', x: leftX + DOCK + DOCK_GAP, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
-    });
-    // Both swatch icons render in the CURRENT colour, so each button reports
-    // its own state and needs no label. Clicks cycle the *_COLOR_ORDER lists
-    // (orange ↔ white ball, blue ↔ green table — all ITTF legal).
-    this.buttons.push({
-      id: 'tableColor', kind: 'dock', icon: 'tableSwatch',
-      shape: 'rect', x: rightX - DOCK - DOCK_GAP, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
+      shape: 'rect', x: leftX, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
     });
     this.buttons.push({
-      id: 'ballColor', kind: 'dock', icon: 'ballSwatch',
+      id: 'settings', kind: 'dock', icon: 'gear',
       shape: 'rect', x: rightX, y: DOCK_Y, w: DOCK, h: DOCK, radius: 15,
     });
-    // Dominant hand sits with the two swatches — the player-facing "set up
-    // my game" cluster — rather than three screens deep in PLAY › SETTINGS
-    // (which keeps its row; both write the same profile key). Centred under
-    // the pair: a third button in the row would overlap the MULTI tile's
-    // crosshair ticks (x ≈ 822), and hanging it flush under `ballColor`
-    // would clip the capsule's rounded end. At y = 252…308 it clears the
-    // caption line (text from y ≈ 323) and the capsule boundary (x ≈ 992 at
-    // that height) with room to spare.
-    this.buttons.push({
-      id: 'dominantHand', kind: 'dock', icon: 'hand',
-      shape: 'rect', x: rightX - (DOCK + DOCK_GAP) / 2,
-      y: DOCK_Y + DOCK + DOCK_GAP, w: DOCK, h: DOCK, radius: 15,
-    });
-    // Passthrough backdrop, MR sessions only: beside the hand button on its
-    // row, toward the centre. It belongs on this side — it is how the game
-    // LOOKS — and this is the one slot left there: the top pair is bounded
-    // by the capsule's end (x ≈ 992) and the hand's slot cannot move without
-    // re-deriving the layout above. At x = 840…896 it clears the MULTI
-    // tile's ring (which reaches x ≈ 799 at this height) by 40px. Same as
-    // the dev-only Tune button, the layout is unchanged when it is absent.
-    if (this.showBackdrop) {
-      this.buttons.push({
-        id: 'mrBackdrop', kind: 'dock', icon: 'backdrop',
-        shape: 'rect', x: rightX - (DOCK + DOCK_GAP) / 2 - DOCK - DOCK_GAP,
-        y: DOCK_Y + DOCK + DOCK_GAP, w: DOCK, h: DOCK, radius: 15,
-      });
-    }
-
-    // Tune Physics exists only in dev sessions (?tuner / ?selftest — see
-    // TUNER_ENABLED), so it gets the odd slot rather than displacing a
-    // shipping button: centred under the left pair, mirroring the hand
-    // button on the right, and costing the production layout nothing. It
-    // cannot go beside them — a third button in that row reaches the PLAY
-    // tile's ticks — nor flush under `calibrate`, whose bottom-left corner
-    // would clip the capsule's rounded end at x = 32.
-    if (this.showTune) {
-      this.buttons.push({
-        id: 'tune', kind: 'dock', icon: 'gear',
-        shape: 'rect', x: leftX + (DOCK + DOCK_GAP) / 2,
-        y: DOCK_Y + DOCK + DOCK_GAP, w: DOCK, h: DOCK, radius: 15,
-      });
-    }
 
     // --- Bottom exit pill ---
     const EXIT_W = 100;
@@ -835,6 +795,28 @@ export class WristMenu {
     this.buttons.push({
       id: 'exit', kind: 'exit', label: 'EXIT',
       shape: 'rect', x: (CANVAS_W - EXIT_W) / 2, y: CANVAS_H - EXIT_H - 20, w: EXIT_W, h: EXIT_H,
+    });
+  }
+
+  // One centred row of tiles between the title and the BACK pill. Width is
+  // derived from the tile count (4 in VR, 5 in MR, +1 in dev sessions) inside
+  // a margin that clears the capsule's rounded ends at the tiles' top and
+  // bottom edges (≈ 20px inset at y = 120), so no count clips.
+  layoutSettingsTiles() {
+    const tiles = SETTINGS_TILES.filter((t) => !t.when || t.when(this));
+    const MARGIN = 70;
+    const GAP = 18;
+    const TILE_MAX_W = 150;
+    const TILE_Y = 120;
+    const TILE_H = 180;
+    const w = Math.min(TILE_MAX_W, (CANVAS_W - MARGIN * 2 - GAP * (tiles.length - 1)) / tiles.length);
+    const rowW = tiles.length * w + (tiles.length - 1) * GAP;
+    const x0 = (CANVAS_W - rowW) / 2;
+    tiles.forEach((t, i) => {
+      this.buttons.push({
+        id: t.id, kind: 'tile', icon: t.icon, label: t.label, tile: t,
+        shape: 'rect', x: x0 + i * (w + GAP), y: TILE_Y, w, h: TILE_H, radius: 18,
+      });
     });
   }
 
@@ -902,14 +884,15 @@ export class WristMenu {
       ctx.restore();
     }
 
-    if (this.helpOpen) this.drawHelp();
+    if (this.screen === 'help') this.drawHelp();
+    else if (this.screen === 'settings') this.drawScreenTitle('SETTINGS');
 
     // --- Buttons pass ---
     for (const b of this.buttons) {
       this.drawButton(b);
     }
 
-    if (!this.helpOpen) this.drawDockCaption();
+    if (this.screen === 'main') this.drawDockCaption();
 
     // Poke cursor.
     if (this.pokeCursor) {
@@ -946,30 +929,15 @@ export class WristMenu {
     const ctx = this.ctx;
     const MARGIN = 58;
     const colW = (CANVAS_W - MARGIN * 2) / RULES_COLUMNS.length;
-    const TITLE_Y = 52;
     const HEAD_Y = 108;
     const FIRST_BULLET_Y = 146;
     const BULLET_STEP = 34;
     const DOT_R = 3;
 
+    this.drawScreenTitle('ITTF RULES');
+
     ctx.save();
     ctx.textBaseline = 'middle';
-
-    ctx.textAlign = 'center';
-    ctx.fillStyle = ACCENT;
-    ctx.font = `700 24px ${FONT_FAMILY}`;
-    if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
-    ctx.fillText('ITTF RULES', CANVAS_W / 2, TITLE_Y);
-    if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
-
-    // Hairline under the title, fading at both ends so it doesn't collide
-    // with the capsule's curve.
-    const rule = ctx.createLinearGradient(MARGIN, 0, CANVAS_W - MARGIN, 0);
-    rule.addColorStop(0, 'rgba(255,255,255,0)');
-    rule.addColorStop(0.5, 'rgba(255,255,255,0.16)');
-    rule.addColorStop(1, 'rgba(255,255,255,0)');
-    ctx.fillStyle = rule;
-    ctx.fillRect(MARGIN, TITLE_Y + 24, CANVAS_W - MARGIN * 2, 1);
 
     RULES_COLUMNS.forEach((col, i) => {
       const x = MARGIN + colW * i + 18;
@@ -998,6 +966,32 @@ export class WristMenu {
     ctx.restore();
   }
 
+  // Accent title plus a hairline under it, shared by the rules card and the
+  // Settings page so the two secondary screens read as one family.
+  drawScreenTitle(title) {
+    const ctx = this.ctx;
+    const MARGIN = 58;
+    const TITLE_Y = 52;
+    ctx.save();
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    ctx.fillStyle = ACCENT;
+    ctx.font = `700 24px ${FONT_FAMILY}`;
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '3px';
+    ctx.fillText(title, CANVAS_W / 2, TITLE_Y);
+    if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+
+    // Hairline under the title, fading at both ends so it doesn't collide
+    // with the capsule's curve.
+    const rule = ctx.createLinearGradient(MARGIN, 0, CANVAS_W - MARGIN, 0);
+    rule.addColorStop(0, 'rgba(255,255,255,0)');
+    rule.addColorStop(0.5, 'rgba(255,255,255,0.16)');
+    rule.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = rule;
+    ctx.fillRect(MARGIN, TITLE_Y + 24, CANVAS_W - MARGIN * 2, 1);
+    ctx.restore();
+  }
+
   // One line naming the dock button under the cursor. Drawn after the button
   // pass so it is never overdrawn, and only while something is hovered — an
   // always-on caption would be dead text for the 90% of the time the laser
@@ -1007,16 +1001,7 @@ export class WristMenu {
     // Falls back to the service law rather than going blank — see
     // SERVE_RULE_CAPTION. Hovering a dock button still wins, because that is
     // an answer to a question the player just asked.
-    let text = (b && DOCK_CAPTIONS[b.id]) || SERVE_RULE_CAPTION;
-    if (b && b.id === 'dominantHand') {
-      const hand = this.getDominantHand() === 'L' ? 'Left' : 'Right';
-      text = `Dominant Hand  —  ${hand}  ·  tap to switch, the paddle follows`;
-    }
-    if (b && b.id === 'mrBackdrop') {
-      text = this.getBackdropOn()
-        ? 'Backdrop  —  On  ·  tap to see your room past the far end again'
-        : 'Backdrop  —  Off  ·  tap for a screen behind the far end that hides your room';
-    }
+    const text = (b && DOCK_CAPTIONS[b.id]) || SERVE_RULE_CAPTION;
 
     const ctx = this.ctx;
     ctx.save();
@@ -1041,6 +1026,7 @@ export class WristMenu {
       case 'segment': return this.drawSegment(b, hp, pp);
       case 'format':  return this.drawSegment(b, hp, pp);
       case 'dock':    return this.drawDock(b, hp, pp);
+      case 'tile':    return this.drawTile(b, hp, pp);
       case 'exit':    return this.drawExit(b, hp, pp);
     }
   }
@@ -1211,9 +1197,44 @@ export class WristMenu {
     ctx.fillStyle = hp > 0 ? COLORS.chromeHoverBg : COLORS.chromeBg;
     ctx.fill();
     ctx.restore();
-    // Every dock button is now stateless — the accent wash and the ON/OFF
-    // icon tint that lived here existed only for the competition-rules
-    // trophy, which is gone.
+    const drawIcon = ICONS[b.icon];
+    if (drawIcon) drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, COLORS.chromeText);
+    // Calibration drift badge (spec §C8). Paddle Fit lives behind the gear
+    // now, so the gear carries the hint on the main screen and the tile
+    // carries it inside Settings.
+    if (b.id === 'settings' && this._driftFlagCache) this.drawDriftBadge(b.x + b.w - 8, dy + 8);
+  }
+
+  drawDriftBadge(x, y) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.fillStyle = '#ffcc33';
+    ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y, 7, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Settings tile: the dock button's chrome at tile size, with the icon on
+  // top, the setting's name, and its CURRENT value in the accent colour —
+  // the label the 56px dock buttons never had room for.
+  drawTile(b, hp, pp) {
+    const ctx = this.ctx;
+    const lift = -2 * hp + 1 * pp;
+    const dy = b.y + lift;
+    const cx = b.x + b.w / 2;
+    ctx.save();
+    ctx.shadowColor = COLORS.buttonShadow;
+    ctx.shadowBlur = 8 + 6 * hp;
+    ctx.shadowOffsetY = 3 + 1 * hp;
+    roundRectPath(ctx, b.x, dy, b.w, b.h, b.radius || 18);
+    ctx.fillStyle = hp > 0 ? COLORS.chromeHoverBg : COLORS.chromeBg;
+    ctx.fill();
+    ctx.restore();
+
     const drawIcon = ICONS[b.icon];
     if (drawIcon) {
       // The hand letter and the backdrop screen are the icons whose state
@@ -1221,21 +1242,23 @@ export class WristMenu {
       let state;
       if (b.id === 'dominantHand') state = this.getDominantHand();
       else if (b.id === 'mrBackdrop') state = !!this.getBackdropOn();
-      drawIcon(ctx, b.x + b.w / 2, dy + b.h / 2, b.w * 0.62, COLORS.chromeText, state);
-    }
-    // Calibration drift badge (spec §C8) — small yellow dot on top-right
-    // of the calibrate button when the drift detector suggests recalibration.
-    if (b.id === 'calibrate' && this._driftFlagCache) {
       ctx.save();
-      ctx.fillStyle = '#ffcc33';
-      ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(b.x + b.w - 8, dy + 8, 7, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
+      drawIcon(ctx, cx, dy + 64, 64, COLORS.chromeText, state);
       ctx.restore();
     }
+
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = COLORS.chromeText;
+    ctx.font = `700 17px ${FONT_FAMILY}`;
+    ctx.fillText(b.label, cx, dy + 126, b.w - 16);
+    ctx.fillStyle = ACCENT;
+    ctx.font = `600 16px ${FONT_FAMILY}`;
+    ctx.fillText(b.tile.value(this), cx, dy + 152, b.w - 16);
+    ctx.restore();
+
+    if (b.id === 'calibrate' && this._driftFlagCache) this.drawDriftBadge(b.x + b.w - 12, dy + 12);
   }
 
   // Same pill geometry as EXIT but in the accent colour — it is an entry
@@ -1317,6 +1340,14 @@ export class WristMenu {
       this.setHelpOpen(false);
       return;
     }
+    if (button.id === 'settings') {
+      this.setScreen('settings');
+      return;
+    }
+    if (button.id === 'settings-close') {
+      this.setScreen('main');
+      return;
+    }
     if (button.kind === 'segment') {
       this.selectedDifficultyIndex = button.index;
       this.draw();
@@ -1353,15 +1384,15 @@ export class WristMenu {
       }
       return;
     }
-    if (button.kind === 'dock' && button.id === 'tune') {
+    if (button.id === 'tune') {
       this.emit('tune');
       return;
     }
-    if (button.kind === 'dock' && button.id === 'calibrate') {
+    if (button.id === 'calibrate') {
       this.emit('calibrate');
       return;
     }
-    if (button.kind === 'dock' && button.id === 'tableColor') {
+    if (button.id === 'tableColor') {
       const currentId = getTableColorId();
       const idx = TABLE_COLOR_ORDER.indexOf(currentId);
       const nextId = TABLE_COLOR_ORDER[(idx + 1) % TABLE_COLOR_ORDER.length];
@@ -1369,7 +1400,7 @@ export class WristMenu {
       this.draw();  // refresh the swatch to the new color
       return;
     }
-    if (button.kind === 'dock' && button.id === 'ballColor') {
+    if (button.id === 'ballColor') {
       const currentId = getBallColorId();
       const idx = BALL_COLOR_ORDER.indexOf(currentId);
       const nextId = BALL_COLOR_ORDER[(idx + 1) % BALL_COLOR_ORDER.length];
@@ -1377,7 +1408,7 @@ export class WristMenu {
       this.draw();  // refresh the swatch to the new color
       return;
     }
-    if (button.kind === 'dock' && button.id === 'dominantHand') {
+    if (button.id === 'dominantHand') {
       // Two values, so a tap is a toggle. The store coerces anything odd back
       // to a legal value, and the redraw reads the result through the getter
       // rather than assuming the write took.
@@ -1386,7 +1417,7 @@ export class WristMenu {
       this.draw();  // refresh the letter / bat side and the caption
       return;
     }
-    if (button.kind === 'dock' && button.id === 'mrBackdrop') {
+    if (button.id === 'mrBackdrop') {
       // A toggle: emits the OTHER state, and the redraw reads the result
       // back through the getter once inGame.js has stored it.
       this.emit('mrBackdrop', { on: !this.getBackdropOn() });

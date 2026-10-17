@@ -39,3 +39,21 @@ export function paddleHandFromSetting(setting) {
 export function shouldSwitchPaddleHand(currentHand, incomingHand, preferredHand) {
   return incomingHand === preferredHand && currentHand !== preferredHand;
 }
+
+/**
+ * Can the paddle be bound to this grip slot right now?
+ *
+ * Needs BOTH a live XRInputSource on the slot and a posed grip (non-zero
+ * translation in `matrixElements`, a column-major Matrix4 `elements` array).
+ * The pose alone is not enough: three.js's WebXRController.disconnect() only
+ * hides the grip, it never clears its matrix, so a slot whose controller left
+ * during the Quest system menu still carries its last pose. Binding to that
+ * dead slot with no handedness was the wrong-hand-after-Meta-button bug — the
+ * returning left controller re-used the slot, inherited the paddle, and the
+ * stale 'right' handedness blocked every attempt to move it back.
+ */
+export function isGripBindable(inputSource, matrixElements) {
+  if (!inputSource || !matrixElements) return false;
+  const e = matrixElements;
+  return Math.abs(e[12]) > 1e-4 || Math.abs(e[13]) > 1e-4 || Math.abs(e[14]) > 1e-4;
+}

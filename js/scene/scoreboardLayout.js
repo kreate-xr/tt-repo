@@ -1,9 +1,7 @@
 // Shared "SportyXR" broadcast scoreboard layout, drawn onto a 2D canvas.
 //
-// Both scoreboard surfaces — the floating/wall panel (scoreboard.js) and the
-// stadium's built-in TV meshes (stadiumScoreboard.js) — render the exact same
-// layout; only the mesh/material plumbing differs. This module owns the
-// canvas drawing and the default state shape so the two can never drift.
+// The floating/wall panel (scoreboard.js) renders this layout; this module
+// owns the canvas drawing and the default state shape.
 //
 // Layout (canvas 2048×1024, esport-broadcast style):
 //   ┌──────────────────────────────────────────────────────┐
@@ -18,9 +16,8 @@
 //   │      102             15:42             120            │
 //   └──────────────────────────────────────────────────────┘
 //
-// The canvas is 16:9 — same as the SportyXR mock AND the stadium's Screen
-// quad (1.359×0.770 m in the GLB), so the venue TV shows it without any
-// stretch. The floating panel derives its physical height from this ratio.
+// The canvas is 16:9 — same as the SportyXR mock. The floating panel derives
+// its physical height from this ratio.
 // 2048-wide rather than the old 1024 — this layout is much denser, and the
 // games/stats rows need the extra texels to stay crisp at VR distances.
 
@@ -351,8 +348,8 @@ export function renderScoreboardLayout(ctx, state, opts = {}) {
   drawStat(ctx, 777, statY, 'bolt', GREEN, 'TOP SPEED', String(Math.round(state.topSpeedKmh)), 'KM/H');
   // The floating panel draws the time digits on its own overlay texture
   // (see CLOCK_VALUE_RECT above) so the per-second tick doesn't force a full
-  // canvas re-upload; label + icon still render here. Surfaces that don't
-  // mount the overlay (stadium TVs) keep drawing the value inline.
+  // canvas re-upload; label + icon still render here. Callers that don't
+  // pass skipClockValue get the value drawn inline.
   drawStat(ctx, 1271, statY, 'clock', PURPLE, 'TOTAL TIME',
     opts.skipClockValue ? '' : formatTime(state.elapsedMs));
   drawStat(ctx, 1765, statY, 'star', GOLD, 'TOTAL POINTS', String(totalPoints));

@@ -1,8 +1,8 @@
-// Reactive lighting on the stadium's built-in ceiling fixture meshes
-// (CeilingRing, CenterLightBox, LightBox, Light_Box_Big, CeilingGrill*).
+// Reactive lighting on the venue's ceiling fixture meshes (the Focus Room
+// names its luminaires CeilingRing, CenterLightBox, LightBox, ... to match).
 //
 // Design decision — NO real THREE.SpotLights above the table.
-// See arena.js file header: adding per-fixture SpotLights (a) tanked frame
+// Adding per-fixture SpotLights (a) tanked frame
 // rate on Quest because per-mesh lighting scales with light count × ~70
 // venue meshes, and (b) made the ball read as strobe-lit because
 // KHR_materials_specular is boosted 2× on Ball.glb and a fast-moving ball
@@ -11,7 +11,7 @@
 // no per-frame shading cost on gameplay meshes, and the visual read
 // ("that ring is pulsing bright!") is exactly the same to the player.
 //
-// The fixtures ship with KHR_materials_unlit (per the arena.js comment) so
+// The fixtures are unlit materials, so
 // they draw their material color directly regardless of scene lighting.
 // That means animating `.color` on the material gives us a pulse-in-the-fixture
 // look for free — we don't need to touch `.emissive` (unlit ignores it).

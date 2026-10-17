@@ -51,8 +51,7 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
   // type at request time, which is why the venue is chosen out here rather
   // than from inside a running session.
   //
-  // BETA LAUNCH: the GLB venues ('vr' stadium / 'vr-tt') are absent from
-  // XR_MODES, so no button is built for them.
+  // One button per XR_MODES entry (Mixed Reality, Focus Room).
   const modeSlot = document.getElementById('xr-mode-slot');
   const venueBtns = XR_MODES.map((m) => {
     let b = modeSlot ? modeSlot.querySelector(`button[data-mode="${m.id}"]`) : null;

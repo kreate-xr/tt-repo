@@ -5,8 +5,7 @@
 //
 // The visual layout itself (SportyXR broadcast style: gradient player
 // panels, VS badge, per-game history, stats row) lives in
-// scoreboardLayout.js and is shared with the stadium TV screens
-// (stadiumScoreboard.js) — this module only owns the floating/wall mesh.
+// scoreboardLayout.js — this module only owns the floating/wall mesh.
 //
 // Single-sided (FrontSide) facing +Z (toward the player's near edge). Only
 // the player views it, so mirrored back-face text isn't a concern.

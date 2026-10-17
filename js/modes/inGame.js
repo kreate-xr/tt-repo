@@ -12,6 +12,7 @@ import {
 // Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline.
 import { createFocusRoom } from '../scene/focusRoom.js';
 import { createMRBackdrop } from '../scene/mrBackdrop.js';
+import { createOffHand } from '../scene/offHand.js';
 import { warmWoodTile } from '../scene/woodFloor.js';
 import { warmWallTile } from '../scene/wallPanels.js';
 import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableColor, setNetXRMode } from '../scene/models.js';
@@ -470,9 +471,13 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
   });
 
+  // Hand on the serving (non-paddle) controller. Loads on its own and follows
+  // whichever grip is the off-hand each frame, so it needs no attach hook.
+  const offHand = createOffHand({ xr, isAR: !isVR });
+
   // --- In-session asset loading -------------------------------------------
-  // The player is already in the headset while the table/paddle GLBs (and in
-  // arena mode the venue GLB — 22 MB on first visit) download. Render a
+  // The player is already in the headset while the table/paddle GLBs
+  // download. Render a
   // billboarded progress panel on a minimal loop so the wait is never a black
   // void; the DOM loading screen still updates in parallel for desktop and
   // dom-overlay. The real animation loop installed at the end of setup
@@ -658,9 +663,15 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // currentTuner points to whichever tuner is currently open. State stays
   // 'tuner' while one is up; activePanel() resolves through this ref.
   let currentTuner = null;
+  // Set when a panel was opened from the wrist menu's Settings page (Paddle
+  // Fit, Tune Physics), so coming back lands there rather than on the main
+  // screen the player left two taps ago. Consumed on the way back.
+  let reopenSettings = false;
   const onTunerBack = () => {
     if (currentTuner) currentTuner.hide();
     currentTuner = null;
+    const toSettings = reopenSettings;
+    reopenSettings = false;
     if (prevStateBeforeTuner === 'drill' && drillInstance) {
       state = 'drill';
       if (drillInstance.panel) drillInstance.panel.show();
@@ -668,6 +679,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       enterFreePlay();
     } else {
       enterMenu();
+      if (toSettings) wristMenu.setScreen('settings');
     }
   };
   tuner.on('back', onTunerBack);
@@ -818,8 +830,16 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     enterDrill('multiplayer', null);
   });
 
-  wristMenu.on('tune', () => { if (TUNER_ENABLED) enterTuner(tuner); });
-  wristMenu.on('calibrate', () => enterTuner(quickFit));
+  // Both live on the Settings page now; see reopenSettings.
+  wristMenu.on('tune', () => {
+    if (!TUNER_ENABLED) return;
+    reopenSettings = true;
+    enterTuner(tuner);
+  });
+  wristMenu.on('calibrate', () => {
+    reopenSettings = true;
+    enterTuner(quickFit);
+  });
   wristMenu.on('ballColor', ({ colorId }) => setBallColor(colorId));
   wristMenu.on('tableColor', ({ colorId }) => setTableColor(colorId));
   // Same profile key the PLAY › SETTINGS row writes; xrPaddle subscribes to
@@ -952,19 +972,15 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
             lastDrillParams.config, lastDrillParams.options);
         },
       },
-      // Populated only when a venue GLB with named walls is loaded (tt-arena).
+      // Populated only in the Focus Room (its back wall).
       // Drills that render UI panels (currently just aiMatch's scoreboard) use
       // it to wall-mount instead of floating in world space.
       // (These two keys were named arenaAnchor / arena pre-beta; renamed to
       // neutral terms because object keys survive minification and the beta
       // bundle must not hint at the unreleased venues.)
       scoreboardAnchor: arena && arena.getBackWallAnchor ? arena.getBackWallAnchor() : null,
-      // Full venue handle so drills can opt into stadium-specific
-      // enhancements (live scoreboard on the venue's TV meshes, positional
-      // crowd audio on the 24 audience sections). Null when no venue is
-      // mounted (AR/MR mode). Drills should feature-detect the accessor
-      // methods (getStadiumScreens / getCrowdAnchors) since only the
-      // stadium variant populates them.
+      // Full venue handle (the Focus Room) so drills can drive its fixture
+      // lighting via getStadiumFixtures. Null in AR/MR mode.
       env: arena,
     };
     // Multiplayer drill needs the live NetworkManager + role from the lobby.
@@ -1378,6 +1394,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     endAnalyticsRun({});
     teardownDrill();
     clearStatsHud();
+    offHand.dispose();
     unsubscribeHandRedraw();
     wristMenu.hide();
     wristMenu.dispose();
@@ -1506,10 +1523,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // spatially anchored to the room rather than the listener origin.
     updateAudioListener(renderer.xr.getCamera());
 
-    // NOTE: no per-frame arena tick here. createArena() exposes no update() —
-    // the venue is static geometry once mounted, and the crowd wave/idle
-    // animation is owned by aiMatch.js (crowdWave.update), which builds it
-    // from arena.getCrowdAnchors(). Calling arena.update() from this loop
+    // NOTE: no per-frame venue tick here. The Focus Room exposes no update()
+    // — it is static geometry once mounted, and its fixture pulses are
+    // ticked by aiMatch.js (arenaLighting.update). Calling arena.update() from this loop
     // throws, and a throw inside setAnimationLoop stops three.js from
     // re-queueing the frame — the whole session freezes before render.
 
@@ -1527,6 +1543,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // the physics tick so collisions read a consistent pose. The "what you see
     // is what collides" invariant depends on this ordering.
     xr.updatePaddleVisual();
+    offHand.update(dt);
 
     // In multiplayer, the non-owner peer must not integrate the ball or emit
     // table/net/lost events — the owner streams state and mirrors events via

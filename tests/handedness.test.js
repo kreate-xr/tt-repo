@@ -2,8 +2,31 @@
 // exercises by accident, which is how the hardcoded 'right' survived so long.
 
 const {
-  paddleHandFromSetting, shouldSwitchPaddleHand, DEFAULT_PADDLE_HAND,
+  paddleHandFromSetting, shouldSwitchPaddleHand, isGripBindable, DEFAULT_PADDLE_HAND,
 } = require('../js/xr/handedness.js');
+
+// Column-major Matrix4 elements with translation (x, y, z).
+const posed = (x, y, z) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
+
+describe('isGripBindable', () => {
+  const source = { handedness: 'right' };
+
+  test('a live, posed grip can take the paddle', () => {
+    expect(isGripBindable(source, posed(0.2, 1.1, -0.3))).toBe(true);
+  });
+
+  test('a disconnected slot is never bindable, even with its last pose', () => {
+    // three.js disconnect() hides the grip but keeps its matrix. Binding here
+    // put the paddle on a dead slot with no hand during the Quest system menu,
+    // and the controller that came back into that slot inherited it.
+    expect(isGripBindable(null, posed(0.2, 1.1, -0.3))).toBe(false);
+  });
+
+  test('a live source not posed yet is not bindable', () => {
+    expect(isGripBindable(source, posed(0, 0, 0))).toBe(false);
+    expect(isGripBindable(source, null)).toBe(false);
+  });
+});
 
 describe('paddleHandFromSetting', () => {
   test("maps the profile's L/R onto WebXR handedness", () => {

@@ -156,7 +156,6 @@ js/
   data/             Feedback + early-access signup writes
 tests/              Jest suites (jsdom; three.js mapped to its CJS build)
 public/             Static assets copied verbatim into dist/
-vr-assets/          Unreleased VR venue assets, parked for beta — see its README
 server/             Dev-only telemetry receiver (not deployed)
 scripts/            check-firebase.mjs smoke test, query-sessions.mjs read-out,
                     asset analysis
@@ -253,6 +252,6 @@ and do not carry over from `sportyxr-test`.
 
 ## Beta scope
 
-The beta ships mixed-reality passthrough only. The VR venue modes (arena,
-stadium, crowd audio) are compiled out and their assets parked under
-`vr-assets/` — `vr-assets/README.md` documents exactly how to restore them.
+The beta ships Mixed Reality (passthrough) and the procedural Focus Room.
+The GLB VR venues (arena, tt-arena, stadium, crowd audio, sponsor boards)
+and their assets were removed; git history has them if they are ever needed.

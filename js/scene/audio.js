@@ -218,13 +218,6 @@ function ensureAudioGraph() {
   return a;
 }
 
-// Public wrapper so other modules (crowdAudio.js) can build their own
-// positional sources without re-implementing the dry+send fan-out. Returns
-// the same node makeSpatialHead does — caller connects their source into it.
-export function createSpatialHead(position, opts) {
-  return makeSpatialHead(position, opts);
-}
-
 // Spatial routing head for a one-shot source. If `position` is a THREE.Vector3
 // and room acoustics is on, returns a PannerNode positioned there — HRTF
 // panning gives the impact its "somewhere in the room" spatial signature.
@@ -284,8 +277,7 @@ function makeSpatialHead(position, opts) {
 // previous shot's tail may still be sounding through it. With 8 slots and
 // impact tails well under a second, a slot's reuse interval at rally rates
 // is seconds — the collision is inaudible in practice.
-//
-// Long-lived heads (crowdAudio) must NOT use this — they keep createSpatialHead.
+
 const IMPACT_HEAD_POOL_SIZE = 8;
 let impactHeadPool = null;
 let impactHeadPoolIdx = 0;
@@ -403,8 +395,7 @@ export function updateAudioListener(cameraOrObject3D) {
 // Recorded samples — one clean take each for the table bounce and the two
 // paddle face hits (the local player's and the opponent's, which are
 // different recordings so the far-side return reads differently from your
-// own contact). Loaded lazily (fetch + decodeAudioData, same flow as
-// crowdAudio.js); until a buffer is ready — or if its fetch fails (dev
+// own contact). Loaded lazily (fetch + decodeAudioData); until a buffer is ready — or if its fetch fails (dev
 // server without the asset, offline) — the synthesized variants play
 // instead, so an impact is never silent.
 const SAMPLE_URLS = {

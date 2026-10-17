@@ -349,8 +349,7 @@ export function computeFocusRoomLayout(tableBox) {
   const backWallInnerZ = center.z - ROOM.LENGTH_Z / 2;
   const frontWallInnerZ = center.z + ROOM.LENGTH_Z / 2;
 
-  // Same formula and shape as arena.js getBackWallAnchor() for the tt
-  // variant — 2.2 m up (broadcast-banner height) or 70% of the wall,
+  // Back-wall scoreboard anchor — 2.2 m up (broadcast-banner height) or 70% of the wall,
   // whichever is lower; 2 cm off the wall face against z-fighting — so
   // createScoreboard({ anchor }) wall-mounts with zero changes.
   const backWallAnchor = {

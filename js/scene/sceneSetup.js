@@ -89,8 +89,8 @@ document.body.appendChild(renderer.domElement);
 // changing it changes how gameplay looks. In AR/MR all lights return to
 // layer 0 and are live again.
 //
-// ARENA_LIGHT_LAYER is still enabled on venue meshes by arena.js and
-// focusRoom.js (and asserted by tests/focusRoom.test.js). It now marks
+// ARENA_LIGHT_LAYER is still enabled on venue meshes by focusRoom.js and
+// mrBackdrop.js (and asserted by tests/focusRoom.test.js). It now marks
 // venue geometry and parks the VR-disabled keys; it does not route light.
 export const ARENA_LIGHT_LAYER = 3;
 

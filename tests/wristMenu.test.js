@@ -141,13 +141,14 @@ describe('event registration', () => {
     expect(() => menu.dispose()).not.toThrow();
   });
 
-  test('the physics tuner button only exists in dev sessions', () => {
-    // Default (production): no ?tuner/?selftest, so no gear button, and
-    // calibrate slides into the first dock slot so there is no gap.
+  test('the physics tuner tile only exists in dev sessions, inside Settings', () => {
+    // Default (production): no ?tuner/?selftest, so no Tune tile.
     const menu = new WristMenu();
+    menu.setScreen('settings');
     expect(menu.buttons.some((b) => b.id === 'tune')).toBe(false);
-    expect(menu.buttons.find((b) => b.id === 'calibrate').x).toBe(32);
     const dev = new WristMenu({ showTune: true });
+    expect(dev.buttons.some((b) => b.id === 'tune')).toBe(false);   // not on the main screen
+    dev.setScreen('settings');
     expect(dev.buttons.some((b) => b.id === 'tune')).toBe(true);
   });
 
@@ -277,12 +278,10 @@ describe('competition rules', () => {
     expect(seen[0].options.bestOf).toBe(1);
   });
 
-  test('the trophy slot is now the rules card, and still hit-tests', () => {
+  test('the rules card and Settings docks both hit-test', () => {
     const menu = new WristMenu();
-    const [u, v] = uvOfButton(menu, 'ballColor');
-    expect(menu.hitTestUV(u, v)).toBe('ballColor');
-    const [u2, v2] = uvOfButton(menu, 'help');
-    expect(menu.hitTestUV(u2, v2)).toBe('help');
+    expect(menu.hitTestUV(...uvOfButton(menu, 'help'))).toBe('help');
+    expect(menu.hitTestUV(...uvOfButton(menu, 'settings'))).toBe('settings');
   });
 
   test('the caption line states the service law when nothing is hovered', () => {
@@ -369,169 +368,236 @@ describe('rules card', () => {
   });
 });
 
-describe('dominant-hand dock button', () => {
-  // Bounding box of any button, circles included, for the overlap sweep.
-  function box(b) {
-    if (b.shape === 'circle') {
-      return { x0: b.cx - b.r, y0: b.cy - b.r, x1: b.cx + b.r, y1: b.cy + b.r };
+// Bounding box of any button, circles included, for the overlap sweeps.
+function box(b) {
+  if (b.shape === 'circle') {
+    return { x0: b.cx - b.r, y0: b.cy - b.r, x1: b.cx + b.r, y1: b.cy + b.r };
+  }
+  return { x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.h };
+}
+// Half-pixel tolerance: adjacent pill segments share an edge, and
+// `rowX + segW + segW` vs `rowX + 2 * segW` differ in the last float bit.
+function overlaps(a, b, eps = 0.5) {
+  return a.x0 + eps < b.x1 && b.x0 + eps < a.x1 && a.y0 + eps < b.y1 && b.y0 + eps < a.y1;
+}
+function expectNoOverlaps(menu) {
+  const boxes = menu.buttons.map((b) => [b.id, box(b)]);
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      expect(overlaps(boxes[i][1], boxes[j][1]) ? `${boxes[i][0]} × ${boxes[j][0]}` : null)
+        .toBeNull();
     }
-    return { x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.h };
   }
-  // Half-pixel tolerance: adjacent pill segments share an edge, and
-  // `rowX + segW + segW` vs `rowX + 2 * segW` differ in the last float bit.
-  function overlaps(a, b, eps = 0.5) {
-    return a.x0 + eps < b.x1 && b.x0 + eps < a.x1 && a.y0 + eps < b.y1 && b.y0 + eps < a.y1;
-  }
+}
+function textOfDraw(menu) {
+  const texts = [];
+  menu.ctx.fillText = (t) => texts.push(String(t));
+  menu.draw();
+  return texts.join(' | ');
+}
+function openSettings(opts) {
+  const menu = new WristMenu(opts);
+  click(menu, 'settings');
+  return menu;
+}
 
-  test('sits centred under the Table / Ball pair and overlaps nothing', () => {
-    // Also with the dev-only Tune button present: the hand button mirrors
-    // its slot on the other side, so both layouts must stay collision-free.
-    for (const opts of [{}, { showTune: true }]) {
+const SETTING_IDS = ['ballColor', 'tableColor', 'dominantHand', 'mrBackdrop', 'calibrate', 'tune'];
+
+describe('main screen dock', () => {
+  test('is just Rules on the left and Settings on the right', () => {
+    for (const opts of [{}, { showTune: true }, { showBackdrop: true, showTune: true }]) {
       const menu = new WristMenu(opts);
-      const hand = menu.buttons.find((b) => b.id === 'dominantHand');
-      const table = menu.buttons.find((b) => b.id === 'tableColor');
-      const ball = menu.buttons.find((b) => b.id === 'ballColor');
-      expect(hand).toBeDefined();
-      // Centred under the pair, on the row below it.
-      expect(hand.x + hand.w / 2).toBe((table.x + ball.x + ball.w) / 2);
-      expect(hand.y).toBeGreaterThan(ball.y + ball.h);
-      // Clear of the mode tiles' crosshair ticks (x ≈ 822), the caption line
-      // (y ≈ 323) and the capsule's rounded end (x ≈ 992 at this height).
-      expect(hand.x).toBeGreaterThan(822);
-      expect(hand.y + hand.h).toBeLessThan(323);
-      expect(hand.x + hand.w).toBeLessThan(992);
-      // No button overlaps any other.
-      const boxes = menu.buttons.map((b) => [b.id, box(b)]);
-      for (let i = 0; i < boxes.length; i++) {
-        for (let j = i + 1; j < boxes.length; j++) {
-          expect(overlaps(boxes[i][1], boxes[j][1]) ? `${boxes[i][0]} × ${boxes[j][0]}` : null)
-            .toBeNull();
-        }
-      }
+      const docks = menu.buttons.filter((b) => b.kind === 'dock');
+      expect(docks.map((b) => b.id)).toEqual(['help', 'settings']);
+      for (const id of SETTING_IDS) expect(menu.buttons.some((b) => b.id === id)).toBe(false);
+      // Mirror images about the panel's centre, clear of the mode row's
+      // crosshair ticks (x ≈ 202…822).
+      const [help, settings] = docks;
+      expect(help.x + help.w / 2 + settings.x + settings.w / 2).toBe(1024);
+      expect(help.y).toBe(settings.y);
+      expect(help.x + help.w).toBeLessThan(202);
+      expect(settings.x).toBeGreaterThan(822);
+      expectNoOverlaps(menu);
     }
   });
 
-  test('hit-tests, and a tap emits the OTHER hand', () => {
+  test('hovering the gear names what Settings holds', () => {
+    const menu = new WristMenu();
+    menu.hovered = 'settings';
+    expect(textOfDraw(menu)).toMatch(/Settings\s+—\s+ball, table, hand/);
+  });
+
+  test('the drift hint moves to the gear, since Paddle Fit is behind it', () => {
+    const menu = new WristMenu();
+    const arcs = [];
+    menu.ctx.arc = (x, y, r) => arcs.push([x, y, r]);
+    menu._driftFlagCache = false;
+    menu.draw();
+    const gear = menu.buttons.find((b) => b.id === 'settings');
+    const atGearCorner = () => arcs.some(([x, y, r]) => r === 7 && x === gear.x + gear.w - 8);
+    expect(atGearCorner()).toBe(false);
+    arcs.length = 0;
+    menu._driftFlagCache = true;
+    menu.draw();
+    expect(atGearCorner()).toBe(true);
+    menu._driftFlagCache = false;
+  });
+});
+
+describe('Settings screen', () => {
+  test('the gear opens it: a title, one tile per setting, and a BACK pill', () => {
+    const menu = openSettings();
+    expect(menu.settingsOpen).toBe(true);
+    expect(menu.helpOpen).toBe(false);
+    expect(menu.buttons.map((b) => b.id))
+      .toEqual(['ballColor', 'tableColor', 'dominantHand', 'calibrate', 'settings-close']);
+    expect(menu._diffPill).toBe(null);
+    expect(menu._formatPill).toBe(null);
+    const text = textOfDraw(menu);
+    expect(text).toMatch(/SETTINGS/);
+    expect(text).not.toMatch(/tap \? for all the rules/);   // main-screen caption stays there
+  });
+
+  test('session-specific tiles appear only where they apply', () => {
+    const ids = (opts) => openSettings(opts).buttons.map((b) => b.id);
+    expect(ids({ showBackdrop: true })).toContain('mrBackdrop');
+    expect(ids({})).not.toContain('mrBackdrop');
+    expect(ids({ showTune: true })).toContain('tune');
+    expect(ids({ showBackdrop: true, showTune: true }))
+      .toEqual([...SETTING_IDS, 'settings-close']);
+  });
+
+  test('every tile count fits the capsule, overlaps nothing and hit-tests to itself', () => {
+    for (const opts of [{}, { showBackdrop: true }, { showTune: true }, { showBackdrop: true, showTune: true }]) {
+      const menu = openSettings(opts);
+      const tiles = menu.buttons.filter((b) => b.kind === 'tile');
+      const back = menu.buttons.find((b) => b.id === 'settings-close');
+      for (const t of tiles) {
+        // Inside the capsule's rounded ends (≈ 33px inset at the tiles' top
+        // edge), below the title's hairline (y = 76), above BACK.
+        expect(t.x).toBeGreaterThanOrEqual(40);
+        expect(t.x + t.w).toBeLessThanOrEqual(1024 - 40);
+        expect(t.y).toBeGreaterThan(76);
+        expect(t.y + t.h).toBeLessThan(back.y);
+        // Wide enough to aim at with a laser across the room.
+        expect(t.w).toBeGreaterThanOrEqual(120);
+        expect(menu.hitTestUV(...uvOfButton(menu, t.id))).toBe(t.id);
+      }
+      expectNoOverlaps(menu);
+    }
+  });
+
+  test('each tile shows its CURRENT value, read through the getters', () => {
+    let hand = 'L';
+    let on = false;
+    const menu = openSettings({
+      showBackdrop: true, getDominantHand: () => hand, getBackdropOn: () => on,
+    });
+    let text = textOfDraw(menu);
+    expect(text).toMatch(/Ball Color \| Orange/);
+    expect(text).toMatch(/Table Color \| Blue/);
+    expect(text).toMatch(/Dominant Hand \| Left/);
+    expect(text).toMatch(/Backdrop \| Off/);
+    expect(text).toMatch(/Paddle Fit \| Adjust/);
+    hand = 'R'; on = true;   // changed elsewhere (PLAY › SETTINGS, the store)
+    text = textOfDraw(menu);
+    expect(text).toMatch(/Dominant Hand \| Right/);
+    expect(text).toMatch(/Backdrop \| On/);
+    // The hand icon is still the bold letter.
+    expect(text).toMatch(/\| R \|/);
+  });
+
+  test('BACK returns to the main controls, rebuilt rather than appended', () => {
+    const menu = openSettings();
+    click(menu, 'settings-close');
+    expect(menu.settingsOpen).toBe(false);
+    const ids = menu.buttons.map((b) => b.id);
+    expect(ids).toContain('mode-aiMatch');
+    expect(ids).toContain('settings');
+    expect(ids).not.toContain('ballColor');
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  test('closing the menu while in Settings reopens on the controls', () => {
+    const menu = openSettings();
+    menu.hide();
+    expect(menu.screen).toBe('main');
+    expect(menu.buttons.map((b) => b.id)).toContain('mode-aiMatch');
+  });
+
+  test('setHelpOpen(false) does not kick the player out of Settings', () => {
+    const menu = openSettings();
+    menu.setHelpOpen(false);
+    expect(menu.settingsOpen).toBe(true);
+  });
+});
+
+describe('Settings tiles', () => {
+  test('colour tiles emit the next colour in the cycle', () => {
+    const menu = openSettings();
+    const seen = [];
+    menu.on('ballColor', (p) => seen.push(['ball', p.colorId]));
+    menu.on('tableColor', (p) => seen.push(['table', p.colorId]));
+    click(menu, 'ballColor');
+    click(menu, 'tableColor');
+    expect(seen).toEqual([['ball', 'white'], ['table', 'green']]);
+    expect(menu.settingsOpen).toBe(true);   // a toggle, not a navigation
+  });
+
+  test('dominant hand: a tap emits the OTHER hand', () => {
     let hand = 'R';
-    const menu = new WristMenu({ getDominantHand: () => hand });
+    const menu = openSettings({ getDominantHand: () => hand });
     const seen = [];
     menu.on('dominantHand', (p) => { seen.push(p.hand); hand = p.hand; });
-    expect(menu.hitTestUV(...uvOfButton(menu, 'dominantHand'))).toBe('dominantHand');
     click(menu, 'dominantHand');
     click(menu, 'dominantHand');
     expect(seen).toEqual(['L', 'R']);
   });
 
-  test('the icon and caption report the CURRENT hand through the getter', () => {
-    let hand = 'L';
-    const menu = new WristMenu({ getDominantHand: () => hand });
-    const drawn = () => {
-      const texts = [];
-      menu.ctx.fillText = (t) => texts.push(String(t));
-      menu.hovered = 'dominantHand';
-      menu.draw();
-      return texts.join(' | ');
-    };
-    expect(drawn()).toMatch(/Dominant Hand\s+—\s+Left/);
-    expect(drawn()).toMatch(/\| L \|/);
-    hand = 'R';   // changed elsewhere (settings screen / swing detection)
-    expect(drawn()).toMatch(/Dominant Hand\s+—\s+Right/);
-    expect(drawn()).toMatch(/\| R \|/);
-  });
-
-  test('defaults to right-handed when no getter is supplied', () => {
-    const menu = new WristMenu();
+  test('dominant hand defaults to right-handed when no getter is supplied', () => {
+    const menu = openSettings();
     const seen = [];
     menu.on('dominantHand', (p) => seen.push(p.hand));
     click(menu, 'dominantHand');
     expect(seen).toEqual(['L']);
   });
-});
 
-describe('passthrough backdrop dock button', () => {
-  function box(b) {
-    if (b.shape === 'circle') {
-      return { x0: b.cx - b.r, y0: b.cy - b.r, x1: b.cx + b.r, y1: b.cy + b.r };
-    }
-    return { x0: b.x, y0: b.y, x1: b.x + b.w, y1: b.y + b.h };
-  }
-  function overlaps(a, b, eps = 0.5) {
-    return a.x0 + eps < b.x1 && b.x0 + eps < a.x1 && a.y0 + eps < b.y1 && b.y0 + eps < a.y1;
-  }
-
-  test('exists only in MR sessions, and the layout is unchanged without it', () => {
-    // The Focus Room has its own back wall — no toggle there.
-    const vr = new WristMenu();
-    expect(vr.buttons.some((b) => b.id === 'mrBackdrop')).toBe(false);
-    const mr = new WristMenu({ showBackdrop: true });
-    expect(mr.buttons.some((b) => b.id === 'mrBackdrop')).toBe(true);
-    // Every other button sits exactly where it does without the toggle.
-    for (const b of vr.buttons) {
-      const same = mr.buttons.find((x) => x.id === b.id);
-      expect(same).toBeDefined();
-      expect(box(same)).toEqual(box(b));
-    }
-  });
-
-  test('sits beside the hand button on its row and overlaps nothing', () => {
-    for (const opts of [{ showBackdrop: true }, { showBackdrop: true, showTune: true }]) {
-      const menu = new WristMenu(opts);
-      const bd = menu.buttons.find((b) => b.id === 'mrBackdrop');
-      const hand = menu.buttons.find((b) => b.id === 'dominantHand');
-      const ball = menu.buttons.find((b) => b.id === 'ballColor');
-      // Same row as the hand, immediately to its left, under the top pair.
-      expect(bd.y).toBe(hand.y);
-      expect(bd.x + bd.w).toBeLessThan(hand.x);
-      expect(hand.x - (bd.x + bd.w)).toBeLessThanOrEqual(8);
-      expect(bd.y).toBeGreaterThan(ball.y + ball.h);
-      // Clear of the MULTI tile's ring at this height (x ≈ 799) and the
-      // caption line (y ≈ 323).
-      expect(bd.x).toBeGreaterThan(822);
-      expect(bd.y + bd.h).toBeLessThan(323);
-      const boxes = menu.buttons.map((b) => [b.id, box(b)]);
-      for (let i = 0; i < boxes.length; i++) {
-        for (let j = i + 1; j < boxes.length; j++) {
-          expect(overlaps(boxes[i][1], boxes[j][1]) ? `${boxes[i][0]} × ${boxes[j][0]}` : null)
-            .toBeNull();
-        }
-      }
-    }
-  });
-
-  test('hit-tests, and a tap emits the OTHER state read through the getter', () => {
+  test('backdrop: a tap emits the OTHER state read through the getter', () => {
     let on = false;
-    const menu = new WristMenu({ showBackdrop: true, getBackdropOn: () => on });
+    const menu = openSettings({ showBackdrop: true, getBackdropOn: () => on });
     const seen = [];
     menu.on('mrBackdrop', (p) => { seen.push(p.on); on = p.on; });
-    expect(menu.hitTestUV(...uvOfButton(menu, 'mrBackdrop'))).toBe('mrBackdrop');
     click(menu, 'mrBackdrop');
     click(menu, 'mrBackdrop');
     click(menu, 'mrBackdrop');
     expect(seen).toEqual([true, false, true]);
   });
 
-  test('the caption reports the CURRENT state through the getter', () => {
-    let on = false;
-    const menu = new WristMenu({ showBackdrop: true, getBackdropOn: () => on });
-    const drawn = () => {
-      const texts = [];
-      menu.ctx.fillText = (t) => texts.push(String(t));
-      menu.hovered = 'mrBackdrop';
-      menu.draw();
-      return texts.join(' | ');
-    };
-    expect(drawn()).toMatch(/Backdrop\s+—\s+Off/);
-    on = true;   // stored elsewhere (inGame.js owns the profile write)
-    expect(drawn()).toMatch(/Backdrop\s+—\s+On/);
-  });
-
-  test('draws without a getter (defaults to off) and does not throw', () => {
-    const menu = new WristMenu({ showBackdrop: true });
+  test('backdrop draws without a getter (defaults to off) and does not throw', () => {
+    const menu = openSettings({ showBackdrop: true });
     menu.hovered = 'mrBackdrop';
     expect(() => menu.draw()).not.toThrow();
     const seen = [];
     menu.on('mrBackdrop', (p) => seen.push(p.on));
     click(menu, 'mrBackdrop');
     expect(seen).toEqual([true]);
+  });
+
+  test('Paddle Fit emits calibrate and Tune emits tune', () => {
+    const menu = openSettings({ showTune: true });
+    const seen = [];
+    menu.on('calibrate', () => seen.push('calibrate'));
+    menu.on('tune', () => seen.push('tune'));
+    click(menu, 'calibrate');
+    click(menu, 'tune');
+    expect(seen).toEqual(['calibrate', 'tune']);
+  });
+
+  test('Paddle Fit says Recheck and carries the drift dot when drift is flagged', () => {
+    const menu = openSettings();
+    menu._driftFlagCache = true;
+    expect(textOfDraw(menu)).toMatch(/Paddle Fit \| Recheck/);
+    menu._driftFlagCache = false;
+    expect(textOfDraw(menu)).toMatch(/Paddle Fit \| Adjust/);
   });
 });

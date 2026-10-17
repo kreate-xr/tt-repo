@@ -1,8 +1,7 @@
 // Focus Room layout math — the pure-data contract focusRoom.js builds from.
 //
-// What matters here is the scoreboard-anchor contract (identical shape and
-// formula to arena.js getBackWallAnchor so createScoreboard({anchor}) works
-// unchanged) and the clearance guarantees: panels clear of the ceiling,
+// What matters here is the scoreboard-anchor contract (the shape
+// createScoreboard({anchor}) wall-mounts from) and the clearance guarantees: panels clear of the ceiling,
 // scoreboard clear of the wall top, and the branding mark clear of the
 // scoreboard it now shares the back wall with.
 
@@ -30,7 +29,7 @@ test('room is centered on the table, long end toward the AI', () => {
   expect(layout.frontWallInnerZ).toBeGreaterThan(1.5);
 });
 
-test('back wall anchor matches the arena.js contract shape and formula', () => {
+test('back wall anchor has the scoreboard contract shape and formula', () => {
   const layout = computeFocusRoomLayout(TABLE_BOX);
   const a = layout.backWallAnchor;
   expect(a.x).toBeCloseTo(0);
@@ -92,6 +91,6 @@ test('the front-wall mark sits on a clear wall, above the accent stripe', () => 
   expect(WALL_MARK.OFFSET).toBeGreaterThan(0);
 });
 
-test('null tableBox yields null (mirrors createArena guard)', () => {
+test('null tableBox yields null', () => {
   expect(computeFocusRoomLayout(null)).toBeNull();
 });

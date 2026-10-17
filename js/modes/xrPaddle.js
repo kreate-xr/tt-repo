@@ -44,7 +44,7 @@ import {
   getSetting as getProfileSetting,
   subscribe as subscribeProfile,
 } from '../profile/store.js';
-import { paddleHandFromSetting, shouldSwitchPaddleHand } from '../xr/handedness.js';
+import { paddleHandFromSetting, shouldSwitchPaddleHand, isGripBindable } from '../xr/handedness.js';
 import { shouldFreezePaddle as trackingShouldFreezePaddle } from '../xr/trackingLossGuard.js';
 import {
   applyRecoilAboutPivot, recoilEnvelope, recoilPeakForImpact,
@@ -308,6 +308,10 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
       paddleOwner = null;
       activeController = null;
       activeInputSource = null;
+      // Clear the hand too. Left stale, it told shouldSwitchPaddleHand (and the
+      // dominant-hand subscriber's early return) the paddle was already on the
+      // preferred hand after a re-bind put it on the other one.
+      activeHandedness = null;
       haptics.setActiveHandedness(null);
       resetPaddleTracking();
     }
@@ -490,9 +494,8 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
       const grip = grips[i];
       if (!grip) continue;
       grip.updateMatrixWorld();
-      const e = grip.matrixWorld.elements;
-      const tracked = Math.abs(e[12]) > 1e-4 || Math.abs(e[13]) > 1e-4 || Math.abs(e[14]) > 1e-4;
-      if (tracked) {
+      // A disconnected slot keeps its last pose — see isGripBindable.
+      if (isGripBindable(inputSources[i], grip.matrixWorld.elements)) {
         attachPaddleToGrip(grip, `grip[${i}] (sweep:${reason})`, handedness[i]);
         if (paddleOwner) return;
       }
@@ -514,6 +517,12 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
       handedness[i] = hand;
       inputSources[i] = event.data || null;  // stash raw XRInputSource for TrackingLossGuard
       hudLog(`grip[${i}] connected (${hand})`);
+
+      // A new source landed on the slot that owns the paddle. three.js hands
+      // out slots in whatever order the runtime lists returning sources, so
+      // this can be the OTHER hand — release the slot and bind afresh so the
+      // handedness, input source and per-hand calibration all follow.
+      if (paddleOwner === grip) detachFromGrip(grip);
 
       // Calibration is loaded inside attachPaddleToGrip, for whichever grip
       // actually takes the paddle — see the note there. Loading it here would

@@ -1,9 +1,8 @@
 // Procedural Focus Room builder — the scene-facing contract.
 //
-// The interesting behaviors: the handle exposes the same shape as
-// createArena() (so inGame/aiMatch consumers work unchanged), every mesh
-// keeps layer 0 while also enabling the arena-light layer 3 (the WebXR
-// ArrayCamera contract from arena.js), the fixtures carry names
+// The interesting behaviors: the handle exposes the shape inGame/aiMatch
+// consume, every mesh keeps layer 0 while also enabling the arena-light
+// layer 3 (the WebXR ArrayCamera contract), the fixtures carry names
 // arenaLighting.js can resolve, and dispose() actually releases what was
 // built. Real three (CJS build via moduleNameMapper), mocked scene modules.
 
@@ -26,21 +25,16 @@ test('returns null before loadModels populated tableBox', () => {
   expect(scene.add).not.toHaveBeenCalled();
 });
 
-test('handle has the createArena shape and the venue-specific getters', () => {
+test('handle has the venue shape inGame/aiMatch consume', () => {
   const { mod, scene } = loadFocusRoom();
   const room = mod.createFocusRoom();
   expect(room).not.toBeNull();
   expect(scene.add).toHaveBeenCalledWith(room.group);
-  for (const key of ['show', 'hide', 'dispose', 'getBackWallAnchor',
-    'getStadiumScreens', 'getCrowdAnchors', 'getStadiumFixtures', 'getBrandingBoards']) {
+  for (const key of ['show', 'hide', 'dispose', 'getBackWallAnchor', 'getStadiumFixtures']) {
     expect(typeof room[key]).toBe('function');
   }
   // Synchronous build — ready resolves immediately.
   expect(room.ready).toBeInstanceOf(Promise);
-  // Stadium-only accessors are empty, never null (consumers .length them).
-  expect(room.getStadiumScreens()).toEqual([]);
-  expect(room.getCrowdAnchors()).toEqual([]);
-  expect(room.getBrandingBoards()).toEqual([]);
   room.dispose();
 });
 
