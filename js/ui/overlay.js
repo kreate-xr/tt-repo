@@ -51,7 +51,8 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
   // type at request time, which is why the venue is chosen out here rather
   // than from inside a running session.
   //
-  // One button per XR_MODES entry (Mixed Reality, Focus Room).
+  // One button per XR_MODES entry (Mixed Reality, Focus Room, Arena). The
+  // Arena venue is the stadium GLB — js/scene/arenaVenue.js.
   const modeSlot = document.getElementById('xr-mode-slot');
   const venueBtns = XR_MODES.map((m) => {
     let b = modeSlot ? modeSlot.querySelector(`button[data-mode="${m.id}"]`) : null;

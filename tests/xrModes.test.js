@@ -10,6 +10,7 @@ const { XR_MODES, resolveStoredMode } = require('../js/ui/xrModes.js');
 test('the live modes pass through unchanged', () => {
   expect(resolveStoredMode('ar')).toBe('ar');
   expect(resolveStoredMode('vr-focus')).toBe('vr-focus');
+  expect(resolveStoredMode('vr-arena')).toBe('vr-arena');
 });
 
 test('legacy GLB-venue values fall back to ar', () => {

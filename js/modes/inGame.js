@@ -11,6 +11,8 @@ import {
 } from '../scene/sceneSetup.js';
 // Focus Room: procedural VR venue ('vr-focus'), no GLB pipeline.
 import { createFocusRoom } from '../scene/focusRoom.js';
+// Arena: the stadium GLB venue ('vr-arena'), loaded as authored.
+import { loadArenaVenue, createArenaVenue } from '../scene/arenaVenue.js';
 import { createMRBackdrop } from '../scene/mrBackdrop.js';
 import { createOffHand } from '../scene/offHand.js';
 import { warmWoodTile } from '../scene/woodFloor.js';
@@ -275,10 +277,11 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   entryInFlight = true;
 
   // 'ar' → passthrough MR (see the real room); 'vr-focus' → procedural
-  // Focus Room venue (js/scene/focusRoom.js). WebXR session type is fixed
-  // at request time, so this is a pre-session choice, driven by the toggle
-  // on the start screen.
-  const isVR = xrMode === 'vr-focus';
+  // Focus Room venue (js/scene/focusRoom.js); 'vr-arena' → the stadium GLB
+  // (js/scene/arenaVenue.js). WebXR session type is fixed at request time,
+  // so this is a pre-session choice, driven by the start-screen buttons.
+  const isArena = xrMode === 'vr-arena';
+  const isVR = xrMode === 'vr-focus' || isArena;
   const sessionType = isVR ? 'immersive-vr' : 'immersive-ar';
   const supported = await navigator.xr.isSessionSupported(sessionType);
   if (!supported) {
@@ -528,9 +531,19 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // below finds both canvases already memoized. setTimeout rather than a bare
   // call so the paint is its own task inside that wait instead of extending
   // this one. Skipped in MR, which builds no venue.
-  if (isVR) setTimeout(() => { warmWoodTile(); warmWallTile(); }, 0);
+  if (isVR && !isArena) setTimeout(() => { warmWoodTile(); warmWallTile(); }, 0);
+  // Arena GLB (~8 MB) downloads and decodes alongside the table/ball/paddle
+  // GLBs; it is mounted below once tableBox exists. The .catch keeps an
+  // early rejection from surfacing as unhandled before it is awaited.
+  const arenaLoad = isArena ? loadArenaVenue() : null;
+  if (arenaLoad) arenaLoad.catch(() => {});
+  let arenaScene = null;
   try {
     await loadModels(loadingScreen, statusEl);
+    if (arenaLoad) {
+      loadPanel.setText('Loading arena…');
+      arenaScene = await arenaLoad;
+    }
     mark('modelsLoaded');
   } catch (err) {
     abortEntry('Failed to load 3D models: ' + (err?.message || err));
@@ -572,7 +585,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // downstream consumer (factoryArgs, abortEntry, session-end cleanup)
   // already handles the `arena` handle.
   if (isVR) {
-    arena = createFocusRoom();
+    arena = isArena ? createArenaVenue(arenaScene, tableBox) : createFocusRoom();
     if (arena) arena.show();
     // Link the room's shader programs via KHR_parallel_shader_compile instead
     // of stalling the first frame that draws it. Plain `camera`, NOT

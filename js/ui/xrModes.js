@@ -9,6 +9,7 @@ export const XR_MODE_STORAGE_KEY = 'trailclaude.xrMode';
 export const XR_MODES = [
   { id: 'ar',       label: 'Mixed Reality', sub: 'play in your room',   cta: 'Enter Mixed Reality' },
   { id: 'vr-focus', label: 'Focus Room',    sub: 'distraction-free VR', cta: 'Enter Focus Room' },
+  { id: 'vr-arena', label: 'Arena',         sub: 'stadium VR',          cta: 'Enter Arena' },
 ];
 
 // Map whatever localStorage holds to a mode this build supports. Pre-beta

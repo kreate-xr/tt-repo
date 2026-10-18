@@ -48,8 +48,9 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
   // Wall-mounted variant: upscale ~2× so the panel preserves the same
   // readable angular size from the player's eye position even though it
   // now sits several meters further away against the venue's back wall.
-  // Aspect (2:1) is preserved.
-  const panelW = anchor ? PANEL_W_M * 2.0 : PANEL_W_M;
+  // Aspect (2:1) is preserved. A venue that mounts the board on a fixed-size
+  // surface (the Arena's hanging screen) sets anchor.panelWidth instead.
+  const panelW = anchor ? (anchor.panelWidth || PANEL_W_M * 2.0) : PANEL_W_M;
   const panelH = panelW * (LAYOUT_H / LAYOUT_W);
 
   const geom = new THREE.PlaneGeometry(panelW, panelH);

@@ -874,14 +874,14 @@
 
           <h1>Table Tennis,<br><span class="grad">Anytime, Anywhere.</span></h1>
 
-          <!-- The two venues ARE the entry buttons: one click requests that
+          <!-- The venues ARE the entry buttons: one click requests that
                WebXR session type. They ship disabled so an early click can't
                land before the app's modules are in; js/ui/overlay.js wires
                and enables them (data-mode must match an id in
                js/ui/xrModes.js).
 
                BETA LAUNCH: desktop preview is off the landing page — these
-               two headset venues are the only choices players get. Uncomment
+               three headset venues are the only choices players get. Uncomment
                to bring the flat-screen preview back (see js/ui/overlay.js).
                <button id="enter-desktop">Desktop Preview</button> -->
           <div id="xr-mode-slot" class="hero-actions">
@@ -895,6 +895,12 @@
               <span class="venue-text">
                 <span class="venue-label">Focus Room</span>
                 <span class="venue-sub">distraction-free VR</span>
+              </span>
+            </button>
+            <button type="button" class="enter-venue" data-mode="vr-arena" disabled>
+              <span class="venue-text">
+                <span class="venue-label">Arena</span>
+                <span class="venue-sub">stadium VR</span>
               </span>
             </button>
           </div>
