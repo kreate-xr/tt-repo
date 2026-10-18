@@ -21,7 +21,8 @@
 // Handle shape matches createFocusRoom (show / hide / dispose / group /
 // getBackWallAnchor / getStadiumFixtures) so inGame.js and aiMatch.js consume
 // it unchanged. The back-wall anchor is the far hanging screen (FAR_SCREEN
-// below); no reactive fixtures.
+// below); no reactive fixtures. getSideScreenAnchor is Arena-only — drills
+// that get null from a venue without it simply build no side screen.
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
@@ -39,6 +40,14 @@ const ARENA_CAMERA_FAR = 150;
 // stands 2.87 m tall, inside the 5.23 x 2.99 m face.
 const FAR_SCREEN = { x: -0.445, y: 6.515, z: -13.72, width: 5.23, height: 2.99 };
 const SCOREBOARD_WIDTH_M = 5.1;
+
+// The courtside monitor at the net line (material 'Screen'), measured from
+// the export: a 1.36 x 0.77 m face in the plane x = -2.699, spanning
+// y 0.80..1.57 and z -0.68..0.68, i.e. on the table's left as the player
+// sees it. The last-point stats screen (sideScreen.js) mounts 1 cm proud of
+// it, turned +90° about Y so its front faces +X — toward the table and the
+// player. 1.34 m wide keeps the 16:9 canvas inside the face.
+const SIDE_SCREEN = { x: -2.699, y: 1.186, z: 0, width: 1.34 };
 
 let dracoLoader = null;
 let ktx2Loader = null;
@@ -145,6 +154,15 @@ export function createArenaVenue(arenaScene, tableBox) {
         wallWidth: FAR_SCREEN.width,
         wallHeight: FAR_SCREEN.height,
         panelWidth: SCOREBOARD_WIDTH_M,
+      };
+    },
+    getSideScreenAnchor() {
+      return {
+        x: group.position.x + SIDE_SCREEN.x + 0.01,
+        y: SIDE_SCREEN.y,
+        z: group.position.z + SIDE_SCREEN.z,
+        rotationY: Math.PI / 2,
+        width: SIDE_SCREEN.width,
       };
     },
     getStadiumFixtures() { return []; },

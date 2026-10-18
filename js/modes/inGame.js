@@ -992,6 +992,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       // neutral terms because object keys survive minification and the beta
       // bundle must not hint at the unreleased venues.)
       scoreboardAnchor: arena && arena.getBackWallAnchor ? arena.getBackWallAnchor() : null,
+      // The Arena's courtside monitor (last-point stats). Null in every other
+      // venue, which then builds no side screen.
+      sideScreenAnchor: arena && arena.getSideScreenAnchor ? arena.getSideScreenAnchor() : null,
       // Full venue handle (the Focus Room) so drills can drive its fixture
       // lighting via getStadiumFixtures. Null in AR/MR mode.
       env: arena,

@@ -457,6 +457,23 @@ describe('rallyManager — game and match ending', () => {
     rm.dispose();
   });
 
+  test('getScore().servesLeft counts down 2 → 1, and is 1 at deuce', () => {
+    const events = makeBallEvents();
+    const server = makeStubServer();
+    const rm = createRallyManager({ ballEvents: events, server });
+    expect(rm.getScore().servesLeft).toBe(2);
+    scoreSequence(rm, events, ['ai']);
+    expect(rm.getScore().servesLeft).toBe(1);
+    scoreSequence(rm, events, ['ai']);          // serve swaps
+    expect(rm.getScore().servesLeft).toBe(2);
+    // On to 10-10: every point swaps from here.
+    const seq = [];
+    for (let i = 0; i < 9; i++) { seq.push('player'); seq.push(i < 8 ? 'ai' : 'player'); }
+    scoreSequence(rm, events, seq);
+    expect(rm.getScore()).toMatchObject({ aiScore: 10, playerScore: 10, servesLeft: 1 });
+    rm.dispose();
+  });
+
   test('match ends when a side wins majority of bestOf games', () => {
     const events = makeBallEvents();
     const server = makeStubServer();

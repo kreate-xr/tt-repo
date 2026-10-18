@@ -559,9 +559,14 @@ export function createRallyManager({
   }
 
   function getScore() {
+    // Serves the current server has left before the swap — the same
+    // swapAt rule finishRally applies (1 at deuce, else serveRotationEvery).
+    const isDeuce = aiScore >= config.deucePoint && playerScore >= config.deucePoint;
+    const swapAt = isDeuce ? 1 : config.serveRotationEvery;
     return {
       aiScore, playerScore, aiGames, playerGames,
       currentServer, pointsSinceServerSwitch, matchOver,
+      servesLeft: Math.max(1, swapAt - pointsSinceServerSwitch),
     };
   }
 

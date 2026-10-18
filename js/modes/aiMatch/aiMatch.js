@@ -47,6 +47,7 @@ import { createRallyManager } from './rallyManager.js';
 import { normalizeBestOf, loadBestOf, gamesToWin, matchLengthLabel } from '../matchFormat.js';
 import { createFailureHandler } from './failureHandler.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
+import { createSideScreen } from '../../scene/sideScreen.js';
 import { createMatchReport } from '../../scene/matchReport.js';
 import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
 import { mark, setMatchSummary } from '../../analytics/session.js';
@@ -182,8 +183,10 @@ function resetPlayerVelocity() {
 // because destructured keys survive minification and the beta bundle must not
 // hint at the unreleased venues. `env` is the Focus Room's venue handle
 // (wall-anchored scoreboard + fixture lighting); null in MR.
+// `sideScreenAnchor` is the Arena's courtside monitor; null elsewhere.
 export function createAIMatchDrill({
   ballEvents, profile, xr, hooks = null, scoreboardAnchor = null, env = null,
+  sideScreenAnchor = null,
   competition = true, bestOf: bestOfIn = null,
 } = {}) {
   if (!ballEvents) throw new Error('createAIMatchDrill requires { ballEvents }');
@@ -285,13 +288,22 @@ export function createAIMatchDrill({
   };
   worker.postMessage({ type: 'init', config: { difficulty, style } });
 
+  // Side-screen bookkeeping for the rally in progress: every paddle contact
+  // is a stroke; the player's latest one is what the courtside screen
+  // reports when the point ends. Reset per rally in onServeRequested.
+  const pointShots = { strokes: 0, lastPlayerShot: null };
+
   // --- Ball event routing into the FSM. shotAdapter self-subscribes, so
   //     when the player hits we react with a SECOND listener here that
   //     reads the adapter's freshly-computed rollout and requests a target
   //     from the worker.
   function onPaddleHit(info) {
     if (!info) return;
+    pointShots.strokes += 1;
     if (info.origin === 'player') {
+      pointShots.lastPlayerShot = {
+        outSpeed: info.outSpeed || 0, spinMag: info.spinMag || 0, spinType: info.spinType,
+      };
       // Scoreboard stats: every player paddle contact counts as a shot hit;
       // TOP SPEED tracks the fastest outgoing ball speed (km/h) off the
       // player's paddle. updateBoards / matchStats are defined below with
@@ -496,6 +508,15 @@ export function createAIMatchDrill({
   function updateBoards(patch) {
     if (scoreboard) scoreboard.update(patch);
   }
+  // Courtside last-point screen (Arena only). Seeded with the first server;
+  // after that it changes once per point, in onPointScored below.
+  const sideScreen = createSideScreen({ anchor: sideScreenAnchor });
+  if (sideScreen) {
+    sideScreen.update({
+      nextServer: initialScore.currentServer,
+      servesLeft: initialScore.servesLeft,
+    });
+  }
   // Match-long stats feeding the SportyXR layout's history + stats rows.
   // gameHistory holds each finished game's final score in play order.
   const matchStats = { shotsHit: 0, topSpeedKmh: 0, gameHistory: [] };
@@ -563,6 +584,24 @@ export function createAIMatchDrill({
   rallyManager.on('onPointScored', (e) => {
     hudLog(`[AI Match] point ${e.winner} (${e.reason}): P${e.playerScore} - AI${e.aiScore}`);
     updateBoards({ playerScore: e.playerScore, aiScore: e.aiScore });
+    if (sideScreen) {
+      const shot = pointShots.lastPlayerShot;
+      const strokes = pointShots.strokes;
+      // Deferred a microtask: rallyManager emits this BEFORE it rotates the
+      // serve / resets for a new game / ends the match, all synchronously in
+      // the same call — so by the microtask getScore() says who serves next.
+      queueMicrotask(() => {
+        const s = rallyManager.getScore();
+        sideScreen.update({
+          lastShot: shot,
+          rallyStrokes: strokes,
+          pointPlayed: true,
+          nextServer: s.currentServer,
+          servesLeft: s.servesLeft,
+          matchOver: s.matchOver,
+        });
+      });
+    }
     // Instant over-net flash where the point just happened — a brief burst
     // under the match-end celebration is fine.
     if (pointBurst) pointBurst.burst({ winner: e.winner, foul: e.foul });
@@ -699,6 +738,11 @@ export function createAIMatchDrill({
   // arrow (stays visible until launch() hides it) and buzz the paddle-hand
   // as an attention cue.
   rallyManager.on('onServeRequested', (e) => {
+    // New rally. The AI's serve is scripted (no paddleHit fires for it), so
+    // it is counted here; the player's serve is a real contact and counts
+    // itself in onPaddleHit.
+    pointShots.strokes = e.server === 'ai' ? 1 : 0;
+    pointShots.lastPlayerShot = null;
     if (e.server === 'player') {
       if (serveArrow) serveArrow.show('player');
       pulseActive(0.6, 100);
@@ -770,6 +814,7 @@ export function createAIMatchDrill({
     clearInterval(clockTimer);
     report.dispose();
     if (scoreboard) scoreboard.dispose();
+    if (sideScreen) sideScreen.dispose();
     if (arenaLighting) arenaLighting.dispose();
     if (serveArrow) serveArrow.dispose();
     if (pointBurst) pointBurst.dispose();
