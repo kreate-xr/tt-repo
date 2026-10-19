@@ -69,8 +69,6 @@ function preloadLobbyManager() {
 }
 import * as profileStore from '../profile/store.js';
 import { PhysicsTuner } from '../scene/physicsTuner.js';
-import { CalibrationWizard } from '../scene/calibrationWizard.js';
-import { CalibrationTuner } from '../scene/calibrationTuner.js';
 import { PaddleQuickFit } from '../scene/paddleQuickFit.js';
 import { paddleAngularVelocity } from '../physics/ball.js';
 import { update as updateTrackingLossGuard } from '../xr/trackingLossGuard.js';
@@ -697,50 +695,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   };
   tuner.on('back', onTunerBack);
 
-  // --- Calibration wizard (P13 §C3). Same panel interface as PhysicsTuner
-  // so it routes through the existing currentTuner/activePanel machinery
-  // with no branching. Grip sampling and ω_grip are wired to xrPaddle.js /
-  // ball.js via the constructor callbacks — the wizard stays decoupled
-  // from those modules.
-  const calibWizard = new CalibrationWizard({
-    sampleGrip: (outPos, outQuat) => xr.getSmoothedGripPose(outPos, outQuat),
-    getAngularSpeed: () => paddleAngularVelocity.length(),
-  });
-  const calibTuner = new CalibrationTuner();
-  calibWizard.on('back', onTunerBack);
-  // On wizard accept, hand off to the fine-tune panel so the player can nudge
-  // the just-fitted values without opening a second menu.
-  calibWizard.on('accepted', () => {
-    calibWizard.hide();
-    currentTuner = calibTuner;
-    calibTuner.show();
-  });
-  // Direct "Fine-tune manually" from the wizard's first screen — same
-  // hand-off as 'accepted', minus the two-sample fit.
-  calibWizard.on('fineTune', () => {
-    calibWizard.hide();
-    currentTuner = calibTuner;
-    calibTuner.show();
-  });
-  calibTuner.on('back', onTunerBack);
-
   // Quick Fit — what CALIBRATE opens. One screen, thumbsticks move the bat
-  // live (pollQuickFitSticks); the wizard and the stepper panel stay one tap
-  // away for players who want them. hide() commits, so onTunerBack (Done or
-  // A/X) and the hand-offs below all save the live edit.
+  // live (pollQuickFitSticks). hide() commits, so onTunerBack (Done or A/X)
+  // saves the live edit.
   const quickFit = new PaddleQuickFit();
   scene.add(quickFit.mesh);
   quickFit.on('back', onTunerBack);
-  quickFit.on('wizard', () => {
-    quickFit.hide();
-    currentTuner = calibWizard;
-    calibWizard.show();
-  });
-  quickFit.on('fineTune', () => {
-    quickFit.hide();
-    currentTuner = calibTuner;
-    calibTuner.show();
-  });
 
   const raycaster = new THREE.Raycaster();
   const tmpQuat = new THREE.Quaternion();
@@ -1581,8 +1541,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     const pokeHandled = updatePokeInput();
     updateMenuRaycast(pokeHandled);
     wristMenu.update(dt);
-    // Expire transient wizard messages ("hold still" prompts, etc.).
-    if (calibWizard.isVisible()) calibWizard.tick(performance.now());
     pollQuickFitSticks(dt);
 
     // Live HUD line

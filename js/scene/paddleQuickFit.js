@@ -1,8 +1,8 @@
 // Quick Fit — the one-screen paddle calibration for a bare controller.
 //
-// The two-pose wizard (calibrationWizard.js) and the 6-row ± stepper panel
-// (calibrationTuner.js) are precise but hard: four screens of poses, or
-// reasoning about Pitch/Roll/Yaw in 0.5° presses. With a bare controller there
+// It replaced the two-pose wizard and the 6-row ± stepper panel, which were
+// precise but hard: four screens of poses, or reasoning about Pitch/Roll/Yaw
+// in 0.5° presses. With a bare controller there
 // is no real blade to register against — "calibrated" means the bat sits where
 // the player expects — so this panel lets them SEE and FEEL it instead:
 //
@@ -15,7 +15,7 @@
 // Knobs are layered on the measured 'handle_grip' fit via paddleAdjust.js and
 // always rebuilt from base + knobs, never accumulated onto the live pose.
 //
-// Same host surface as MultiplayerMenu / CalibrationTuner (mesh, show, hide,
+// Same host surface as MultiplayerMenu / PhysicsTuner (mesh, show, hide,
 // isVisible, on, emit, hitTestUV, setHovered, selectHovered) so inGame.js's
 // currentTuner machinery drives it unchanged. Scene-free apart from the mesh:
 // inGame.js adds it to the scene.
@@ -34,7 +34,7 @@ import { PRESETS, getPresetCopy } from '../xr/calibrationPresets.js';
 import { applyAdjust, stepAdjust, zeroAdjust, isZeroAdjust } from '../xr/paddleAdjust.js';
 
 const CANVAS_W = 640;
-const CANVAS_H = 720;
+const CANVAS_H = 642;
 export const PLANE_W = 0.36;
 export const PLANE_H = PLANE_W * (CANVAS_H / CANVAS_W);
 
@@ -150,8 +150,6 @@ export class PaddleQuickFit {
   handle(id) {
     if (id === 'done') { this.emit('back'); return; }
     if (id === 'reset') { this.reset(); return; }
-    if (id === 'wizard') { this.emit('wizard'); return; }
-    if (id === 'fineTune') { this.emit('fineTune'); return; }
   }
 
   /**
@@ -241,12 +239,9 @@ export class PaddleQuickFit {
     p.clear();
     const w = CANVAS_W - 2 * PAD;
     const half = (w - GAP) / 2;
-    let y = CANVAS_H - PAD - 2 * BTN_H - GAP;
+    const y = CANVAS_H - PAD - BTN_H;
     p.add({ id: 'done', kind: 'button', label: 'DONE', accent: true, x: PAD, y, w: half, h: BTN_H });
     p.add({ id: 'reset', kind: 'button', label: 'RESET', x: PAD + half + GAP, y, w: half, h: BTN_H });
-    y += BTN_H + GAP;
-    p.add({ id: 'wizard', kind: 'button', label: 'Precise 2-pose fit', x: PAD, y, w: half, h: BTN_H });
-    p.add({ id: 'fineTune', kind: 'button', label: 'Number fine-tune', x: PAD + half + GAP, y, w: half, h: BTN_H });
   }
 
   draw() {

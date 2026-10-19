@@ -112,15 +112,6 @@ describe('PaddleQuickFit', () => {
     expect(stored().adjust).toBeUndefined();
   });
 
-  test('wizard / fine-tune buttons hand off by event', () => {
-    const seen = [];
-    qf.on('wizard', () => seen.push('wizard'));
-    qf.on('fineTune', () => seen.push('fineTune'));
-    qf.handle('wizard');
-    qf.handle('fineTune');
-    expect(seen).toEqual(['wizard', 'fineTune']);
-  });
-
   test('every button is hit-testable', () => {
     for (const w of qf.panel.widgets) {
       const u = (w.x + w.w / 2) / qf.panel.width;
