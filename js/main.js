@@ -12,6 +12,7 @@ import { wireOverlay } from './ui/overlay.js';
 import { mark, recordError, installUnloadFlush } from './analytics/session.js';
 import { wirePostSession } from './ui/postSession.js';
 import { wireAccountPanel } from './ui/accountPanel.js';
+import { refreshProgress } from './ui/progressPanel.js';
 
 // Last-resort visibility for anything that slips past local handlers —
 // without these, a rejected promise in the network stack dies silently.
@@ -33,6 +34,7 @@ mark('pageLoad');
 installUnloadFlush();
 wirePostSession();
 wireAccountPanel();
+refreshProgress();
 
 const overlay = document.getElementById('overlay');
 const loadingScreen = document.getElementById('loading');

@@ -22,6 +22,7 @@ import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableC
 // session itself (below). Two different things with one obvious name.
 import { beginSession, endSession as endAnalyticsRun, mark } from '../analytics/session.js';
 import { showPostSession } from '../ui/postSession.js';
+import { refreshProgress } from '../ui/progressPanel.js';
 import { showTrialOver, refreshAccessSoon } from '../ui/accountPanel.js';
 import { createTrialClock } from '../account/trialClock.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
@@ -1397,6 +1398,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     restoreARLighting();
     setSceneBackground(new THREE.Color(0x1a1a2e));
     if (overlay) overlay.style.display = 'flex';
+    // The match / session that just ended may have added a history entry.
+    refreshProgress();
     // The overlay coming back used to be the whole of "the session ended".
     // The card goes up with it — see js/ui/postSession.js for why this
     // moment and no other. A session the free trial ended gets the paywall

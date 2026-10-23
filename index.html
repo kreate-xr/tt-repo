@@ -426,6 +426,79 @@
     }
     .card p { color: var(--ink-soft); font-size: 0.9rem; margin-top: 8px; line-height: 1.45; }
 
+    /* --- Your progress --- */
+
+    .progress-section {
+      padding: 0 clamp(20px, 5vw, 56px) 8px;
+      max-width: 1320px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .progress-panel {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-card);
+      padding: clamp(22px, 3vw, 34px);
+    }
+    .progress-panel h2 {
+      font-size: clamp(1.3rem, 2.2vw, 1.7rem);
+      font-weight: 800;
+      letter-spacing: -0.02em;
+    }
+    .progress-panel h2 .grad {
+      background: var(--brand-grad);
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .progress-empty, .progress-none { color: var(--ink-soft); font-size: 0.92rem; margin-top: 10px; }
+    .progress-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+      margin-top: 18px;
+    }
+    .progress-card {
+      border: 1px dashed #d9def2;
+      border-radius: var(--radius-md);
+      background: #fafbff;
+      padding: 18px 20px;
+      min-width: 0;
+    }
+    .progress-card h4 { font-size: 1rem; font-weight: 700; }
+    .progress-sub { color: var(--ink-soft); font-size: 0.86rem; margin-top: 4px; }
+    .progress-stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 26px;
+      margin-top: 12px;
+    }
+    .progress-stats dt { color: var(--ink-soft); font-size: 0.78rem; font-weight: 600; }
+    .progress-stats dd { font-size: 1.25rem; font-weight: 800; margin: 2px 0 0; }
+    .progress-stats .delta { font-size: 0.78rem; font-weight: 700; color: var(--ink-soft); }
+    .progress-stats .delta.up { color: #15803d; }
+    .progress-stats .delta.down { color: #b91c1c; }
+    .spark { display: block; width: 100%; height: 40px; margin-top: 12px; overflow: visible; }
+    .spark-line {
+      fill: none;
+      stroke: var(--brand-1);
+      stroke-width: 2;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+      vector-effect: non-scaling-stroke;
+    }
+    .spark-label { color: #8a91aa; font-size: 0.74rem; margin-top: 4px; }
+    .progress-recent-title { font-size: 0.9rem; font-weight: 700; margin-top: 20px; }
+    .progress-recent {
+      list-style: none;
+      padding: 0;
+      margin-top: 6px;
+      color: var(--ink-soft);
+      font-size: 0.86rem;
+      line-height: 1.7;
+    }
+
     /* --- Multiplayer section --- */
 
     .mp-section {
@@ -805,6 +878,7 @@
       .hero { grid-template-columns: 1fr; padding-top: 36px; }
       .hero-art { min-height: 300px; }
       .cards { grid-template-columns: 1fr; }
+      .progress-grid { grid-template-columns: 1fr; }
       .mp-grid { grid-template-columns: 1fr; }
       .mp-divider { padding: 4px 0; }
     }
@@ -920,6 +994,51 @@
         </div>
       </section>
       </div>
+
+      <!-- Your progress: filled by js/ui/progressPanel.js from the history
+           js/profile/progress.js saves at the end of each AI match and full
+           Training Session. Flat page only — never drawn in the headset. -->
+      <section class="progress-section" id="progress">
+        <div class="progress-panel">
+          <h2>Your <span class="grad">Progress</span></h2>
+          <p class="progress-empty" id="progress-empty">
+            Finish an AI match or a Training Session and your results will show up here.
+          </p>
+          <div id="progress-body" hidden>
+            <div class="progress-grid">
+              <div class="progress-card">
+                <h4>AI Match</h4>
+                <p class="progress-none" id="progress-ai-none">No AI matches yet.</p>
+                <div id="progress-ai-stats">
+                  <p class="progress-sub" id="progress-ai-record"></p>
+                  <dl class="progress-stats">
+                    <div><dt>Last accuracy</dt><dd><span id="progress-ai-accuracy"></span> <span class="delta" id="progress-ai-delta"></span></dd></div>
+                    <div><dt>Top speed</dt><dd id="progress-ai-speed"></dd></div>
+                  </dl>
+                  <svg class="spark" id="progress-ai-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"></svg>
+                  <p class="spark-label" id="progress-ai-spark-label"></p>
+                </div>
+              </div>
+              <div class="progress-card">
+                <h4>Training Session</h4>
+                <p class="progress-none" id="progress-tr-none">No Training Sessions yet.</p>
+                <div id="progress-tr-stats">
+                  <p class="progress-sub" id="progress-tr-level"></p>
+                  <dl class="progress-stats">
+                    <div><dt>Last score</dt><dd id="progress-tr-last"></dd></div>
+                    <div><dt>Best</dt><dd id="progress-tr-best"></dd></div>
+                    <div><dt>Work on</dt><dd id="progress-tr-weakest"></dd></div>
+                  </dl>
+                  <svg class="spark" id="progress-tr-spark" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true"></svg>
+                  <p class="spark-label" id="progress-tr-spark-label"></p>
+                </div>
+              </div>
+            </div>
+            <h4 class="progress-recent-title">Recent</h4>
+            <ul class="progress-recent" id="progress-recent"></ul>
+          </div>
+        </div>
+      </section>
 
       <section class="cards" id="features">
         <a class="card" href="#multiplayer">

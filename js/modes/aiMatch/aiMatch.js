@@ -51,6 +51,7 @@ import { createSideScreen } from '../../scene/sideScreen.js';
 import { createMatchReport } from '../../scene/matchReport.js';
 import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
 import { mark, setMatchSummary } from '../../analytics/session.js';
+import { recordAiMatch } from '../../profile/progress.js';
 import { createArenaLighting } from '../../scene/arenaLighting.js';
 import { faultRuleText } from '../../scene/faultText.js';
 import { createServeArrow } from '../../scene/serveArrow.js';
@@ -698,6 +699,15 @@ export function createAIMatchDrill({
     }));
     const s = statTracker.getStats();
     setMatchSummary(s);
+    // The start page's "Your progress" history — one small write, made here
+    // because the match is over and no ball is in play.
+    recordAiMatch({
+      difficulty,
+      won: e.winner === 'player',
+      playerGames: e.playerGames,
+      aiGames: e.aiGames,
+      stats: s,
+    });
     report.setModel({
       // The headline the scoreboard banner used to carry.
       title: e.winner === 'player' ? 'YOU WIN!' : 'AI WINS',

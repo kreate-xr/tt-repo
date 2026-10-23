@@ -14,6 +14,7 @@ import { SessionModel, SETS, BLOCKS, stepConfig } from '../session.js';
 import { tableBox } from '../../../scene/models.js';
 import { mulberry32 } from '../../../util/rng.js';
 import { getSetting, setSetting } from '../../../profile/store.js';
+import { recordTraining } from '../../../profile/progress.js';
 
 export const SESSION = {
   id: 'session',
@@ -77,8 +78,19 @@ export function createSessionDrill({
       else if (ev === 'resume') inner.resume();
       else if (ev === 'done' && !saved) {
         saved = true;
-        const { score } = model.report();
-        if (bestKey && score > previousBest) setSetting(bestKey, score);
+        const r = model.report();
+        if (bestKey && r.score > previousBest) setSetting(bestKey, r.score);
+        // Full sessions only, like the best score: a focus run is practice.
+        if (bestKey) {
+          recordTraining({
+            level: r.level,
+            levelLabel: r.levelLabel,
+            score: r.score,
+            depth: r.depth,
+            bestStreak: r.bestStreak,
+            weakestLabel: r.weakest ? BLOCKS[r.weakest].label : null,
+          });
+        }
       }
     },
 
