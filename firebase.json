@@ -6,7 +6,7 @@
   "functions": [
     {
       "source": "functions",
-      "codebase": "default",
+      "codebase": "tabletennis",
       "ignore": [
         "node_modules",
         ".git",
