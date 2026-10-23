@@ -19,7 +19,10 @@
 
 import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore, doc, getDoc, connectFirestoreEmulator } from 'firebase/firestore';
-import { getAuth, signInAnonymously, connectAuthEmulator } from 'firebase/auth';
+import {
+  getAuth, initializeAuth, signInAnonymously, connectAuthEmulator,
+  indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence,
+} from 'firebase/auth';
 import { installAppCheck } from './appCheck.js';
 import { traceBoot } from './connectTrace.js';
 
@@ -82,7 +85,18 @@ export function initFirebase() {
   // A Firestore created first would keep sending unattested requests.
   if (!emulators) installAppCheck(app);
   db = getFirestore(app, DATABASE_ID);
-  auth = getAuth(app);
+  // getAuth() would also attach browserPopupRedirectResolver, which preloads
+  // apis.google.com/js/api.js + an auth iframe for popup/redirect sign-in —
+  // blocked by the CSP, and unused: sign-in is email/password + anonymous only.
+  // Same persistence list as getAuth(). getAuth() stays the fallback for a
+  // second call (initializeAuth throws if Auth already exists).
+  try {
+    auth = initializeAuth(app, {
+      persistence: [indexedDBLocalPersistence, browserLocalPersistence, browserSessionPersistence],
+    });
+  } catch {
+    auth = getAuth(app);
+  }
   if (emulators) {
     const [fsHost, fsPort] = emulators.firestoreHost.split(':');
     connectFirestoreEmulator(db, fsHost, Number(fsPort));
