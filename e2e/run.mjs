@@ -1,7 +1,7 @@
 // `npm run test:e2e` — boots the Auth, Firestore and Functions emulators
 // (firebase.e2e.json, project demo-tt) around e2e/accounts.e2e.mjs.
 //
-// The Functions emulator reads secrets from functions/.secret.local; this
+// The Functions emulator reads the PayLayer params from functions/.env.local; this
 // writes the fake PayLayer's values there for the run and puts back whatever
 // was there before. The file is gitignored either way.
 
@@ -9,7 +9,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { FAKE_API_KEY, FAKE_WEBHOOK_SECRET } from './fakePayLayer.mjs';
 
-const SECRET_FILE = 'functions/.secret.local';
+const SECRET_FILE = 'functions/.env.local';
 // Every port the suite owns (firebase.e2e.json, Vite, the fake PayLayer).
 const E2E_PORTS = [9199, 8189, 5101, 4419, 4519, 5180, 8790];
 

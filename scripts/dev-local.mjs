@@ -12,7 +12,7 @@
 // plus its Firestore emulator). On first run — or whenever PayLayer no longer
 // knows this site (its emulator data was wiped) — the game is registered as a
 // PayLayer site and its API key + webhook secret are written to
-// functions/.secret.local (gitignored). Secrets are never printed.
+// functions/.env.local (gitignored). Secrets are never printed.
 //
 //   npm run dev:local              start everything; Ctrl+C stops it
 //   npm run dev:local -- --setup   force a fresh PayLayer site registration
@@ -28,7 +28,7 @@ const APP_ORIGIN = 'http://localhost:5180';
 const PAYLAYER_URL = 'http://127.0.0.1:8080';
 const PAYLAYER_DIR = process.env.PAYLAYER_DIR || 'D:/Bhuvnesh_Data/Payment';
 const WEBHOOK_URL = `http://127.0.0.1:5101/${PROJECT}/us-central1/api/webhooks/paylayer`;
-const SECRET_FILE = 'functions/.secret.local';
+const SECRET_FILE = 'functions/.env.local';
 const PORTS = [9199, 8189, 5101, 4419, 4519, 5180];
 const FIREBASE_BIN = process.platform === 'win32' ? 'node_modules\\.bin\\firebase.cmd' : 'node_modules/.bin/firebase';
 

@@ -37,5 +37,5 @@ Screenshots land in `e2e/.artifacts/` (gitignored; override with `E2E_ARTIFACTS`
   emulator JVMs behind).
 - Browser: Playwright's Chromium if downloaded (`npx playwright install
   chromium`), otherwise the installed Google Chrome.
-- The runner writes the fake PayLayer secrets to `functions/.secret.local` for
+- The runner writes the fake PayLayer secrets to `functions/.env.local` for
   the run and restores the previous file afterwards.

@@ -6,7 +6,12 @@ dist/
 .env.local
 .env.*.local
 
-# Cloud Functions emulator secrets (production secrets live in Secret Manager)
+# Cloud Functions params per project — hold the PayLayer keys (functions/index.js).
+# Only the emulator-only demo files are committed.
+functions/.env
+functions/.env.*
+!functions/.env.demo-tt
+!functions/.env.demo-tt-local
 functions/.secret.local
 
 # Claude Code machine-local settings
