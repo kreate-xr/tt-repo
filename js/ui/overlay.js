@@ -19,6 +19,10 @@ function loadLobbyManager() {
 }
 import { XR_MODES } from './xrModes.js';
 import { canEnter } from './accountPanel.js';
+// Already in the entry graph through inGame.js — importing them here costs
+// nothing extra and lets the Arena preload run before the session request.
+import { loadModels } from '../scene/models.js';
+import { loadArenaVenue, isArenaVenueLoaded, removeArenaProgressListener } from '../scene/arenaVenue.js';
 
 export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, startDesktop */ }) {
   const createRoomBtn = document.getElementById('create-room');
@@ -119,6 +123,18 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
     // Free trial used up and not unlocked: the paywall opens instead.
     // Synchronous on purpose — see canEnter in accountPanel.js.
     if (!canEnter()) return;
+    // The Arena is a ~10 MB stadium GLB. Loading it inside the session left
+    // the player standing next to a bare table with loading text for the
+    // whole download, so it is fetched and decoded HERE first, behind a
+    // proper loading screen, and the headset opens on the finished venue.
+    if (mode.id === 'vr-arena' && !isArenaVenueLoaded()) {
+      preloadArena(mode, btn);
+      return;
+    }
+    launchVenue(mode, btn);
+  }
+
+  function launchVenue(mode, btn) {
     entering = true;
     const labelEl = btn.querySelector('.venue-label');
     const label = labelEl ? labelEl.textContent : '';
@@ -147,6 +163,98 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
     // startInGame resolves once the session is live (not when it ends), so the
     // buttons are armed again by the time the player is back on this screen.
     Promise.resolve(entry).then(() => restore(), restore);
+  }
+
+  // --- Arena preload screen -------------------------------------------------
+  // Reuses the #loading screen with a progress bar. requestSession needs the
+  // click's transient user activation (a few seconds), which a 10 MB download
+  // usually outlives — so a slow load ends on an "Enter Arena" button whose
+  // own click carries fresh activation, while a fast one (warm HTTP cache)
+  // goes straight in.
+  const loadText = document.getElementById('loading-text');
+  const loadSub = document.getElementById('loading-sub');
+  const loadBar = document.getElementById('loading-bar');
+  const loadBarFill = document.getElementById('loading-bar-fill');
+  const loadActions = document.getElementById('loading-actions');
+  const loadEnterBtn = document.getElementById('loading-enter');
+  const loadCancelBtn = document.getElementById('loading-cancel');
+  const defaultLoadText = loadText ? loadText.textContent : '';
+  // Bumped on cancel (and on every new preload) so an abandoned load's
+  // completion can neither enter XR nor touch the screen.
+  let arenaPreloadId = 0;
+  let arenaReadyEntry = null;
+
+  function setArenaProgress(f) {
+    const pct = Math.round(Math.max(0, Math.min(1, f)) * 100);
+    if (loadBarFill) loadBarFill.style.width = `${pct}%`;
+    if (loadSub) loadSub.textContent = pct >= 90 && pct < 100
+      ? 'Setting up the stadium…'
+      : `Downloading the stadium — ${pct}%`;
+  }
+
+  function closeArenaScreen() {
+    arenaReadyEntry = null;
+    if (loadingScreen) loadingScreen.style.display = 'none';
+    if (loadText) loadText.textContent = defaultLoadText;
+    for (const el of [loadSub, loadBar, loadActions, loadEnterBtn]) if (el) el.hidden = true;
+    if (loadBarFill) loadBarFill.style.width = '0%';
+  }
+
+  function releaseVenueButtons() {
+    entering = false;
+    for (const b of venueBtns) b.disabled = !entryGateOpen;
+  }
+
+  function preloadArena(mode, btn) {
+    const myId = ++arenaPreloadId;
+    entering = true;
+    for (const b of venueBtns) b.disabled = true;
+    if (statusEl) statusEl.textContent = '';
+    if (loadText) loadText.textContent = 'Loading the Arena…';
+    for (const el of [loadSub, loadBar, loadActions]) if (el) el.hidden = false;
+    if (loadEnterBtn) loadEnterBtn.hidden = true;
+    setArenaProgress(0);
+    if (loadingScreen) loadingScreen.style.display = 'flex';
+
+    const onProgress = (f) => { if (myId === arenaPreloadId) setArenaProgress(f); };
+    // Table, ball and paddle too: they are small, and loading them now means
+    // the session has nothing left to fetch at all.
+    Promise.all([loadModels(null, null), loadArenaVenue(onProgress)]).then(() => {
+      removeArenaProgressListener(onProgress);
+      if (myId !== arenaPreloadId) return; // cancelled
+      const enter = () => {
+        closeArenaScreen();
+        releaseVenueButtons();
+        enterVenue(mode, btn);
+      };
+      if (navigator.userActivation && navigator.userActivation.isActive) {
+        enter();
+        return;
+      }
+      arenaReadyEntry = enter;
+      if (loadText) loadText.textContent = 'The Arena is ready';
+      if (loadSub) loadSub.textContent = 'Everything is loaded — step in whenever you are.';
+      if (loadBar) loadBar.hidden = true;
+      if (loadEnterBtn) { loadEnterBtn.hidden = false; loadEnterBtn.focus(); }
+    }, (err) => {
+      removeArenaProgressListener(onProgress);
+      if (myId !== arenaPreloadId) return;
+      console.error('[arena] preload failed:', err);
+      closeArenaScreen();
+      releaseVenueButtons();
+      if (statusEl) statusEl.textContent = 'Could not load the Arena — check your connection and press Arena again.';
+    });
+  }
+
+  if (loadEnterBtn) loadEnterBtn.addEventListener('click', () => { if (arenaReadyEntry) arenaReadyEntry(); });
+  if (loadCancelBtn) {
+    loadCancelBtn.addEventListener('click', () => {
+      // The download itself keeps going (GLTFLoader cannot abort) and is
+      // cached, so pressing Arena again picks up where it got to.
+      arenaPreloadId++;
+      closeArenaScreen();
+      releaseVenueButtons();
+    });
   }
 
   setEntryEnabled(true);

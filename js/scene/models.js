@@ -634,8 +634,20 @@ function assertGlbTexturesDecoded() {
   );
 }
 
-export async function loadModels(loadingScreen, statusEl) {
-  if (modelsLoaded) return;
+// One load at a time: the start page preloads these for the Arena
+// (js/ui/overlay.js) while startInGame may ask again, and two overlapping
+// loads would add every model to the scene twice.
+let modelsLoading = null;
+export function loadModels(loadingScreen, statusEl) {
+  if (modelsLoaded) return Promise.resolve();
+  if (!modelsLoading) {
+    modelsLoading = loadModelsOnce(loadingScreen, statusEl)
+      .finally(() => { modelsLoading = null; });
+  }
+  return modelsLoading;
+}
+
+async function loadModelsOnce(loadingScreen, statusEl) {
   if (loadingScreen) loadingScreen.style.display = 'flex';
 
   try {

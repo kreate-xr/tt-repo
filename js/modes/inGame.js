@@ -519,7 +519,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     if (session && session.end) session.end().catch(() => {});
   };
 
-  loadPanel.setText('Loading models…');
+  // Arena assets were preloaded on the start page, so there is nothing left
+  // to download — only the venue to mount.
+  loadPanel.setText(isArena ? 'Entering the Arena…' : 'Loading models…');
   // Synthesize every lazily-built audio buffer (hall IR, ambient bed, whoosh
   // and roll noise — ~610k samples of main-thread fill) plus the pooled HRTF
   // impact heads NOW, behind the loading panel. Left lazy, the first swing or
@@ -531,14 +533,18 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // call so the paint is its own task inside that wait instead of extending
   // this one. Skipped in MR, which builds no venue.
   if (isVR && !isArena) setTimeout(() => { warmWoodTile(); warmWallTile(); }, 0);
-  // Arena GLB (~8 MB) downloads and decodes alongside the table/ball/paddle
-  // GLBs; it is mounted below once tableBox exists. The .catch keeps an
-  // early rejection from surfacing as unhandled before it is awaited.
+  // Arena GLB (~10 MB): normally already downloaded and decoded by the
+  // start-page preload (js/ui/overlay.js), so this is the cached promise and
+  // the player never stands next to a bare table waiting for the stadium. It
+  // is mounted below once tableBox exists. The .catch keeps an early
+  // rejection from surfacing as unhandled before it is awaited.
   const arenaLoad = isArena ? loadArenaVenue() : null;
   if (arenaLoad) arenaLoad.catch(() => {});
   let arenaScene = null;
   try {
-    await loadModels(loadingScreen, statusEl);
+    // No DOM loading screen here: with dom-overlay granted it is drawn in the
+    // headset too, a second "Loading models…" on top of loadPanel above.
+    await loadModels(null, statusEl);
     if (arenaLoad) {
       loadPanel.setText('Loading arena…');
       arenaScene = await arenaLoad;

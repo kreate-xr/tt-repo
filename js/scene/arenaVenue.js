@@ -99,14 +99,49 @@ function showBakedLighting(root) {
   });
 }
 
-// Starts the download + decode. Independent of the table, so inGame.js can
-// kick it off alongside loadModels and mount it once tableBox exists.
-export function loadArenaVenue() {
-  return makeLoader().loadAsync(ARENA_URL).then((gltf) => {
-    showBakedLighting(gltf.scene);
-    return gltf.scene;
-  });
+// The one in-flight / finished load, shared by the start-page preload
+// (js/ui/overlay.js shows its progress before the XR session is requested)
+// and startInGame, which then finds the venue already decoded instead of
+// loading it inside the headset next to a bare table. Cleared on failure and
+// on dispose — dispose frees the GPU resources, so a disposed scene cannot be
+// mounted again and the next entry loads afresh (from the HTTP cache).
+let arenaLoad = null;
+let arenaLoaded = false;
+const progressListeners = new Set();
+
+// Starts the download + decode, or returns the one already running. Optional
+// onProgress(fraction 0..1) follows the download; decode follows it, so 1 is
+// reported only once the scene is ready to mount.
+export function loadArenaVenue(onProgress) {
+  if (onProgress) progressListeners.add(onProgress);
+  if (!arenaLoad) {
+    arenaLoad = makeLoader().loadAsync(ARENA_URL, (e) => {
+      // Content-Length is absent on some compressed responses; the bar then
+      // simply waits at 0 until the decode lands.
+      if (!e.lengthComputable || !e.total) return;
+      // Hold back the last 10% for the Draco/KTX2 decode after the bytes land.
+      const f = Math.min(e.loaded / e.total, 1) * 0.9;
+      for (const cb of progressListeners) cb(f);
+    }).then((gltf) => {
+      showBakedLighting(gltf.scene);
+      arenaLoaded = true;
+      for (const cb of progressListeners) cb(1);
+      progressListeners.clear();
+      return gltf.scene;
+    }, (err) => {
+      arenaLoad = null;
+      progressListeners.clear();
+      throw err;
+    });
+  } else if (onProgress && arenaLoaded) {
+    onProgress(1);
+  }
+  return arenaLoad;
 }
+
+export function isArenaVenueLoaded() { return arenaLoaded; }
+
+export function removeArenaProgressListener(cb) { progressListeners.delete(cb); }
 
 // Mount a loaded arena scene with its court centre under the table.
 export function createArenaVenue(arenaScene, tableBox) {
@@ -138,6 +173,8 @@ export function createArenaVenue(arenaScene, tableBox) {
     });
     camera.far = prevFar;
     camera.updateProjectionMatrix();
+    arenaLoad = null;
+    arenaLoaded = false;
   }
 
   return {

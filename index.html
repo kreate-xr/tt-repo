@@ -905,6 +905,24 @@
     }
     @keyframes spin { to { transform: rotate(360deg); } }
     #loading p { font-size: 1.15rem; color: #cbd5e1; }
+
+    /* Arena preload (js/ui/overlay.js): the stadium is downloaded and decoded
+       here, on the page, so the headset opens on a finished venue. */
+    #loading .load-sub { font-size: 0.9rem; color: #94a3b8; margin-top: -10px; text-align: center; padding: 0 16px; }
+    #loading .load-bar {
+      width: min(320px, calc(100vw - 32px)); height: 6px;
+      border-radius: 999px; background: rgba(255, 255, 255, 0.12); overflow: hidden;
+    }
+    #loading .load-bar-fill {
+      height: 100%; width: 0%;
+      background: var(--brand-grad);
+      transition: width 0.2s ease-out;
+    }
+    #loading .load-actions { display: flex; gap: 12px; align-items: center; }
+    #loading .load-enter { padding: 12px 28px; }
+    #loading .load-cancel { color: #cbd5e1; }
+    #loading .load-cancel:hover { color: #fff; }
+    #loading [hidden] { display: none; }
   </style>
 </head>
 <body>
@@ -1301,7 +1319,16 @@
 
   <div id="loading">
     <div class="spinner"></div>
-    <p>Loading models...</p>
+    <p id="loading-text">Loading models...</p>
+    <!-- Arena preload only (js/ui/overlay.js); hidden for every other load. -->
+    <span class="load-sub" id="loading-sub" hidden></span>
+    <div class="load-bar" id="loading-bar" hidden><div class="load-bar-fill" id="loading-bar-fill"></div></div>
+    <div class="load-actions" id="loading-actions" hidden>
+      <button type="button" class="enter-venue primary load-enter" id="loading-enter" hidden>
+        <span class="venue-text"><span class="venue-label">Enter Arena</span></span>
+      </button>
+      <button type="button" class="link-btn load-cancel" id="loading-cancel">Cancel</button>
+    </div>
   </div>
 
   <script type="module" src="js/main.js"></script>
