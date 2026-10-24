@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>SportyXR — Table Tennis (Beta)</title>
+  <title>SportyXR — Table Tennis</title>
   <meta name="description" content="Play table tennis in mixed reality. Realistic physics, AI opponents from club to elite level, training drills, and live multiplayer — on Meta Quest.">
   <meta name="theme-color" content="#4f46e5">
   <link rel="icon" href="/favicon.ico" sizes="48x48">
@@ -34,7 +34,7 @@
        production domain (tt.sportyxr.com), not the *.web.app alias. -->
   <meta property="og:url" content="https://tt.sportyxr.com/">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="SportyXR — Table Tennis (Beta)">
+  <meta property="og:title" content="SportyXR — Table Tennis">
   <meta property="og:description" content="Play table tennis in mixed reality. Realistic physics, AI opponents, training drills, and live multiplayer — on Meta Quest.">
   <meta property="og:image" content="/og.jpg">
   <meta property="og:image:width" content="1200">
@@ -223,15 +223,6 @@
       font-size: 0.82rem;
     }
     .badge .chip svg { width: 15px; height: 15px; }
-    /* Beta chip: amber, not brand-indigo, so it reads as a status flag and
-       not as a second feature chip beside "WebXR". */
-    .badge .chip.beta {
-      background: rgba(245, 138, 42, 0.14);
-      color: #c2410c;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      font-size: 0.74rem;
-    }
 
     .hero h1 {
       font-size: clamp(2rem, 4vw, 3.2rem);
@@ -788,6 +779,12 @@
       display: flex; align-items: center; justify-content: center; gap: 5px;
       font-size: 0.74rem; color: #8a91ab;
     }
+    .acct-legal {
+      margin-top: 6px;
+      text-align: center;
+      font-size: 0.72rem; line-height: 1.5; color: #8a91ab;
+    }
+    .acct-legal a { color: inherit; text-decoration: underline; }
 
     #room-code-input {
       padding: 12px 14px;
@@ -961,7 +958,6 @@
               WebXR
             </span>
             Free to Play in Your Browser
-            <span class="chip beta">Beta</span>
           </div>
 
           <h1>Table Tennis,<br><span class="grad">Anytime, Anywhere.</span></h1>
@@ -1148,7 +1144,11 @@
 
     <div class="footer">
       SportyXR — play table tennis instantly in your browser with WebXR.
+      &middot; <a href="/terms.html">Terms</a>
       &middot; <a href="/privacy.html">Privacy</a>
+      &middot; <a href="/refund.html">Cancellation &amp; Refunds</a>
+      &middot; <a href="/shipping.html">Shipping &amp; Delivery</a>
+      &middot; <a href="/contact.html">Contact</a>
     </div>
   </div>
 
@@ -1290,7 +1290,7 @@
         <!-- The price follows the phone typed below (+91 → INR). Display
              only: the server decides the charge (functions/src/pricing.js). -->
         <div class="acct-price-row">
-          <span class="acct-price" id="acct-buy-price">₹499</span>
+          <span class="acct-price" id="acct-buy-price">₹1,777</span>
           <span class="acct-price-note">one-time · lifetime access</span>
         </div>
         <form id="acct-buy-form" novalidate>
@@ -1298,11 +1298,16 @@
                  placeholder="Full name" aria-label="Full name" required>
           <input id="acct-buy-phone" type="tel" class="field" autocomplete="tel" inputmode="tel"
                  placeholder="Phone, e.g. +91 98765 43210" aria-label="Phone number with country code" required>
-          <button type="submit" class="btn btn-primary btn-block btn-send" id="acct-buy-submit">Pay ₹499</button>
+          <button type="submit" class="btn btn-primary btn-block btn-send" id="acct-buy-submit">Pay ₹1,777</button>
         </form>
         <p class="acct-secure">
           <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z"/></svg>
           Secure checkout by Razorpay
+        </p>
+        <p class="acct-legal">
+          One-time payment, no subscription. By paying you agree to our
+          <a href="/terms.html" target="_blank" rel="noopener">Terms</a> and
+          <a href="/refund.html" target="_blank" rel="noopener">Refund Policy</a>.
         </p>
       </section>
 

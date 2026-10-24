@@ -12,8 +12,8 @@ export const PRODUCT_ID = 'full_game_lifetime';
 export const PRODUCT_DESCRIPTION = 'Table Tennis XR: full game, lifetime';
 
 const PRICES = {
-  INR: 49900, // ₹499
-  USD: 999,   // $9.99
+  INR: 177700, // ₹1,777
+  USD: 1997,   // $19.97
 };
 
 /** E.164, the format PayLayer validates `customer.contact` against. */

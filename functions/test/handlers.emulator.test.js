@@ -84,7 +84,7 @@ async function webhook(event) {
 
 const paidEvent = (id, orderId, intentId) => ({
   id, type: 'payment_intent.paid', created: 0, livemode: false,
-  data: { intent: { id: intentId, siteReference: orderId, amount: 49900, currency: 'INR', status: 'paid' } },
+  data: { intent: { id: intentId, siteReference: orderId, amount: 177700, currency: 'INR', status: 'paid' } },
 });
 
 before(() => {
@@ -242,7 +242,7 @@ test('full purchase: order → paid webhook → entitlement → duplicate delive
   const { orderId, intentId, clientSecret, amount, currency } = r.body;
   assert.match(orderId, /^ord_[0-9a-f]{20}$/);
   assert.equal(clientSecret, `cs_${intentId}`);
-  assert.equal(amount, 49900);
+  assert.equal(amount, 177700);
   assert.equal(currency, 'INR');
 
   // What PayLayer was asked for: server-side price, real customer, idempotent.
@@ -313,7 +313,7 @@ test('webhook: a second paid checkout keeps the first and alerts for a refund', 
   const a = (await call('POST', '/api/orders', { auth: t, body: { name: 'D', phone: '+14155550100' } })).body;
   const b = (await call('POST', '/api/orders', { auth: t, body: { name: 'D', phone: '+14155550100' } })).body;
   assert.equal(a.currency, 'USD');
-  assert.equal(a.amount, 999);
+  assert.equal(a.amount, 1997);
 
   await webhook(paidEvent('evt_a', a.orderId, a.intentId));
   await webhook(paidEvent('evt_b', b.orderId, b.intentId));

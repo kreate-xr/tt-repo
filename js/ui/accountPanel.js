@@ -14,8 +14,8 @@
 
 // Display only — the backend (functions/src/pricing.js) decides what is
 // charged, from the phone number entered at checkout. Keep in step.
-const PRICE_INR = '₹499';
-const PRICE_USD = '$9.99';
+const PRICE_INR = '₹1,777';
+const PRICE_USD = '$19.97';
 
 /** What the phone typed so far will be charged: +91 → INR, any other country code → USD. */
 export function displayPrice(phone) {

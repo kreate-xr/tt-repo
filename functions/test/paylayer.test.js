@@ -31,9 +31,9 @@ test('rejects a wrong secret, a tampered body, a stale timestamp and a missing h
 });
 
 test('pricing: Indian numbers pay INR, everyone else USD', () => {
-  assert.deepEqual(priceFor('+919876543210'), { amount: 49900, currency: 'INR' });
-  assert.deepEqual(priceFor('+14155550100'), { amount: 999, currency: 'USD' });
-  assert.deepEqual(priceFor('+447700900123'), { amount: 999, currency: 'USD' });
+  assert.deepEqual(priceFor('+919876543210'), { amount: 177700, currency: 'INR' });
+  assert.deepEqual(priceFor('+14155550100'), { amount: 1997, currency: 'USD' });
+  assert.deepEqual(priceFor('+447700900123'), { amount: 1997, currency: 'USD' });
 });
 
 test('E164 matches what PayLayer validates', () => {

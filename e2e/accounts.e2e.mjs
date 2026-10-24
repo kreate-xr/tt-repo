@@ -229,13 +229,13 @@ async function main() {
       await page.waitForFunction(() => !document.getElementById('acct-view-buy').hidden, null, { timeout: 20_000 });
       assert.equal(await uidOf(page), trialUid, 'linkWithCredential must keep the uid');
       assert.equal((await page.locator('#account-chip').textContent()).trim(), email);
-      assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '₹499');
+      assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '₹1,777');
       // The price and the button follow the phone typed: +91 → INR, else USD.
       await page.fill('#acct-buy-phone', '+1 415 555 0100');
-      assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '$9.99');
-      assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay $9.99');
+      assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '$19.97');
+      assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay $19.97');
       await page.fill('#acct-buy-phone', '+91 98765 43210');
-      assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay ₹499');
+      assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay ₹1,777');
       await page.fill('#acct-buy-phone', '');
       await shot(page, '03-buy-form');
     });
@@ -277,7 +277,7 @@ async function main() {
       const intents = [...pay.intents.values()];
       paidIntent = intents.find((i) => i.status === 'paid');
       assert.ok(paidIntent, 'an intent was paid');
-      assert.equal(paidIntent.amount, 49900);
+      assert.equal(paidIntent.amount, 177700);
       assert.equal(paidIntent.currency, 'INR');
       assert.deepEqual(paidIntent.customer, { name: 'Asha Rao', email, contact: '+919876543210' });
       assert.equal(paidIntent.idempotencyKey, paidIntent.siteReference);
