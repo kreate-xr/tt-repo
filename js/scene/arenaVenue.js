@@ -1,5 +1,5 @@
 // Arena venue ('vr-arena'): the artist-authored stadium GLB
-// (public/models/tts-v1.glb), loaded as exported — no geometry, texture,
+// (public/models/tts-v2.glb), loaded as exported — no geometry, texture,
 // scale or rotation changes. Two things are done to it at load: its
 // materials are drawn unlit so the baked lighting shows (showBakedLighting
 // below), and it is translated so its court centre sits under the table.
@@ -9,10 +9,11 @@
 //     the physical floor), so no vertical offset;
 //   - court floor (Floor_Main) centred on the GLB origin with its long axis
 //     on Z, matching the table's long axis — so no rotation;
-//   - KHR_draco_mesh_compression + KHR_texture_basisu + EXT_mesh_gpu_instancing,
-//     hence the Draco (public/draco/) and KTX2 (public/basis/) decoders below.
-//     Both run WebAssembly in blob: workers, which is why firebase.json's
-//     script-src carries 'wasm-unsafe-eval'.
+//   - KHR_draco_mesh_compression + EXT_texture_webp (v2 dropped v1's
+//     KHR_texture_basisu, so the KTX2 transcoder below is never invoked for
+//     it), hence the Draco decoder (public/draco/). It runs WebAssembly in
+//     blob: workers, which is why firebase.json's script-src carries
+//     'wasm-unsafe-eval'.
 //
 // The stands reach ~40 m from the court centre, past the default 40 m camera
 // far plane, so the far plane is pushed out while the venue is mounted and
@@ -21,7 +22,8 @@
 // Handle shape matches createFocusRoom (show / hide / dispose / group /
 // getBackWallAnchor / getStadiumFixtures) so inGame.js and aiMatch.js consume
 // it unchanged. The back-wall anchor is the far hanging screen (FAR_SCREEN
-// below); no reactive fixtures. getSideScreenAnchor is Arena-only — drills
+// below), with the near one behind the player (NEAR_SCREEN) as an extra
+// mount showing the same scoreboard; no reactive fixtures. getSideScreenAnchor is Arena-only — drills
 // that get null from a venue without it simply build no side screen.
 
 import * as THREE from 'three';
@@ -30,15 +32,19 @@ import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js';
 import { KTX2Loader } from 'three/examples/jsm/loaders/KTX2Loader.js';
 import { scene, camera, renderer } from './sceneSetup.js';
 
-const ARENA_URL = '/models/tts-v1.glb';
+const ARENA_URL = '/models/tts-v2.glb';
 const ARENA_CAMERA_FAR = 150;
 
-// The far-end hanging screen (material 'TV', behind the AI), measured from
-// the export in GLB-local metres: display face x -3.06..2.17, y 5.02..8.01,
-// facing +Z at z = -13.72. The scoreboard mounts on it, 3 cm proud of the
-// face against z-fighting, at 5.1 m wide — the board's 2048x1152 canvas then
-// stands 2.87 m tall, inside the 5.23 x 2.99 m face.
-const FAR_SCREEN = { x: -0.445, y: 6.515, z: -13.72, width: 5.23, height: 2.99 };
+// The two hanging screens (node/material 'TV'), measured from the v2 export's
+// decoded vertices in GLB-local metres. Both display faces span x -3.06..2.17,
+// y 5.02..8.01. The far one (behind the AI) faces +Z, its front-most plane at
+// z = -13.681; the near one (behind the player) faces -Z, front-most plane at
+// z = +13.730. The scoreboard mounts on each, 3 cm proud of that plane against
+// z-fighting, at 5.1 m wide — the board's 2048x1152 canvas then stands 2.87 m
+// tall, inside the 5.23 x 2.99 m face. The near board is turned 180° about Y
+// so its front faces the table.
+const FAR_SCREEN = { x: -0.443, y: 6.515, z: -13.681, width: 5.23, height: 2.99 };
+const NEAR_SCREEN = { x: -0.443, y: 6.515, z: 13.730 };
 const SCOREBOARD_WIDTH_M = 5.1;
 
 // The courtside monitor at the net line (material 'Screen'), measured from
@@ -99,6 +105,29 @@ function showBakedLighting(root) {
   });
 }
 
+// Export objects left out of the venue, by node name. Dropped at load — the
+// GLB file itself is untouched — and their GPU resources freed straight away.
+const EXCLUDED_NODES = ['Billboard'];
+
+function removeExcludedNodes(root) {
+  for (const name of EXCLUDED_NODES) {
+    const obj = root.getObjectByName(name);
+    if (!obj) {
+      console.warn(`[arena] node '${name}' not in the GLB — nothing to remove`);
+      continue;
+    }
+    obj.removeFromParent();
+    obj.traverse((o) => {
+      if (!o.isMesh) return;
+      o.geometry.dispose();
+      for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
+        if (m.map) m.map.dispose();
+        m.dispose();
+      }
+    });
+  }
+}
+
 // The one in-flight / finished load, shared by the start-page preload
 // (js/ui/overlay.js shows its progress before the XR session is requested)
 // and startInGame, which then finds the venue already decoded instead of
@@ -123,6 +152,7 @@ export function loadArenaVenue(onProgress) {
       const f = Math.min(e.loaded / e.total, 1) * 0.9;
       for (const cb of progressListeners) cb(f);
     }).then((gltf) => {
+      removeExcludedNodes(gltf.scene);
       showBakedLighting(gltf.scene);
       arenaLoaded = true;
       for (const cb of progressListeners) cb(1);
@@ -191,6 +221,12 @@ export function createArenaVenue(arenaScene, tableBox) {
         wallWidth: FAR_SCREEN.width,
         wallHeight: FAR_SCREEN.height,
         panelWidth: SCOREBOARD_WIDTH_M,
+        extraMounts: [{
+          x: group.position.x + NEAR_SCREEN.x,
+          y: NEAR_SCREEN.y,
+          z: group.position.z + NEAR_SCREEN.z - 0.03,
+          rotationY: Math.PI,
+        }],
       };
     },
     getSideScreenAnchor() {

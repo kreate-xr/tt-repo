@@ -82,6 +82,20 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
   mesh.frustumCulled = false;
   scene.add(mesh);
 
+  // Extra wall mounts (anchor.extraMounts: [{ x, y, z, rotationY }]) — the
+  // Arena's second hanging screen behind the player. Each is another mesh
+  // over the SAME geometry, material and canvas texture, so one render()
+  // feeds every screen at no extra canvas or upload cost.
+  const mirrors = (anchor && anchor.extraMounts || []).map((m) => {
+    const copy = new THREE.Mesh(geom, mat);
+    copy.position.set(m.x, m.y, m.z);
+    copy.rotation.y = m.rotationY || 0;
+    copy.renderOrder = 5;
+    copy.frustumCulled = false;
+    scene.add(copy);
+    return copy;
+  });
+
   // Clock overlay — a small quad carrying just the TOTAL TIME digits, so the
   // once-per-second clock tick re-uploads this tiny texture instead of the
   // full 2048×1152 board canvas (a recurring ~9.4 MB + mipmap-rebuild spike
@@ -116,6 +130,7 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
   clockMesh.renderOrder = 6;
   clockMesh.frustumCulled = false;
   mesh.add(clockMesh);
+  for (const m of mirrors) m.add(clockMesh.clone());
 
   // Kept internally so partial patches (server change with no score change)
   // don't force the caller to remember the full state.
@@ -149,10 +164,14 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
     render();
   }
 
-  function setVisible(v) { mesh.visible = !!v; }
+  function setVisible(v) {
+    mesh.visible = !!v;
+    for (const m of mirrors) m.visible = !!v;
+  }
 
   function dispose() {
     scene.remove(mesh);
+    for (const m of mirrors) scene.remove(m);
     geom.dispose();
     mat.dispose();
     texture.dispose();
