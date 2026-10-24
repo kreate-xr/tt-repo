@@ -1,5 +1,5 @@
 // End-to-end flows through the real handlers against the Firestore emulator:
-// trial lease, IP cap, checkout, webhook grant / dedupe / refund. Token
+// trial lease, IP cap, shared network clock, checkout, webhook grant / dedupe / refund. Token
 // verification and PayLayer are stubbed; Firestore is real.
 //
 //   npm run test:emulator   (from functions/; wraps this in emulators:exec)
@@ -156,6 +156,62 @@ test('trial: per-IP cap on NEW trials only', { skip: !RUN }, async () => {
   // A different network is unaffected.
   r = await call('POST', '/api/trial/lease', { auth: token('c'), body: { action: 'start' }, ip: '198.51.100.9' });
   assert.equal(r.status, 200);
+});
+
+// Plays `ms` of trial for `uid` from `ip`, renewing every lease like the client.
+async function play(uid, ms, ip) {
+  const lease = (action) => call('POST', '/api/trial/lease', { auth: token(uid), body: { action }, ip });
+  await lease('start');
+  for (let left = ms; left > 0; left -= 60_000) {
+    clock += Math.min(60_000, left);
+    if (left > 60_000) await lease('renew');
+  }
+  return lease('end');
+}
+
+test('trial: a private window on the same network inherits the minutes left', { skip: !RUN }, async () => {
+  let r = await play('ravi', 7 * 60_000 - 20_000, '203.0.113.7');
+  r = await play('ravi', 20_000, '203.0.113.7');
+  assert.equal(r.body.remainingSec, 180);
+
+  // New anonymous uid (private window), same Wi-Fi: 3 min, not 10.
+  r = await call('GET', '/api/me', { auth: token('ravi-private') });
+  assert.equal(r.body.trial.remainingSec, 180);
+  r = await call('POST', '/api/trial/lease', { auth: token('ravi-private'), body: { action: 'start' } });
+  assert.deepEqual(r.body, { entitled: false, leaseSec: 60, remainingSec: 180 });
+  clock += 60_000;
+  r = await call('POST', '/api/trial/lease', { auth: token('ravi-private'), body: { action: 'end' } });
+  assert.equal(r.body.remainingSec, 120);
+
+  // Used up on this network → the next fresh uid gets nothing.
+  await play('ravi-private', 3 * 60_000, '203.0.113.7');
+  r = await call('POST', '/api/trial/lease', { auth: token('ravi-again'), body: { action: 'start' } });
+  assert.deepEqual(r.body, { entitled: false, leaseSec: 0, remainingSec: 0 });
+
+  // The player's own clock still follows them to another network…
+  r = await call('POST', '/api/trial/lease', { auth: token('ravi'), body: { action: 'start' }, ip: '198.51.100.9' });
+  assert.equal(r.body.remainingSec, 180);
+  // …while a fresh uid there gets a full trial.
+  r = await call('POST', '/api/trial/lease', { auth: token('friend'), body: { action: 'start' }, ip: '198.51.100.9' });
+  assert.equal(r.body.remainingSec, 600);
+});
+
+test('trial: IPv6 privacy addresses in one /64 share a network', { skip: !RUN }, async () => {
+  await play('v6-a', 4 * 60_000, '2001:db8:abcd:12:1111:2222:3333:4444');
+  const r = await call('POST', '/api/trial/lease', {
+    auth: token('v6-b'), body: { action: 'start' }, ip: '2001:db8:abcd:12:aaaa:bbbb:cccc:dddd',
+  });
+  assert.equal(r.body.remainingSec, 360);
+});
+
+test('trial: a network forgets its minutes 30 days after it last played', { skip: !RUN }, async () => {
+  await play('old', TRIAL_MS, '203.0.113.7');
+  clock += 29 * 24 * 3600_000;
+  let r = await call('GET', '/api/me', { auth: token('new-1') });
+  assert.equal(r.body.trial.remainingSec, 0);
+  clock += 2 * 24 * 3600_000;
+  r = await call('POST', '/api/trial/lease', { auth: token('new-2'), body: { action: 'start' } });
+  assert.equal(r.body.remainingSec, 600);
 });
 
 test('orders: anonymous accounts cannot buy', { skip: !RUN }, async () => {

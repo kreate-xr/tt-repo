@@ -60,7 +60,7 @@ describe.each(['users', 'entitlements'])('%s/{uid}', (col) => {
   });
 });
 
-describe.each(['orders', 'paylayerEvents', 'trialIps'])('%s (server-only)', (col) => {
+describe.each(['orders', 'paylayerEvents', 'trialIps', 'trialNets'])('%s (server-only)', (col) => {
   beforeEach(() => seed(`${col}/x1`, { uid: ME }));
 
   test('no read, even for the uid it names', async () => {

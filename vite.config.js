@@ -69,6 +69,10 @@ export default defineConfig(({ mode, command }) => {
       ? Object.fromEntries(['/api', '/webhooks'].map((p) => [p, {
           target: secrets.API_PROXY_TARGET,
           changeOrigin: true,
+          // The Functions emulator sees no client address at all; Hosting
+          // sends X-Forwarded-For in production, so e2e does the same for the
+          // per-network trial clock (functions/src/network.js).
+          xfwd: mode === 'e2e',
         }]))
       : undefined,
   },

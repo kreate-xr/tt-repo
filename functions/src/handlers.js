@@ -12,13 +12,18 @@
 //                         siteReference back to a uid. Server-only.
 //   paylayerEvents/{id}   webhook dedupe (PayLayer delivers at least once).
 //                         Server-only; `expireAt` is for a TTL policy.
-//   trialIps/{hash_day}   new-trial counter per hashed IP per UTC day.
+//   trialIps/{hash_day}   new-trial counter per hashed network per UTC day.
 //                         Server-only; `expireAt` is for a TTL policy.
+//   trialNets/{hash}      trial minutes used by a hashed network (trial.js),
+//                         so a private window cannot start a fresh 10 min.
+//                         Server-only; `expireAt` is for a TTL policy and is
+//                         also honoured in code (TTL deletes lazily).
 //
 // firestore.rules spells out the same split.
 
 import { createHmac, randomBytes } from 'node:crypto';
-import { applyLease, remainingMs, LEASE_ACTIONS } from './trial.js';
+import { applyLease, remainingMs, LEASE_ACTIONS, NETWORK_MEMORY_MS } from './trial.js';
+import { networkKey } from './network.js';
 import { priceFor, E164, PRODUCT_ID, PRODUCT_DESCRIPTION } from './pricing.js';
 import {
   verifyWebhook, createPaymentIntent, WebhookSignatureError, PayLayerApiError, SIGNATURE_HEADER,
@@ -97,10 +102,26 @@ async function requireUser(req, deps) {
   };
 }
 
-function ipBucketId(ip, salt, nowMs) {
+function networkHash(req, salt) {
+  const ip = clientIp(req);
+  return createHmac('sha256', salt).update(networkKey(ip) || ip).digest('hex').slice(0, 32);
+}
+
+function ipBucketId(netHash, nowMs) {
   const day = new Date(nowMs).toISOString().slice(0, 10).replace(/-/g, '');
-  const hash = createHmac('sha256', salt).update(ip).digest('hex').slice(0, 32);
-  return `${hash}_${day}`;
+  return `${netHash}_${day}`;
+}
+
+// Minutes the network has used, or 0 once its memory has lapsed.
+function networkUsedMs(snap, nowMs) {
+  if (!snap.exists) return 0;
+  const { usedMs, expireAt } = snap.data();
+  const expMs = expireAt && typeof expireAt.toMillis === 'function' ? expireAt.toMillis() : 0;
+  return expMs > nowMs ? Number(usedMs) || 0 : 0;
+}
+
+function networkRef(db, req, salt) {
+  return clientIp(req) ? db.doc(`trialNets/${networkHash(req, salt)}`) : null;
 }
 
 async function readAccess(db, uid) {
@@ -119,9 +140,12 @@ async function readAccess(db, uid) {
 async function getMe(req, deps) {
   const who = await requireUser(req, deps);
   const { user, entitled } = await readAccess(deps.db, who.uid);
+  let netUsed = 0;
+  const netRef = entitled ? null : networkRef(deps.db, req, deps.config().trialIpSalt);
+  if (netRef) netUsed = networkUsedMs(await netRef.get(), deps.now());
   return {
     entitled,
-    trial: { remainingSec: Math.floor(remainingMs((user && user.trial) || {}) / 1000) },
+    trial: { remainingSec: Math.floor(remainingMs((user && user.trial) || {}, netUsed) / 1000) },
     account: {
       // Same reasoning as postOrder: an upgraded account still reports
       // sign_in_provider 'anonymous'.
@@ -145,17 +169,21 @@ async function postLease(req, deps) {
   const userRef = db.doc(`users/${who.uid}`);
   const entRef = db.doc(`entitlements/${who.uid}`);
   const { trialIpDailyLimit, trialIpSalt } = deps.config();
+  const netRef = networkRef(db, req, trialIpSalt);
 
   return db.runTransaction(async (tx) => {
-    const [userSnap, entSnap] = await Promise.all([tx.get(userRef), tx.get(entRef)]);
+    const [userSnap, entSnap, netSnap] = await Promise.all([
+      tx.get(userRef), tx.get(entRef), netRef ? tx.get(netRef) : null,
+    ]);
     if (entSnap.exists && entSnap.data().active === true) {
       return { entitled: true, leaseSec: null, remainingSec: null };
     }
+    const netUsed = netSnap ? networkUsedMs(netSnap, nowMs) : 0;
 
     const isNewTrial = !userSnap.exists;
     if (isNewTrial && action !== 'start') {
       // Nothing to renew or end — do not let a stray call create a trial.
-      return { entitled: false, leaseSec: 0, remainingSec: Math.floor(remainingMs({}) / 1000) };
+      return { entitled: false, leaseSec: 0, remainingSec: Math.floor(remainingMs({}, netUsed) / 1000) };
     }
 
     // Soft cap on new trials per IP per day. Loose on purpose: mobile carriers
@@ -164,7 +192,7 @@ async function postLease(req, deps) {
     let ipRef = null;
     let ipCount = 0;
     if (isNewTrial && trialIpDailyLimit > 0) {
-      ipRef = db.doc(`trialIps/${ipBucketId(clientIp(req), trialIpSalt, nowMs)}`);
+      ipRef = db.doc(`trialIps/${ipBucketId(networkHash(req, trialIpSalt), nowMs)}`);
       const ipSnap = await tx.get(ipRef);
       ipCount = ipSnap.exists ? ipSnap.data().count || 0 : 0;
       if (ipCount >= trialIpDailyLimit) {
@@ -173,7 +201,7 @@ async function postLease(req, deps) {
     }
 
     const prev = userSnap.exists ? userSnap.data().trial || {} : {};
-    const next = applyLease(prev, action, nowMs);
+    const next = applyLease(prev, action, nowMs, netUsed);
 
     const userPatch = {
       trial: { usedMs: next.usedMs, lastTickMs: next.lastTickMs, leaseMs: next.leaseMs },
@@ -184,6 +212,9 @@ async function postLease(req, deps) {
 
     if (ipRef) {
       tx.set(ipRef, { count: ipCount + 1, expireAt: new Date(nowMs + 2 * DAY_MS) });
+    }
+    if (netRef) {
+      tx.set(netRef, { usedMs: next.networkUsedMs, expireAt: new Date(nowMs + NETWORK_MEMORY_MS) });
     }
 
     return {

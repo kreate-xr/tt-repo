@@ -80,6 +80,37 @@ async function setTrialUsed(uid, usedMs) {
   assert.equal(res.status, 200, `emulator PATCH failed: ${await res.text()}`);
 }
 
+/** Every trialNets doc (all e2e browsers share one network: localhost). */
+async function listNetworks() {
+  const res = await fetch(`${FIRESTORE}/v1/projects/${PROJECT}/databases/tabletennis/documents/trialNets`, {
+    headers: { authorization: 'Bearer owner' },
+  });
+  const body = await res.text();
+  assert.equal(res.status, 200, `emulator list failed: ${body}`);
+  return JSON.parse(body).documents || [];
+}
+
+/** Marks the shared network's trial as used, as if played out from it. */
+async function setNetworkUsed(usedMs) {
+  const docs = await listNetworks();
+  assert.ok(docs.length > 0, 'the trial lease should have recorded a network');
+  for (const d of docs) {
+    const res = await fetch(`${FIRESTORE}/v1/${d.name}?updateMask.fieldPaths=usedMs`, {
+      method: 'PATCH',
+      headers: { authorization: 'Bearer owner', 'content-type': 'application/json' },
+      body: JSON.stringify({ fields: { usedMs: { integerValue: String(usedMs) } } }),
+    });
+    assert.equal(res.status, 200, `emulator PATCH failed: ${await res.text()}`);
+  }
+}
+
+/** Forgets every network — the next browser behaves as if on a different one. */
+async function clearNetworks() {
+  for (const d of await listNetworks()) {
+    await fetch(`${FIRESTORE}/v1/${d.name}`, { method: 'DELETE', headers: { authorization: 'Bearer owner' } });
+  }
+}
+
 async function readDoc(docPath) {
   const res = await fetch(`${FIRESTORE}/v1/projects/${PROJECT}/databases/tabletennis/documents/${docPath}`, {
     headers: { authorization: 'Bearer owner' },
@@ -173,6 +204,16 @@ async function main() {
       assert.equal(await modalView(page), 'signup');
       assert.match(await page.locator('#account-sub').textContent(), /free trial has ended/);
       await shot(page, '02-paywall-signup');
+    });
+
+    await step('private window on the same network does not get a fresh trial', async () => {
+      await setNetworkUsed(600_000);
+      const ctxP = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+      const pageP = await ctxP.newPage();
+      await pageP.goto(APP_URL);
+      await waitAccess(pageP, /free trial is over/);
+      assert.notEqual(await uidOf(pageP), trialUid, 'a private window is a new anonymous uid');
+      await ctxP.close();
     });
 
     await step('create account: short password rejected client-side', async () => {
@@ -271,6 +312,7 @@ async function main() {
     });
 
     await step('new device: fresh trial, then sign-in restores the purchase', async () => {
+      await clearNetworks(); // a device on another network
       const ctxB = await browser.newContext({ viewport: { width: 1280, height: 860 } });
       const pageB = await ctxB.newPage();
       await pageB.goto(APP_URL);

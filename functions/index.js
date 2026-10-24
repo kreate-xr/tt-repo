@@ -30,8 +30,8 @@
 //      Kept out of Secret Manager by choice: the values are visible in plain
 //      text to anyone with view access to the function's Cloud Run config.
 //      Emulator runs read the same keys from functions/.env.local instead.
-//   3. Firestore TTL policies on `paylayerEvents.expireAt` and `trialIps.expireAt`
-//      (console → Firestore → TTL), database 'tabletennis'.
+//   3. Firestore TTL policies on `paylayerEvents.expireAt`, `trialIps.expireAt`
+//      and `trialNets.expireAt` (console → Firestore → TTL), database 'tabletennis'.
 //   4. npm run deploy:test
 //
 // The game itself runs entirely in the browser, so the trial and the paywall

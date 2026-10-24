@@ -78,3 +78,38 @@ test('remainingMs reads without moving the clock', () => {
   assert.equal(remainingMs({ usedMs: 100_000 }), TRIAL_MS - 100_000);
   assert.equal(remainingMs({ usedMs: TRIAL_MS * 2 }), 0);
 });
+
+// ── shared network clock ────────────────────────────────────────────────────
+
+test('a fresh player on a spent network gets no lease', () => {
+  const s = applyLease({}, 'start', T0, TRIAL_MS);
+  assert.equal(s.leaseMs, 0);
+  assert.equal(s.remainingMs, 0);
+  assert.equal(s.lastTickMs, null);
+});
+
+test('a fresh player inherits what the network has left', () => {
+  const s = applyLease({}, 'start', T0, TRIAL_MS - 25_000);
+  assert.equal(s.leaseMs, 25_000);
+  assert.equal(s.remainingMs, 25_000);
+});
+
+test('play is charged to the player and the network alike', () => {
+  const a = applyLease({}, 'start', T0, 120_000);
+  const b = applyLease(a, 'renew', T0 + 40_000, a.networkUsedMs);
+  assert.equal(b.usedMs, 40_000);
+  assert.equal(b.networkUsedMs, 160_000);
+  assert.equal(b.remainingMs, TRIAL_MS - 160_000);
+});
+
+test('a player who used more than the network keeps their own clock', () => {
+  const s = applyLease({ usedMs: 300_000 }, 'start', T0, 0);
+  assert.equal(s.remainingMs, TRIAL_MS - 300_000);
+  assert.equal(s.networkUsedMs, 0);
+});
+
+test('remainingMs takes the more-used of player and network', () => {
+  assert.equal(remainingMs({ usedMs: 60_000 }, 200_000), TRIAL_MS - 200_000);
+  assert.equal(remainingMs({ usedMs: 200_000 }, 60_000), TRIAL_MS - 200_000);
+  assert.equal(remainingMs({}, TRIAL_MS * 2), 0);
+});

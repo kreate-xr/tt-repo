@@ -257,9 +257,10 @@ service cloud.firestore {
       allow list, write: if false;
     }
 
-    // Server-only: order → uid mapping, webhook dedupe, per-IP trial counter.
+    // Server-only: order → uid mapping, webhook dedupe, per-network trial counter + clock.
     match /orders/{orderId}        { allow read, write: if false; }
     match /paylayerEvents/{eventId} { allow read, write: if false; }
     match /trialIps/{bucket}       { allow read, write: if false; }
+    match /trialNets/{network}     { allow read, write: if false; }
   }
 }
