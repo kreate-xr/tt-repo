@@ -1,14 +1,19 @@
 // Stand-in for PayLayer (D:\Bhuvnesh_Data\Payment) + Razorpay in the e2e
 // suite. Implements exactly the surface the game touches:
 //
-//   POST /v1/payment-intents      backend → create intent (Bearer sk_ key)
+//   POST /v1/payment-intents      backend → create intent (Bearer sk_ key);
+//                                 the same Idempotency-Key + body replays the
+//                                 first response, as PayLayer does
+//   GET  /v1/payment-intents/:id  backend → retrieve (refundableUntil)
+//   POST /v1/payment-intents/:id/refunds
+//                                 backend → full refund; answers 201, then
+//                                 sends the signed refund.processed webhook
 //   GET  /sdk/v1/pay.js           browser SDK: window.Pay.checkout(...)
 //   POST /v1/checkout/:id/pay     what the fake SDK calls instead of opening
 //                                 Razorpay; marks the intent paid and sends the
 //                                 SIGNED payment_intent.paid webhook — the same
 //                                 t=…,v1=HMAC scheme as PayLayer's outbound
 //                                 webhooks — to the backend
-//   POST /__refund/:id            test hook: send refund.processed
 //   GET  /__intents               test hook: what the backend asked for
 //
 // Real Razorpay test-mode checkout is the manual step after this suite.
@@ -46,11 +51,15 @@ const SDK = `
 
 /**
  * @param {{ port: number, webhookUrl: string, log?: (msg: string) => void }} opts
- * @returns {Promise<{ close: () => Promise<void>, intents: Map<string, object> }>}
+ * @returns {Promise<{ close: () => Promise<void>, intents: Map<string, object>, refunds: object[] }>}
  */
 export function startFakePayLayer({ port, webhookUrl, log = () => {} }) {
   const intents = new Map();
+  const byKey = new Map();
+  const refunds = [];
   let seq = 0;
+  const DAY_MS = 24 * 3600 * 1000;
+  const authorized = (req) => req.headers.authorization === `Bearer ${FAKE_API_KEY}`;
 
   async function sendWebhook(type, intent, extra = {}) {
     const event = {
@@ -92,7 +101,14 @@ export function startFakePayLayer({ port, webhookUrl, log = () => {} }) {
       }
 
       if (req.method === 'POST' && url.pathname === '/v1/payment-intents') {
-        if (req.headers.authorization !== `Bearer ${FAKE_API_KEY}`) return send(401, { error: { code: 'unauthorized' } });
+        if (!authorized(req)) return send(401, { error: { code: 'unauthorized' } });
+        const key = req.headers['idempotency-key'];
+        const prior = byKey.get(key);
+        if (prior) {
+          if (prior.body !== JSON.stringify(body)) return send(422, { error: { code: 'idempotency_key_reused' } });
+          log(`intent ${prior.intent.id} replayed for ${key}`);
+          return send(201, prior.intent);
+        }
         if (!/^\+[1-9]\d{6,14}$/.test(body.customer && body.customer.contact)) {
           return send(400, { error: { code: 'validation_error', message: 'contact must be E.164' } });
         }
@@ -101,11 +117,13 @@ export function startFakePayLayer({ port, webhookUrl, log = () => {} }) {
         const intent = {
           id, object: 'payment_intent', livemode: false, status: 'created',
           amount: body.amount, currency: body.currency, siteReference: body.siteReference,
-          customer: body.customer, metadata: body.metadata || {},
-          idempotencyKey: req.headers['idempotency-key'],
+          customer: body.customer, metadata: body.metadata || {}, description: body.description,
+          refundWindowDays: body.refundWindowDays, paidAt: null, refundableUntil: null,
+          idempotencyKey: key,
           clientSecret: `${id}_secret_${randomBytes(6).toString('hex')}`,
         };
         intents.set(id, intent);
+        byKey.set(key, { body: JSON.stringify(body), intent });
         log(`intent ${id} ${intent.amount} ${intent.currency} for ${intent.siteReference}`);
         return send(201, intent);
       }
@@ -115,17 +133,36 @@ export function startFakePayLayer({ port, webhookUrl, log = () => {} }) {
         const intent = intents.get(pay[1]);
         if (!intent || intent.clientSecret !== body.clientSecret) return send(404, { error: { code: 'intent_not_found' } });
         intent.status = 'paid';
+        intent.paidAt = new Date().toISOString();
+        intent.refundableUntil = new Date(Date.now() + intent.refundWindowDays * DAY_MS).toISOString();
         await sendWebhook('payment_intent.paid', intent);
         return send(200, { status: 'paid', settled: true });
       }
 
-      const refund = url.pathname.match(/^\/__refund\/([^/]+)$/);
+      const one = url.pathname.match(/^\/v1\/payment-intents\/([^/]+)$/);
+      if (req.method === 'GET' && one) {
+        if (!authorized(req)) return send(401, { error: { code: 'unauthorized' } });
+        const intent = intents.get(one[1]);
+        if (!intent) return send(404, { error: { code: 'not_found' } });
+        return send(200, { ...intent, clientSecret: undefined, payments: [], refunds: [] });
+      }
+
+      const refund = url.pathname.match(/^\/v1\/payment-intents\/([^/]+)\/refunds$/);
       if (req.method === 'POST' && refund) {
+        if (!authorized(req)) return send(401, { error: { code: 'unauthorized' } });
         const intent = intents.get(refund[1]);
-        if (!intent) return send(404, { error: { code: 'intent_not_found' } });
+        if (!intent) return send(404, { error: { code: 'not_found' } });
+        if (intent.status === 'refunded') return send(409, { error: { code: 'already_refunded' } });
+        if (body.amount !== undefined) return send(400, { error: { code: 'partial_refund_not_supported' } });
         intent.status = 'refunded';
-        await sendWebhook('refund.processed', intent, { refund: { id: 'rf_fake', status: 'processed' } });
-        return send(200, { ok: true });
+        refunds.push({ intentId: intent.id, body, idempotencyKey: req.headers['idempotency-key'] });
+        send(201, { id: 'rf_fake', object: 'refund', intentId: intent.id, status: 'processed' });
+        // After the answer, as Razorpay's own notification would arrive.
+        setTimeout(() => {
+          sendWebhook('refund.processed', intent, { refund: { id: 'rf_fake', status: 'processed' } })
+            .catch((err) => log(`refund webhook failed: ${err.message}`));
+        }, 50);
+        return;
       }
 
       if (req.method === 'GET' && url.pathname === '/__intents') {
@@ -143,6 +180,7 @@ export function startFakePayLayer({ port, webhookUrl, log = () => {} }) {
     server.once('error', reject);
     server.listen(port, '127.0.0.1', () => resolve({
       intents,
+      refunds,
       close: () => new Promise((r) => server.close(() => r())),
     }));
   });

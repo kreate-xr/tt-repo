@@ -323,13 +323,54 @@
       min-height: 1.2em;
     }
 
-    /* Free-trial clock / unlocked line under the venue buttons. */
-    .access-line {
+    /* Free trial + unlock offer under the venue buttons
+       (js/ui/accountPanel.js sets data-state: intro | trial | over | owned). */
+    .offer-card {
+      display: flex;
+      align-items: center;
+      gap: 14px;
       margin-top: 6px;
-      color: var(--ink-soft);
-      font-size: 0.92rem;
-      font-weight: 600;
-      max-width: 460px;
+      max-width: 540px;
+      padding: 14px 16px;
+      background: rgba(255, 255, 255, 0.92);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-card);
+    }
+    .offer-icon {
+      width: 42px; height: 42px; flex: none;
+      display: grid; place-items: center;
+      border-radius: 12px;
+      background: rgba(79, 70, 229, 0.1);
+      color: var(--brand-1);
+    }
+    .offer-icon svg { width: 22px; height: 22px; }
+    .offer-body { flex: 1; min-width: 0; }
+    .offer-title { font-size: 0.98rem; font-weight: 800; color: var(--ink); line-height: 1.25; }
+    .offer-sub { margin-top: 3px; font-size: 0.82rem; color: var(--ink-soft); line-height: 1.4; }
+    .offer-meter {
+      margin-top: 8px; height: 5px;
+      border-radius: 999px; background: #e9ecf8; overflow: hidden;
+    }
+    .offer-meter span {
+      display: block; height: 100%; width: 100%;
+      border-radius: inherit; background: var(--brand-grad);
+      transition: width 0.3s ease-out;
+    }
+    .offer-cta {
+      flex: none;
+      display: flex; flex-direction: column; align-items: center; gap: 5px;
+    }
+    .offer-buy { padding: 9px 16px; font-size: 0.86rem; }
+    .offer-price { font-size: 0.72rem; color: var(--ink-soft); white-space: nowrap; }
+    .offer-price b { color: var(--ink); font-weight: 800; }
+    .offer-card[data-state="over"] { border-color: #f3c6a5; background: #fff8f2; }
+    .offer-card[data-state="over"] .offer-icon { background: #ffedd5; color: #c2410c; }
+    .offer-card[data-state="owned"] { border-color: #bbe5c8; background: #f3fbf5; }
+    .offer-card[data-state="owned"] .offer-icon { background: #dcfce7; color: #15803d; }
+    @media (max-width: 520px) {
+      .offer-card { flex-wrap: wrap; }
+      .offer-cta { width: 100%; flex-direction: row; justify-content: space-between; }
     }
     .link-btn {
       border: none;
@@ -785,6 +826,15 @@
       font-size: 0.72rem; line-height: 1.5; color: #8a91ab;
     }
     .acct-legal a { color: inherit; text-decoration: underline; }
+    .acct-consent {
+      display: flex; align-items: flex-start; gap: 8px;
+      margin-top: 10px;
+      font-size: 0.78rem; line-height: 1.4; color: var(--ink);
+      cursor: pointer;
+    }
+    .acct-consent input { flex: none; width: 16px; height: 16px; margin: 1px 0 0; accent-color: var(--brand-1); }
+    .acct-refund-terms { margin-top: 6px; font-size: 0.74rem; line-height: 1.4; color: var(--ink-soft); }
+    .acct-refund { margin-top: 12px; }
 
     #room-code-input {
       padding: 12px 14px;
@@ -937,6 +987,7 @@
         <a href="#home">Play</a>
         <a href="#multiplayer">Multiplayer</a>
         <a href="#features">Features</a>
+        <a href="/pricing.html">Pricing</a>
       </div>
 
       <!-- Account: "Sign in", or the signed-in email. js/ui/accountPanel.js. -->
@@ -957,7 +1008,7 @@
               <svg viewBox="0 0 24 16" fill="currentColor"><path d="M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>
               WebXR
             </span>
-            Free to Play in Your Browser
+            10 Minutes Free · No Sign-up
           </div>
 
           <h1>Table Tennis,<br><span class="grad">Anytime, Anywhere.</span></h1>
@@ -995,12 +1046,24 @@
 
           <div id="status"></div>
 
-          <!-- Free-trial clock / unlocked state, filled from /api/me by
-               js/ui/accountPanel.js. Hidden until the first answer. -->
-          <p id="access-line" class="access-line" hidden>
-            <span id="access-text"></span>
-            <button type="button" id="access-buy" class="link-btn" hidden>Unlock full game</button>
-          </p>
+          <!-- Free trial + unlock offer. The static copy below is what a
+               visitor sees before (or without) an /api/me answer, so the offer
+               never depends on the backend; js/ui/accountPanel.js swaps in the
+               live clock, the trial-over state or the unlocked state. -->
+          <div id="access-line" class="offer-card" data-state="intro">
+            <span class="offer-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 2M9.5 2.5h5M12 2.5V6"/></svg>
+            </span>
+            <div class="offer-body">
+              <p class="offer-title" id="access-text">10 minutes of free play</p>
+              <p class="offer-sub" id="access-sub">No sign-up needed. Only time in a rally counts — menus and setup are free.</p>
+              <div class="offer-meter" id="access-meter" hidden><span id="access-meter-fill"></span></div>
+            </div>
+            <div class="offer-cta" id="access-cta">
+              <button type="button" id="access-buy" class="btn btn-primary offer-buy">Unlock full game</button>
+              <span class="offer-price"><b id="access-price">₹1,997</b> <span id="access-price-note">incl. GST · one-time · lifetime</span></span>
+            </div>
+          </div>
         </div>
 
         <div class="hero-art" aria-hidden="true">
@@ -1144,6 +1207,8 @@
 
     <div class="footer">
       SportyXR — play table tennis instantly in your browser with WebXR.
+      &middot; <a href="/about.html">About</a>
+      &middot; <a href="/pricing.html">Pricing</a>
       &middot; <a href="/terms.html">Terms</a>
       &middot; <a href="/privacy.html">Privacy</a>
       &middot; <a href="/refund.html">Cancellation &amp; Refunds</a>
@@ -1283,6 +1348,13 @@
         <p class="acct-meta" id="acct-status-line"></p>
         <p class="acct-meta" id="acct-verify-note" hidden>Check your inbox to confirm this email.</p>
         <button type="button" id="acct-buy" class="btn btn-primary btn-block btn-send">Unlock full game</button>
+        <!-- Refund of this account's purchase. Shown only after a purchase:
+             the button while the server says it is eligible, otherwise the
+             reason. The server re-checks every rule (POST /api/refund). -->
+        <div id="acct-refund" class="acct-refund" hidden>
+          <p class="acct-meta" id="acct-refund-note"></p>
+          <button type="button" id="acct-refund-btn" class="btn btn-ghost btn-block" hidden>Request a refund</button>
+        </div>
         <button type="button" id="acct-signout" class="btn btn-ghost btn-block">Sign out</button>
       </section>
 
@@ -1290,15 +1362,24 @@
         <!-- The price follows the phone typed below (+91 → INR). Display
              only: the server decides the charge (functions/src/pricing.js). -->
         <div class="acct-price-row">
-          <span class="acct-price" id="acct-buy-price">₹1,777</span>
-          <span class="acct-price-note">one-time · lifetime access</span>
+          <span class="acct-price" id="acct-buy-price">₹1,997</span>
+          <span class="acct-price-note" id="acct-buy-price-note">incl. GST · one-time · lifetime</span>
         </div>
         <form id="acct-buy-form" novalidate>
           <input id="acct-buy-name" type="text" class="field" autocomplete="name" maxlength="100"
                  placeholder="Full name" aria-label="Full name" required>
           <input id="acct-buy-phone" type="tel" class="field" autocomplete="tel" inputmode="tel"
                  placeholder="Phone, e.g. +91 98765 43210" aria-label="Phone number with country code" required>
-          <button type="submit" class="btn btn-primary btn-block btn-send" id="acct-buy-submit">Pay ₹1,777</button>
+          <!-- Consent text version "v1" (CONSENT_TEXT_VERSION in
+               functions/src/pricing.js) — change the two together. Unticked
+               by default; Pay stays disabled until it is ticked, and the
+               server refuses an order without it. -->
+          <label class="acct-consent">
+            <input type="checkbox" id="acct-buy-consent">
+            <span>I agree that the game unlocks immediately after payment and that I lose my 14-day right of withdrawal once it does.</span>
+          </label>
+          <p class="acct-refund-terms">Refunds: within 3 days of purchase if you've played less than 2 hours. A refund removes the unlock. One refund per account.</p>
+          <button type="submit" class="btn btn-primary btn-block btn-send" id="acct-buy-submit" disabled>Pay ₹1,997</button>
         </form>
         <p class="acct-secure">
           <svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 0 1 6 0v3H9z"/></svg>

@@ -41,11 +41,18 @@ async function call(method, path, body) {
   return json;
 }
 
-/** { entitled, trial: { remainingSec }, account: { anonymous, email, emailVerified, hasCheckoutProfile } } */
+/**
+ * { entitled, metered, trial: { remainingSec },
+ *   refund: null | { eligible, reason, refundableUntil, playedSec },
+ *   account: { anonymous, email, emailVerified, hasCheckoutProfile } }
+ */
 export const fetchMe = () => call('GET', '/api/me');
 
-/** @param {'start'|'renew'|'end'} action → { entitled, leaseSec, remainingSec } */
+/** @param {'start'|'renew'|'end'} action → { entitled, metered?, leaseSec, remainingSec } */
 export const postLease = (action) => call('POST', '/api/trial/lease', { action });
 
-/** → { orderId, intentId, clientSecret, amount, currency } */
-export const postOrder = ({ name, phone }) => call('POST', '/api/orders', { name, phone });
+/** `consent`: the checkout checkbox, re-checked by the server. → { intentId, clientSecret } */
+export const postOrder = ({ name, phone, consent }) => call('POST', '/api/orders', { name, phone, consent });
+
+/** Refund the account's own purchase. → { status: 'refund_requested', pending? } */
+export const postRefund = () => call('POST', '/api/refund', {});

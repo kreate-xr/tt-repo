@@ -1,5 +1,6 @@
-// The two things this backend needs from PayLayer (D:\Bhuvnesh_Data\Payment):
-// create a payment intent, and verify the webhooks it sends back.
+// What this backend needs from PayLayer (D:\Bhuvnesh_Data\Payment): create
+// and retrieve a payment intent, refund it in full, and verify the webhooks
+// it sends back.
 //
 // Ported from PayLayer's packages/node (client.ts, signature.ts) rather than
 // depended on: that package is not published to npm, and a `file:` dependency
@@ -73,23 +74,16 @@ export function verifyWebhook({ rawBody, signatureHeader, secret, toleranceSec =
   return JSON.parse(body);
 }
 
-/**
- * POST /v1/payment-intents. Returns the intent including the one-time
- * `clientSecret` the browser SDK needs.
- *
- * @param {{ baseUrl: string, apiKey: string, fetchImpl?: typeof fetch }} cfg
- * @param {object} params CreatePaymentIntentParams (see PayLayer README)
- * @param {string} idempotencyKey
- */
-export async function createPaymentIntent({ baseUrl, apiKey, fetchImpl = fetch }, params, idempotencyKey) {
-  const res = await fetchImpl(`${String(baseUrl).replace(/\/+$/, '')}/v1/payment-intents`, {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      'idempotency-key': idempotencyKey,
-    },
-    body: JSON.stringify(params),
+async function request({ baseUrl, apiKey, fetchImpl = fetch }, method, path, body, idempotencyKey) {
+  const headers = { authorization: `Bearer ${apiKey}` };
+  if (body !== undefined) headers['content-type'] = 'application/json';
+  if (idempotencyKey) headers['idempotency-key'] = idempotencyKey;
+  // A network failure or the timeout rejects with fetch's own error, NOT a
+  // PayLayerApiError: the caller cannot know whether PayLayer acted on it.
+  const res = await fetchImpl(`${String(baseUrl).replace(/\/+$/, '')}${path}`, {
+    method,
+    headers,
+    body: body === undefined ? undefined : JSON.stringify(body),
     signal: AbortSignal.timeout(15_000),
   });
   const text = await res.text();
@@ -100,4 +94,33 @@ export async function createPaymentIntent({ baseUrl, apiKey, fetchImpl = fetch }
     throw new PayLayerApiError(res.status, err.code || 'http_error', err.message || `HTTP ${res.status}`);
   }
   return json;
+}
+
+/**
+ * POST /v1/payment-intents. Returns the intent including the one-time
+ * `clientSecret` the browser SDK needs. A repeat with the same key and the
+ * SAME params replays the original response, clientSecret included (PayLayer
+ * keeps it 24 h); different params with the same key are refused with 422.
+ *
+ * @param {{ baseUrl: string, apiKey: string, fetchImpl?: typeof fetch }} cfg
+ * @param {object} params CreatePaymentIntentParams (see PayLayer README)
+ * @param {string} idempotencyKey
+ */
+export function createPaymentIntent(cfg, params, idempotencyKey) {
+  return request(cfg, 'POST', '/v1/payment-intents', params, idempotencyKey);
+}
+
+/** GET /v1/payment-intents/:id */
+export function retrieveIntent(cfg, intentId) {
+  return request(cfg, 'GET', `/v1/payment-intents/${encodeURIComponent(intentId)}`);
+}
+
+/**
+ * POST /v1/payment-intents/:id/refunds — always the FULL amount (no `amount`
+ * is ever sent). 201 = accepted by Razorpay, 202 = outcome pending; both
+ * resolve, and a refund.* webhook settles it. A retry must reuse the same
+ * key and the same params.
+ */
+export function createRefund(cfg, intentId, { reason }, idempotencyKey) {
+  return request(cfg, 'POST', `/v1/payment-intents/${encodeURIComponent(intentId)}/refunds`, { reason }, idempotencyKey);
 }

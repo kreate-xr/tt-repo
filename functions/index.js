@@ -2,8 +2,10 @@
 // on the game's own origin through Firebase Hosting rewrites (firebase.json):
 //
 //   GET  /api/me              entitlement + trial remaining + account kind
-//   POST /api/trial/lease     start / renew / end a play lease (src/trial.js)
-//   POST /api/orders          create a PayLayer payment intent for the unlock
+//   POST /api/trial/lease     start / renew / end a play lease (src/trial.js,
+//                             src/playtime.js)
+//   POST /api/orders          create (or hand back) a PayLayer payment intent
+//   POST /api/refund          self-service refund of the account's purchase
 //   POST /webhooks/paylayer   PayLayer → grant / revoke entitlements/{uid}
 //
 // Same origin means no CORS, and the existing CSP `connect-src 'self'` already

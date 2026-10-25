@@ -229,13 +229,13 @@ async function main() {
       await page.waitForFunction(() => !document.getElementById('acct-view-buy').hidden, null, { timeout: 20_000 });
       assert.equal(await uidOf(page), trialUid, 'linkWithCredential must keep the uid');
       assert.equal((await page.locator('#account-chip').textContent()).trim(), email);
-      assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '₹1,777');
+      assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '₹1,997');
       // The price and the button follow the phone typed: +91 → INR, else USD.
       await page.fill('#acct-buy-phone', '+1 415 555 0100');
       assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '$19.97');
       assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay $19.97');
       await page.fill('#acct-buy-phone', '+91 98765 43210');
-      assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay ₹1,777');
+      assert.equal((await page.locator('#acct-buy-submit').textContent()).trim(), 'Pay ₹1,997');
       await page.fill('#acct-buy-phone', '');
       await shot(page, '03-buy-form');
     });
@@ -251,6 +251,24 @@ async function main() {
       assert.ok(fit.top >= 0, 'dialog top is off-screen');
       await shot(page, '03b-buy-form-zoomed');
       await page.setViewportSize({ width: 1280, height: 860 });
+    });
+
+    await step('checkout: Pay stays disabled until the consent box is ticked', async () => {
+      const consent = page.locator('#acct-buy-consent');
+      const payBtn = page.locator('#acct-buy-submit');
+      assert.equal(await consent.isChecked(), false, 'unticked by default');
+      assert.equal(await payBtn.isDisabled(), true);
+      assert.match(await page.locator('label.acct-consent').textContent(),
+        /I agree that the game unlocks immediately after payment and that I lose my 14-day right of withdrawal once it does\./);
+      assert.equal((await page.locator('.acct-refund-terms').textContent()).trim(),
+        "Refunds: within 3 days of purchase if you've played less than 2 hours. A refund removes the unlock. One refund per account.");
+      assert.match(await page.locator('.acct-legal').textContent(), /By paying you agree to our/);
+      await consent.check();
+      assert.equal(await payBtn.isDisabled(), false);
+      await consent.uncheck();
+      assert.equal(await payBtn.isDisabled(), true);
+      await consent.check();
+      await shot(page, '03c-buy-consent');
     });
 
     await step('checkout: invalid phone is refused by the backend', async () => {
@@ -277,7 +295,7 @@ async function main() {
       const intents = [...pay.intents.values()];
       paidIntent = intents.find((i) => i.status === 'paid');
       assert.ok(paidIntent, 'an intent was paid');
-      assert.equal(paidIntent.amount, 177700);
+      assert.equal(paidIntent.amount, 199700);
       assert.equal(paidIntent.currency, 'INR');
       assert.deepEqual(paidIntent.customer, { name: 'Asha Rao', email, contact: '+919876543210' });
       assert.equal(paidIntent.idempotencyKey, paidIntent.siteReference);
@@ -304,9 +322,20 @@ async function main() {
       assert.equal(await page.locator('#acct-buy').isVisible(), false);
       const r = await page.evaluate(async () => {
         const api = await import('/js/account/api.js');
-        try { await api.postOrder({ name: 'A', phone: '+919876543210' }); return 'created'; } catch (e) { return e.code; }
+        const order = async (consent) => {
+          try { await api.postOrder({ name: 'A', phone: '+919876543210', consent }); return 'created'; } catch (e) { return e.code; }
+        };
+        const me = await api.fetchMe();
+        return { owned: await order(true), noConsent: await order(undefined), metered: me.metered, refund: me.refund };
       });
-      assert.equal(r, 'already_owned');
+      assert.equal(r.owned, 'already_owned');
+      // The server re-checks consent; the browser's checkbox is not enough.
+      assert.equal(r.noConsent, 'consent_required');
+      // Refundable, so paid play is metered.
+      assert.equal(r.metered, true);
+      assert.equal(r.refund.eligible, true);
+      assert.match(await page.locator('#acct-refund-note').textContent(), /Refund available until/);
+      assert.equal(await page.locator('#acct-refund-btn').isVisible(), true);
       await page.keyboard.press('Escape');
       assert.equal(await modalView(page), null);
     });
@@ -357,13 +386,41 @@ async function main() {
       await ctxB.close();
     });
 
-    await step('refund revokes the unlock', async () => {
-      const r = await fetch(`http://127.0.0.1:${PAY_PORT}/__refund/${paidIntent.id}`, { method: 'POST' });
-      assert.equal(r.status, 200);
-      await page.reload();
-      await waitAccess(page, /free trial is over/);
+    await step('self-service refund: two taps, unlock removed, refund.processed finalises', async () => {
+      await page.click('#account-chip');
+      assert.equal(await modalView(page), 'account');
+      const btn = page.locator('#acct-refund-btn');
+      await btn.click();
+      assert.match(await btn.textContent(), /Tap again to confirm/);
+      assert.equal(pay.refunds.length, 0, 'the first tap only asks to confirm');
+      await btn.click();
+      await page.waitForFunction(() => /Refund requested/.test(document.getElementById('account-status').textContent), null, { timeout: 20_000 });
+      assert.equal(pay.refunds.length, 1);
+      assert.equal(pay.refunds[0].intentId, paidIntent.id);
+      assert.equal(pay.refunds[0].idempotencyKey, `refund-${paidIntent.id}`);
+      assert.equal(pay.refunds[0].body.amount, undefined);
+      await shot(page, '08-refund-requested');
+
+      // The webhook lands just after: refundUsed is set, the unlock stays off.
+      const end = Date.now() + 15_000;
+      let user;
+      while (Date.now() < end) {
+        user = await readDoc(`users/${trialUid}`);
+        if (user && user.fields.refundUsed && user.fields.refundUsed.booleanValue) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      assert.equal(user.fields.refundUsed.booleanValue, true);
       const ent = await readDoc(`entitlements/${trialUid}`);
       assert.equal(ent.fields.active.booleanValue, false);
+
+      await page.keyboard.press('Escape');
+      await page.reload();
+      await waitAccess(page, /free trial is over/);
+      await page.click('#account-chip');
+      assert.match(await page.locator('#acct-refund-note').textContent(), /was refunded/);
+      assert.equal(await page.locator('#acct-refund-btn').isVisible(), false);
+      await shot(page, '09-refunded');
+      await page.keyboard.press('Escape');
     });
 
     await step('no unexpected console errors', async () => {

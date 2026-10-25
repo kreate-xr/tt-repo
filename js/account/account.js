@@ -28,7 +28,7 @@ import {
 } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { getFirebaseAuth, getDb, ensureAnonymousAuth } from '../network/firebaseClient.js';
-import { fetchMe, postOrder, ApiError } from './api.js';
+import { fetchMe, postOrder, postRefund, ApiError } from './api.js';
 
 const PAYLAYER_URL = typeof __PAYLAYER_URL__ !== 'undefined' ? __PAYLAYER_URL__ : '';
 const ENTITLEMENT_WAIT_MS = 90_000;
@@ -47,7 +47,7 @@ function publish(next) {
 
 /**
  * Latest known access. null until the first /api/me answer.
- * { entitled, remainingSec, signedIn, email, emailVerified, hasCheckoutProfile }
+ * { entitled, metered, refund, remainingSec, signedIn, email, emailVerified, hasCheckoutProfile }
  */
 export function getAccess() { return access; }
 
@@ -61,6 +61,8 @@ export async function refreshAccess() {
   const me = await fetchMe();
   publish({
     entitled: me.entitled === true,
+    metered: me.metered === true,
+    refund: me.refund || null,
     remainingSec: me.trial ? me.trial.remainingSec : 0,
     signedIn: !me.account.anonymous,
     email: me.account.email,
@@ -181,20 +183,35 @@ function waitForEntitlement(uid, timeoutMs = ENTITLEMENT_WAIT_MS) {
 
 /**
  * Pay for the lifetime unlock.
+ * @param {{ name: string, phone: string, consent: boolean }} details
+ * @param {{ onPaid?: () => void }} [hooks] onPaid: Checkout reported success —
+ *        UX only; the unlock still waits for the server.
  * @returns {Promise<'unlocked'|'pending'>} 'pending' = paid at Razorpay but the
  *          confirmation has not reached us yet (the webhook will still land).
- * @throws ApiError (e.g. already_owned, invalid_phone) or the SDK's PayError
- *         ('dismissed' when the player closes Checkout).
+ * @throws ApiError (e.g. already_owned, invalid_phone, consent_required) or the
+ *         SDK's PayError ('dismissed' when the player closes Checkout).
  */
-export async function buyFullGame({ name, phone }) {
+export async function buyFullGame({ name, phone, consent }, { onPaid = () => {} } = {}) {
   const auth = getFirebaseAuth();
   await auth.authStateReady();
   const user = auth.currentUser;
   if (!user || user.isAnonymous && !user.email) throw new ApiError(403, 'account_required');
 
-  const [order, Pay] = await Promise.all([postOrder({ name, phone }), loadPaySdk()]);
+  const [order, Pay] = await Promise.all([postOrder({ name, phone, consent }), loadPaySdk()]);
   await Pay.checkout({ intentId: order.intentId, clientSecret: order.clientSecret });
+  onPaid();
   const unlocked = await waitForEntitlement(user.uid);
   await refreshAccess().catch(() => {});
   return unlocked ? 'unlocked' : 'pending';
+}
+
+/**
+ * Refund this account's purchase. Every rule is the server's; a refusal
+ * throws an ApiError whose message says why.
+ * @returns {Promise<{ status: 'refund_requested', pending?: boolean }>}
+ */
+export async function requestRefund() {
+  const result = await postRefund();
+  await refreshAccess().catch(() => {});
+  return result;
 }

@@ -1,4 +1,4 @@
-/* Shared by the policy pages in public/ (privacy, terms, refund, shipping,
+/* Shared by the policy pages in public/ (about, pricing, privacy, terms, refund, shipping,
    contact). Plain static pages, copied verbatim into dist/ by Vite. */
 :root {
   --brand-1: #4f46e5;
@@ -46,4 +46,16 @@ code { font-size: 0.9em; background: #f1f3fb; padding: 1px 5px; border-radius: 5
 @media (max-width: 560px) {
   body { padding: 20px 16px 60px; }
   main { padding: 24px 20px; }
+}
+/* Pricing page: the two plans side by side, stacked on a phone. */
+.plans { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 24px; }
+.plan { border: 1px solid var(--line); border-radius: 14px; padding: 20px; }
+.plan.featured { border: 2px solid var(--brand-1); background: #f8f7ff; }
+.plan h2 { margin-top: 0; }
+.plan-price { margin-top: 6px; font-size: 1.9rem; font-weight: 800; line-height: 1.1; color: var(--ink); }
+.plan-price span { font-size: 0.85rem; font-weight: 600; color: var(--ink-soft); }
+.plan-note { margin-top: 4px; font-size: 0.85rem; }
+.plan ul { margin-top: 12px; font-size: 0.92rem; }
+@media (max-width: 560px) {
+  .plans { grid-template-columns: 1fr; }
 }

@@ -23,7 +23,7 @@ import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableC
 import { beginSession, endSession as endAnalyticsRun, mark } from '../analytics/session.js';
 import { showPostSession } from '../ui/postSession.js';
 import { refreshProgress } from '../ui/progressPanel.js';
-import { showTrialOver, refreshAccessSoon } from '../ui/accountPanel.js';
+import { showTrialOver, showReconnect, refreshAccessSoon, isPlayMetered } from '../ui/accountPanel.js';
 import { createTrialClock } from '../account/trialClock.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
 // FPS HUD disabled — import kept commented for easy restore.
@@ -113,6 +113,23 @@ const DRILL_FACTORIES = {
 // device. Raise this to 120 once there is confirmed headroom; the supported
 // list is logged below so the decision has numbers behind it.
 const PREFERRED_MAX_FRAME_RATE = 90;
+
+// Paid play the server has not metered yet (js/account/trialClock.js). Kept
+// across sessions and reloads so leaving and re-entering offline does not
+// reset the allowance; a successful lease call clears it. Storage can throw
+// (private mode, blocked site data) — then it lasts for the session only.
+const UNMETERED_PLAY_KEY = 'tt.unmeteredPlayMs';
+const unmeteredPlayStore = {
+  get() {
+    try { return Number(localStorage.getItem(UNMETERED_PLAY_KEY)) || 0; } catch { return 0; }
+  },
+  set(ms) {
+    try {
+      if (ms > 0) localStorage.setItem(UNMETERED_PLAY_KEY, String(Math.round(ms)));
+      else localStorage.removeItem(UNMETERED_PLAY_KEY);
+    } catch { /* see above */ }
+  },
+};
 
 /**
  * Ask the runtime for the highest supported display rate at or below
@@ -632,16 +649,18 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   let lastDrillParams = null;
   let prevStateBeforeTuner = 'menu'; // restore target when leaving the tuner
 
-  // --- Free trial (js/account/trialClock.js) ---
+  // --- Free trial + paid-play metering (js/account/trialClock.js) ---
   // Metered only while actually playing — free play or a drill/match, with
   // the session visible; menus and the tuner are free. The frame loop feeds
   // setPlaying() every frame (a no-op unless the answer changed). When the
-  // server says the trial is over, the current ball is allowed to finish
-  // (TRIAL_END_GRACE_MS at most) and the session ends; the 2D page then shows
-  // the paywall in place of the post-session dialog. The API module, and the
-  // Firebase SDK behind it, load on the first lease call — never on entry.
+  // server says the trial is over — or a paid player who can still get a
+  // refund has played too long without reaching the server — the current
+  // ball is allowed to finish (TRIAL_END_GRACE_MS at most) and the session
+  // ends; the 2D page then shows the paywall (or a reconnect message) in
+  // place of the post-session dialog. The API module, and the Firebase SDK
+  // behind it, load on the first lease call — never on entry.
   const TRIAL_END_GRACE_MS = 8000;
-  let trialExpiry = null; // { reason, atMs } once the server ends the trial
+  let trialExpiry = null; // { reason: 'trial_over'|'ip_limit'|'offline', atMs }
   let trialEndRequested = false;
   const trialClock = createTrialClock({
     lease: (action) => import('../account/api.js').then((m) => m.postLease(action)),
@@ -650,6 +669,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       hudLog(`[trial] over (${reason}) — ending after the current ball`);
     },
     onWarn: (sec) => hudLog(`[trial] ${sec}s of free play left`),
+    onBlocked: () => {
+      trialExpiry = { reason: 'offline', atMs: performance.now() };
+      hudLog('[trial] no connection to the server — ending after the current ball');
+    },
+    metered: isPlayMetered(),
+    offlineStore: unmeteredPlayStore,
     log: (msg, err) => console.warn(msg, (err && (err.code || err.message)) || ''),
   });
 
@@ -1411,7 +1436,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // moment and no other. A session the free trial ended gets the paywall
     // instead: one dialog at a time, and that one explains the exit.
     trialClock.dispose();
-    if (trialExpiry) {
+    if (trialExpiry && trialExpiry.reason === 'offline') {
+      showReconnect();
+    } else if (trialExpiry) {
       showTrialOver(trialExpiry.reason);
     } else {
       showPostSession();
