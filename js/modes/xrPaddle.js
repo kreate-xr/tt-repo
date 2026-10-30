@@ -607,6 +607,13 @@ export function setupXRPaddle(session, { onSelect, onSelectEnd } = {}) {
     getSmoothedGripPose,
     updatePaddleVisual,
     triggerPaddleRecoil,
+    // Reference-space reset: the grip pose teleports, so snap the smoothed
+    // pose to it next frame instead of lerping the visual paddle across the
+    // room, and drop ball.js's velocity/stroke history from the old frame.
+    snapToGrip: () => {
+      anchorPoseInitialized = false;
+      resetPaddleTracking();
+    },
     // Re-run the attach sweep on demand. Needed when setup is called before
     // the paddle GLB exists: 'connected' events that arrive mid-download
     // attach nothing (attachPaddleToGrip guards on paddleModel), so the

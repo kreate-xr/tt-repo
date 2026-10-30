@@ -77,6 +77,15 @@ export function shouldSuppressContact() {
   return (performance.now() - _lastEmulatedTimestamp) < FREEZE_WINDOW_MS;
 }
 
+// The reference space jumped (XRReferenceSpace 'reset' — e.g. the player
+// held the Meta button to recenter for a new wearer). Every tracked pose
+// teleports in the same frame, so open the same contact-suppression window a
+// tracking hiccup does: the paddle's finite-difference velocity across the
+// jump is meaningless and must not be resolved against the ball.
+export function noteDiscontinuity() {
+  _lastEmulatedTimestamp = performance.now();
+}
+
 // Testing hook — resets internal state. Called by tests only.
 export function _resetForTests() {
   _lastEmulatedTimestamp = -Infinity;

@@ -515,6 +515,9 @@ function matteTableSurface(root) {
 // enough that the raw value reads near-black on the menu's dark panel, so
 // toggling looked like nothing happened. The chip's job is to say "blue" or
 // "green" at a glance, not to be colorimetrically faithful.
+// Gap between the player's spawn point and the table's near end line, m.
+export const PLAYER_TO_NEAR_EDGE_M = 0.6;
+
 export const TABLE_COLORS = {
   blue:  { id: 'blue',  base: '#0d478d', swatch: '#2e7cd6' },  // tournament blue, as authored
   green: { id: 'green', base: '#1e6b47', swatch: '#2fa36c' },  // classic club green
@@ -706,7 +709,13 @@ async function loadModelsOnce(loadingScreen, statusEl) {
 
     const rawBox = new THREE.Box3().setFromObject(tableModel);
     const tableLength = rawBox.max.z - rawBox.min.z;
-    const nearEdgeOffset = -0.3 - rawBox.max.z;
+    // The player's head (local-floor origin, captured at session start) sits
+    // PLAYER_TO_NEAR_EDGE_M behind the near end line. Was 0.30 m: testers
+    // spawned pressed against the table, had to look steeply down to see the
+    // far end, and felt cramped serving. 0.60 m is a ready stance — feet
+    // ~0.6-0.8 m back with the head leaning forward over them. Everything
+    // else (menus, room, arena, AI, multiplayer mirror) derives from tableBox.
+    const nearEdgeOffset = -PLAYER_TO_NEAR_EDGE_M - rawBox.max.z;
     tableModel.position.set(0, 0, nearEdgeOffset);
 
     // Derive play-surface bounds and net AABB from the named anchor empties

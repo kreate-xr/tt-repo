@@ -72,7 +72,7 @@ import * as profileStore from '../profile/store.js';
 import { PhysicsTuner } from '../scene/physicsTuner.js';
 import { PaddleQuickFit } from '../scene/paddleQuickFit.js';
 import { paddleAngularVelocity } from '../physics/ball.js';
-import { update as updateTrackingLossGuard } from '../xr/trackingLossGuard.js';
+import { update as updateTrackingLossGuard, noteDiscontinuity } from '../xr/trackingLossGuard.js';
 import { getProfile } from './training/difficulty.js';
 import {
   initStatsHud, setLiveLine, hideLiveLine, showSummary, hideSummary, clearStatsHud,
@@ -481,6 +481,25 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     onSelect: (grip) => { if (uiInputReady) handleTrigger(grip); },
     onSelectEnd: () => { draggingSliderId = null; },
   });
+
+  // Meta-button recenter ("hold to reset view"). The world is built around the
+  // local-floor origin (models.js: player at origin, table PLAYER_TO_NEAR_EDGE_M
+  // ahead), so when the runtime moves that origin to the current wearer the
+  // table re-lands in front of them with no work from us — handing the
+  // headset to a new player no longer means restarting the app. The app
+  // cannot claim the Meta button itself; it can only absorb the pose jump:
+  // snap the paddle instead of smoothing across it, and suppress contacts
+  // for the guard window so the jump cannot register as a swing.
+  const baseRefSpace = renderer.xr.getReferenceSpace();
+  if (baseRefSpace) {
+    baseRefSpace.addEventListener('reset', (event) => {
+      const t = event.transform && event.transform.position;
+      console.log('[XR] reference space reset (recenter)'
+        + (t ? ` — origin moved by (${t.x.toFixed(2)}, ${t.y.toFixed(2)}, ${t.z.toFixed(2)})` : ''));
+      noteDiscontinuity();
+      xr.snapToGrip();
+    });
+  }
 
   xr.onPaddleAttached(() => {
     const targetRay = xr.getActiveTargetRay();

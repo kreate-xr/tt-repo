@@ -22,7 +22,7 @@
 // 0.8 m behind it (scoreboard.js DISTANCE_BEHIND_AI_M).
 //
 // Coordinate basis (models.js): world y=0 is the floor, the player origin
-// is (0,0,0) facing -Z, the table's far (AI) edge sits at ~z=-3.04.
+// is (0,0,0) facing -Z, the table's far (AI) edge sits at ~z=-3.34.
 
 import { ROOM, WALL_MARK } from './focusRoomSpec.js';
 

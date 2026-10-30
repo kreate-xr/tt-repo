@@ -4,10 +4,10 @@
 //
 // Coordinate basis (models.js): world y=0 is the physical floor
 // (local-floor reference space), player origin at (0,0,0) facing -Z. The
-// table's near edge sits at z=-0.30 and its far (AI) edge at ~z=-3.04, so
+// table's near edge sits at z=-0.60 and its far (AI) edge at ~z=-3.34, so
 // the room is centered on the TABLE center, not the player — the long end
 // goes to the AI side (where the scoreboard wall lives) and the player
-// still keeps ~4.3 m of room behind them.
+// still keeps ~4.0 m of room behind them.
 
 // The venue blue. ONE constant because the court border, the wall stripe,
 // the skirting rail, the corner posts and the cornice are deliberately the

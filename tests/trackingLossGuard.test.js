@@ -4,7 +4,7 @@
 // contact suppressed for 100 ms after; clean pose → guard clears.
 
 import {
-  update, shouldFreezePaddle, shouldSuppressContact, _resetForTests, _wasPoseValidThisFrame,
+  update, shouldFreezePaddle, shouldSuppressContact, noteDiscontinuity, _resetForTests, _wasPoseValidThisFrame,
 } from '../js/xr/trackingLossGuard.js';
 
 function fakeFrame(poseResult) {
@@ -65,6 +65,22 @@ describe('trackingLossGuard', () => {
     await new Promise((r) => setTimeout(r, 130));
     // shouldSuppressContact reads performance.now() directly — no need to call
     // update() first, though a real loop would.
+    expect(shouldSuppressContact()).toBe(false);
+  });
+
+  test('a reference-space reset suppresses contact for the window without freezing the paddle', async () => {
+    _resetForTests();
+    update(fakeFrame({ emulatedPosition: false }), fakeInputSource(), fakeRefSpace);
+    expect(shouldSuppressContact()).toBe(false);
+
+    noteDiscontinuity();
+    // The post-reset pose is real tracking, so the paddle follows it...
+    update(fakeFrame({ emulatedPosition: false }), fakeInputSource(), fakeRefSpace);
+    expect(shouldFreezePaddle()).toBe(false);
+    // ...but the jump must not resolve as a swing.
+    expect(shouldSuppressContact()).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 130));
     expect(shouldSuppressContact()).toBe(false);
   });
 });
