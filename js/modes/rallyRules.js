@@ -26,6 +26,17 @@
 //
 // Reasons: serveFault · ownSideBounce · doubleBounce · illegalVolley ·
 //          ballOut · doubleHit · netTouch · ballLost
+//
+// FOUL RULES OFF ("free play", the `foulRules` profile setting). `foulsOn`
+// is read live on every event. While it reports false, a rule break is not
+// called at all — the stroke stands and the rally plays on: serve struck
+// over/below the table, serve that skips the server's own half, the
+// net-cord let, double hit, volley, net touch. A serve that never gets into
+// play (died on the server's half, missed the far half) still loses the
+// point, because something has to end the rally, but it is scored as a miss
+// (`foul` null) rather than announced as a FOUL. Everything that is plain
+// scoring — out, double bounce, not returned, the swat of a ball already
+// going long — is untouched.
 
 import { checkServeContact, classifyPreBounceContact } from './aiMatch/ittfFaults.js';
 
@@ -55,6 +66,7 @@ export function createRallyRules({
   far = 'far',
   getGeometry = () => ({}),
   now = defaultNow,
+  foulsOn = () => true,
 } = {}) {
   let active = false;
   let lastHitter = null;      // side label | null
@@ -97,6 +109,11 @@ export function createRallyRules({
 
   const point = (winner, reason, detail = null, foul = null) =>
     ({ winner, reason, detail, foul });
+  const enforcing = () => foulsOn() !== false;
+  // A serve that never got into play. With foul rules off it is still the
+  // server's point to lose, just not called as a foul (see header).
+  const serveLost = (winner, detail, server) =>
+    point(winner, 'serveFault', detail, enforcing() ? server : null);
 
   // Start a fresh rally. `server` may be null when the caller genuinely
   // doesn't know (a headless harness driving bounces directly); the service
@@ -178,12 +195,13 @@ export function createRallyRules({
 
     // Law 2.6 — where the serve was struck from.
     if (isServeStroke) {
+      if (!enforcing()) return null;
       const detail = checkServeContact({ contactPos, tableBox, tableSurfaceY, isNear });
       return detail ? point(opponent, 'serveFault', detail, side) : null;
     }
 
     // Law 2.10 — striking the ball twice successively.
-    if (repeatStrike && sinceLastHit >= DOUBLE_HIT_MIN_GAP_MS) {
+    if (repeatStrike && sinceLastHit >= DOUBLE_HIT_MIN_GAP_MS && enforcing()) {
       return point(opponent, 'doubleHit', null, side);
     }
 
@@ -193,7 +211,9 @@ export function createRallyRules({
       const verdict = classifyPreBounceContact({
         contactPos, inVel, tableBox, tableSurfaceY, isNear, gravity,
       });
-      if (verdict === 'volley') return point(opponent, 'illegalVolley', null, side);
+      if (verdict === 'volley') {
+        return enforcing() ? point(opponent, 'illegalVolley', null, side) : null;
+      }
       // The opponent's shot had already cleared the end line — their loss the
       // moment it did, whatever the striker then did with it. Scored here so
       // the swat isn't later mistaken for the striker's own shot going out.
@@ -223,16 +243,20 @@ export function createRallyRules({
       // server as `foul` and a detail naming HOW, so the player is told what
       // to change instead of guessing (faultText.js turns it into copy).
       if (serveStroke) {
-        return point(opponent, 'serveFault', serveNetTouched ? 'net' : 'doubleOwnBounce', lastHitter);
+        return serveLost(opponent, serveNetTouched ? 'net' : 'doubleOwnBounce', lastHitter);
       }
       return point(opponent, 'ownSideBounce');
     }
 
     if (serveStroke) {
       // Reached the receiver without touching the server's half first.
-      if (!serveOwnBounceSeen) return point(opponent, 'serveFault', 'noOwnBounce', lastHitter);
-      // Clipped the cord and still arrived legally — replay.
-      if (serveNetTouched) return { let: true };
+      // Free play accepts it as a served ball.
+      if (!serveOwnBounceSeen && enforcing()) {
+        return point(opponent, 'serveFault', 'noOwnBounce', lastHitter);
+      }
+      // Clipped the cord and still arrived legally — replay. Free play just
+      // plays it on.
+      if (serveNetTouched && enforcing()) return { let: true };
       serveStroke = false; // serve complete, rally live
       serveOwnBounceAssumed = false;
     }
@@ -257,7 +281,7 @@ export function createRallyRules({
   // isn't about the ball at all, so the caller detects it (see netTouch.js)
   // and reports it.
   function registerNetTouch(side) {
-    if (!active) return null;
+    if (!active || !enforcing()) return null;
     return point(other(side), 'netTouch', null, side);
   }
 
@@ -265,13 +289,15 @@ export function createRallyRules({
     if (!active) return null;
     if (!lastHitter) {
       // Nobody ever struck it — a whiffed serve toss. The receiver takes it.
-      return server ? point(other(server), 'ballLost', 'serveMiss', server) : null;
+      return server
+        ? point(other(server), 'ballLost', 'serveMiss', enforcing() ? server : null)
+        : null;
     }
     const opponent = other(lastHitter);
     // A serve still in flight never reached the receiver's court — off the
     // end or side, or dropped off the net. Law 2.6.3: a service fault.
     if (serveStroke) {
-      return point(opponent, 'serveFault', serveNetTouched ? 'net' : 'missedHalf', lastHitter);
+      return serveLost(opponent, serveNetTouched ? 'net' : 'missedHalf', lastHitter);
     }
     // No bounce on the far side means the last shot never landed → it went
     // out or short. A bounce there means the receiver failed to return it.

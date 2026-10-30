@@ -44,6 +44,7 @@ import { pickStyleForMatch, homeDistanceForStyle, contactDelayForStyle } from '.
 import { createServer, SERVE_STATES } from './serve.js';
 import { createPlayerServeController } from './playerServe.js';
 import { createRallyManager } from './rallyManager.js';
+import { getSetting } from '../../profile/store.js';
 import { normalizeBestOf, loadBestOf, gamesToWin, matchLengthLabel } from '../matchFormat.js';
 import { createFailureHandler } from './failureHandler.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
@@ -453,6 +454,9 @@ export function createAIMatchDrill({
       bestOf,
       firstServer: Math.random() < 0.5 ? 'player' : 'ai',
       strictToss: competition,
+      // Wrist menu › Settings › Foul Rules. Read per event, so a toggle
+      // takes effect from the next call without restarting the match.
+      foulsOn: () => getSetting('foulRules') !== false,
       // ITTF 2.9.1.2 — hold the AI's serve while the player isn't ready to
       // receive it. Two conditions, both cheap and both real in a headset:
       //

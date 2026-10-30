@@ -42,11 +42,15 @@ export const MATCH_DEFAULTS = Object.freeze({
   deucePoint: 10,
   serveRotationEvery: 2,
   firstServer: 'host',
+  // ITTF foul calls (rallyRules.js `foulsOn`). Host-authoritative like
+  // bestOf: the host sets it from its own profile, the guest adopts it.
+  foulRules: true,
 });
 
 export function createMatchModel(cfgIn = {}) {
   const cfg = { ...MATCH_DEFAULTS, ...cfgIn };
   cfg.bestOf = normalizeBestOf(cfg.bestOf);
+  cfg.foulRules = cfg.foulRules !== false;
   // Recomputed rather than const: the guest adopts the host's match length
   // from the score stream (see restore), and the number of games it takes to
   // win has to move with it.
@@ -78,6 +82,7 @@ export function createMatchModel(cfgIn = {}) {
       gameOver, gameWinner,
       matchOver: gameOver, matchWinner: gameWinner,
       rallySeq, firstTo: cfg.firstTo, bestOf: cfg.bestOf,
+      foulRules: cfg.foulRules,
     };
   }
 
@@ -150,6 +155,13 @@ export function createMatchModel(cfgIn = {}) {
 
   const serialize = getState;
 
+  // The host's toggle, mid-match. Not part of reset(): a rematch keeps the
+  // room's rules.
+  function setFoulRules(on) {
+    cfg.foulRules = on !== false;
+    return cfg.foulRules;
+  }
+
   function restore(snap) {
     if (!snap) return;
     // Match LENGTH rides the same host-authoritative channel as the score.
@@ -163,6 +175,9 @@ export function createMatchModel(cfgIn = {}) {
       cfg.bestOf = normalizeBestOf(snap.bestOf);
       gamesNeeded = gamesToWin(cfg.bestOf);
     }
+    // Same channel, same authority. Absent = a host on a build without the
+    // toggle, which always calls fouls.
+    cfg.foulRules = snap.foulRules !== false;
     scoreHost = snap.scoreHost | 0;
     scoreGuest = snap.scoreGuest | 0;
     gamesHost = snap.gamesHost | 0;
@@ -185,7 +200,7 @@ export function createMatchModel(cfgIn = {}) {
     rallySeq = snap.rallySeq | 0;
   }
 
-  return { applyRallyEnd, getState, serialize, restore, reset };
+  return { applyRallyEnd, getState, serialize, restore, reset, setFoulRules };
 }
 
 // Deterministic serve "toss" for the match's first server. Both peers know
@@ -226,6 +241,7 @@ export function createRallyTracker({
   tableSurfaceY = 0,
   gravity = -9.81,
   now = undefined,
+  foulsOn = undefined,
 } = {}) {
   const rules = createRallyRules({
     near: 'self',
@@ -234,6 +250,7 @@ export function createRallyTracker({
     // fresh each event; the static fields are the headless-test path.
     getGeometry: getGeometry || (() => ({ tableBox, tableSurfaceY, centerZ: tableCenterZ, gravity })),
     ...(now ? { now } : {}),
+    ...(foulsOn ? { foulsOn } : {}),
   });
 
   // `server` is 'self' | 'opponent' | null — the serve rules stand down when

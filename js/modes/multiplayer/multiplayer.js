@@ -49,7 +49,8 @@ import { createScoreboard } from '../../scene/scoreboard.js';
 import { createMatchReport } from '../../scene/matchReport.js';
 import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
 import { mark, setMatchSummary, setNetSource } from '../../analytics/session.js';
-import { faultRuleText, faultCue } from '../../scene/faultText.js';
+import { faultRuleText, faultCue, FOULS_OFF_NOTICE_CUE, FOULS_ON_NOTICE_CUE } from '../../scene/faultText.js';
+import { getSetting, subscribe as subscribeProfile } from '../../profile/store.js';
 import { pulseFoul } from '../../xr/haptics.js';
 import { createNetTouchWatcher } from '../../scene/netTouch.js';
 import { playFoulWhistle } from '../../scene/audio.js';
@@ -137,15 +138,20 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // First server comes from a deterministic hash of the room code — a serve
   // "toss" both peers compute identically with no extra wire traffic. The
   // old hardcoded 'host' gave the host the first serve of every match.
+  // Foul rules: the host's own setting; the guest calls fouls (the ITTF
+  // default) until the host's first SCORE_UPDATE says otherwise. Both peers
+  // must judge by the same rulebook — only the ball owner decides a rally.
   const match = createMatchModel({
     bestOf,
     firstServer: firstServerFromCode(lobby && lobby.code),
+    foulRules: role === 'host' ? getSetting('foulRules') !== false : true,
   });
   // Full ITTF rulebook, shared with the AI match (js/modes/rallyRules.js).
   // Geometry is read live so service-position and obstruction tests use the
   // same table the physics does.
   const tracker = createRallyTracker({
     getGeometry: () => ({ tableBox, tableSurfaceY, centerZ: tableCenterZ, gravity: GRAVITY }),
+    foulsOn: () => match.getState().foulRules,
   });
   // Net-assembly touch watcher — the one rule the ball's event stream can't
   // see. Probes the paddle face centre that PaddleSync already samples.
@@ -683,6 +689,13 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         if (local.bestOf !== match.getState().bestOf) {
           hudLog(`match length: ${matchLengthLabel(match.getState().bestOf)} (set by the host)`);
         }
+        // Free play changes what costs a point, so the guest is told in the
+        // headset, not just in the log.
+        if (local.foulRules !== match.getState().foulRules) {
+          const on = match.getState().foulRules;
+          hudLog(`foul rules: ${on ? 'ON' : 'OFF'} (set by the host)`);
+          if (pointBurst) pointBurst.notice(on ? FOULS_ON_NOTICE_CUE : FOULS_OFF_NOTICE_CUE, 'RULES');
+        }
         hudLog(`score reconciled from host (rally ${snap.rallySeq})`);
         const s = match.getState();
         if (s.matchOver) {
@@ -1168,6 +1181,18 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   }
   wireConnection();
 
+  // The host flipping Foul Rules on the wrist menu mid-match: adopt it from
+  // the next event and push it to the guest now rather than on the heartbeat.
+  const unsubscribeFoulRules = role !== 'host' ? null : subscribeProfile(() => {
+    const on = getSetting('foulRules') !== false;
+    if (on === match.getState().foulRules) return;
+    match.setFoulRules(on);
+    hudLog(`foul rules: ${on ? 'ON' : 'OFF'}`);
+    try {
+      nm.sendEvent({ type: PacketType.SCORE_UPDATE, match: match.serialize(), epoch: matchEpoch });
+    } catch (err) { /* heartbeat in update() will repeat it */ }
+  });
+
   // --- Thermal: halve send rate + notify peer when CPU dt creeps up ---
   // Listener captures `nm` by reference (the `let`), so it follows a swap.
   ThermalMonitor.reset();
@@ -1405,6 +1430,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     return `Multiplayer ${my}-${opp}  ${serve}  ball=${own}`;
   }
   function dispose() {
+    if (unsubscribeFoulRules) unsubscribeFoulRules();
     if (serveTimer) clearTimeout(serveTimer);
     stopMatchClock();
     report.dispose();

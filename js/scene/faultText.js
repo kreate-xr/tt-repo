@@ -80,3 +80,13 @@ export const LOW_TOSS_WARNING_CUE = {
   reason: 'Toss too low — retake',
   tip: 'At least 16 cm up. Next short toss is a fault',
 };
+
+// Multiplayer guest: the host's Foul Rules setting just reached us.
+export const FOULS_OFF_NOTICE_CUE = {
+  reason: 'Foul rules OFF — free play',
+  tip: "The host's setting. Only out / missed balls score",
+};
+export const FOULS_ON_NOTICE_CUE = {
+  reason: 'Foul rules ON',
+  tip: "The host's setting. ITTF faults are called",
+};

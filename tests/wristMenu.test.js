@@ -401,7 +401,7 @@ function openSettings(opts) {
   return menu;
 }
 
-const SETTING_IDS = ['ballColor', 'tableColor', 'dominantHand', 'mrBackdrop', 'calibrate', 'tune'];
+const SETTING_IDS = ['ballColor', 'tableColor', 'dominantHand', 'foulRules', 'mrBackdrop', 'calibrate', 'tune'];
 
 describe('main screen dock', () => {
   test('is just Rules on the left and Settings on the right', () => {
@@ -445,12 +445,32 @@ describe('main screen dock', () => {
 });
 
 describe('Settings screen', () => {
+  test('Foul Rules toggles: emits the other state and shows the store value', () => {
+    let on = true;
+    const menu = openSettings({ getFoulRulesOn: () => on });
+    const seen = [];
+    menu.on('foulRules', (p) => { seen.push(p); on = p.on; });
+    expect(textOfDraw(menu)).toMatch(/Foul Rules \| On/);
+    click(menu, 'foulRules');
+    expect(seen).toEqual([{ on: false }]);
+    expect(textOfDraw(menu)).toMatch(/Off · Free/);
+    click(menu, 'foulRules');
+    expect(seen).toEqual([{ on: false }, { on: true }]);
+  });
+
+  test('the main-screen caption says free play while fouls are off', () => {
+    const menu = new WristMenu({ getFoulRulesOn: () => false });
+    const text = textOfDraw(menu);
+    expect(text).toMatch(/FREE PLAY/);
+    expect(text).not.toMatch(/toss 16 cm/);
+  });
+
   test('the gear opens it: a title, one tile per setting, and a BACK pill', () => {
     const menu = openSettings();
     expect(menu.settingsOpen).toBe(true);
     expect(menu.helpOpen).toBe(false);
     expect(menu.buttons.map((b) => b.id))
-      .toEqual(['ballColor', 'tableColor', 'dominantHand', 'calibrate', 'settings-close']);
+      .toEqual(['ballColor', 'tableColor', 'dominantHand', 'foulRules', 'calibrate', 'settings-close']);
     expect(menu._diffPill).toBe(null);
     expect(menu._formatPill).toBe(null);
     const text = textOfDraw(menu);

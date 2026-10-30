@@ -111,7 +111,7 @@ const chordHalf = (r, dy) => Math.sqrt(Math.max(0, r * r - dy * dy));
 // Wording is "what it does", not "what it is", because that is the question
 // a player hovering an unfamiliar icon is actually asking.
 const DOCK_CAPTIONS = {
-  settings:   'Settings  —  ball, table, hand, backdrop, paddle fit',
+  settings:   'Settings  —  ball, table, hand, foul rules, backdrop, paddle fit',
   help:       'Rules  —  how the serve, the rally and the score are judged',
 };
 
@@ -120,6 +120,9 @@ const DOCK_CAPTIONS = {
 // serve of the first match, and points at the ? for the rest.
 const SERVE_RULE_CAPTION =
   'SERVE from behind your end line, toss 16 cm  ·  tap ? for all the rules';
+// ...unless the player switched foul calls off, when that law isn't enforced.
+const FREE_PLAY_CAPTION =
+  'FREE PLAY  —  foul rules are off  ·  Settings › Foul Rules to turn them on';
 
 // The rules card behind the ? dock button.
 //
@@ -401,6 +404,30 @@ const ICONS = {
     ctx.fillText(hand === 'L' ? 'L' : 'R', cx, cy + 1);
     ctx.restore();
   },
+  whistle(ctx, cx, cy, s, color, on) {
+    // Foul Rules toggle: a referee's whistle — barrel, mouthpiece, ring.
+    // Same stateful grammar as the backdrop: the barrel is FILLED while
+    // fouls are called and an outline in free play.
+    ctx.save();
+    ctx.strokeStyle = color; ctx.fillStyle = color;
+    ctx.lineWidth = 2; ctx.lineJoin = 'round';
+    const r = s * 0.26;
+    const bx = cx - s * 0.08, by = cy + s * 0.08;
+    // Barrel and mouthpiece as one outline so the stroked state has no seam.
+    ctx.beginPath();
+    ctx.arc(bx, by, r, Math.PI * 0.5, Math.PI * 2, false);
+    ctx.lineTo(cx + s * 0.44, by - r);
+    ctx.lineTo(cx + s * 0.44, by - r * 0.35);
+    ctx.lineTo(bx + r * 0.85, by - r * 0.35);
+    ctx.arc(bx, by, r, -Math.PI * 0.05, Math.PI * 0.5, false);
+    ctx.closePath();
+    if (on) ctx.fill(); else ctx.stroke();
+    // Lanyard ring on top of the barrel.
+    ctx.beginPath();
+    ctx.arc(bx - r * 0.35, by - r * 1.35, s * 0.08, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.restore();
+  },
   backdrop(ctx, cx, cy, s, color, on) {
     // Passthrough backdrop toggle: a wide screen standing behind a small
     // table seen end-on. Stateful in the swatch grammar — the screen is
@@ -440,6 +467,8 @@ const SETTINGS_TILES = [
     value: () => capitalize(getTableColorId()) },
   { id: 'dominantHand', icon: 'hand',        label: 'Dominant Hand',
     value: (m) => (m.getDominantHand() === 'L' ? 'Left' : 'Right') },
+  { id: 'foulRules',    icon: 'whistle',     label: 'Foul Rules',
+    value: (m) => (m.getFoulRulesOn() ? 'On' : 'Off · Free') },
   { id: 'mrBackdrop',   icon: 'backdrop',    label: 'Backdrop',
     value: (m) => (m.getBackdropOn() ? 'On' : 'Off'), when: (m) => m.showBackdrop },
   { id: 'calibrate',    icon: 'paddle',      label: 'Paddle Fit',
@@ -459,12 +488,15 @@ export class WristMenu {
   // the Focus Room has its own back wall — and `getBackdropOn` reports its
   // live state for the icon and caption, on the same read-don't-copy terms
   // as the hand: the menu emits the next value and inGame.js owns the store.
+  // `getFoulRulesOn` is the Foul Rules toggle's state, on the same terms.
   constructor({
     showTune = TUNER_ENABLED, getDominantHand = () => 'R',
     showBackdrop = false, getBackdropOn = () => false,
+    getFoulRulesOn = () => true,
   } = {}) {
     this.showTune = showTune;
     this.getDominantHand = getDominantHand;
+    this.getFoulRulesOn = getFoulRulesOn;
     this.showBackdrop = showBackdrop;
     this.getBackdropOn = getBackdropOn;
     this.canvas = document.createElement('canvas');
@@ -799,13 +831,16 @@ export class WristMenu {
   }
 
   // One centred row of tiles between the title and the BACK pill. Width is
-  // derived from the tile count (4 in VR, 5 in MR, +1 in dev sessions) inside
+  // derived from the tile count (5 in VR, 6 in MR, +1 in dev sessions) inside
   // a margin that clears the capsule's rounded ends at the tiles' top and
   // bottom edges (≈ 20px inset at y = 120), so no count clips.
   layoutSettingsTiles() {
     const tiles = SETTINGS_TILES.filter((t) => !t.when || t.when(this));
-    const MARGIN = 70;
-    const GAP = 18;
+    // Seven tiles (MR + dev Tune) only stay ≥ 120px — a laser target — by
+    // tightening the margin to the capsule's 40px limit and the gaps.
+    const crowded = tiles.length > 6;
+    const MARGIN = crowded ? 44 : 70;
+    const GAP = crowded ? 12 : 18;
     const TILE_MAX_W = 150;
     const TILE_Y = 120;
     const TILE_H = 180;
@@ -1001,7 +1036,8 @@ export class WristMenu {
     // Falls back to the service law rather than going blank — see
     // SERVE_RULE_CAPTION. Hovering a dock button still wins, because that is
     // an answer to a question the player just asked.
-    const text = (b && DOCK_CAPTIONS[b.id]) || SERVE_RULE_CAPTION;
+    const text = (b && DOCK_CAPTIONS[b.id])
+      || (this.getFoulRulesOn() ? SERVE_RULE_CAPTION : FREE_PLAY_CAPTION);
 
     const ctx = this.ctx;
     ctx.save();
@@ -1242,6 +1278,7 @@ export class WristMenu {
       let state;
       if (b.id === 'dominantHand') state = this.getDominantHand();
       else if (b.id === 'mrBackdrop') state = !!this.getBackdropOn();
+      else if (b.id === 'foulRules') state = !!this.getFoulRulesOn();
       ctx.save();
       drawIcon(ctx, cx, dy + 64, 64, COLORS.chromeText, state);
       ctx.restore();
@@ -1415,6 +1452,12 @@ export class WristMenu {
       const next = this.getDominantHand() === 'L' ? 'R' : 'L';
       this.emit('dominantHand', { hand: next });
       this.draw();  // refresh the letter / bat side and the caption
+      return;
+    }
+    if (button.id === 'foulRules') {
+      // A toggle, like the backdrop: emit the other state, read it back.
+      this.emit('foulRules', { on: !this.getFoulRulesOn() });
+      this.draw();  // refresh the whistle fill and the caption
       return;
     }
     if (button.id === 'mrBackdrop') {

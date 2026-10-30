@@ -710,6 +710,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // The backdrop toggle exists only where there is a room to hide.
     showBackdrop: !isVR,
     getBackdropOn: () => !!profileStore.getSetting('mrBackdrop'),
+    getFoulRulesOn: () => profileStore.getSetting('foulRules') !== false,
   });
   scene.add(wristMenu.mesh); // floating in world; billboarded each frame
 
@@ -871,6 +872,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   wristMenu.on('dominantHand', ({ hand }) => profileStore.setSetting('dominantHand', hand));
   // The store is the source of truth (the button's icon reads it back), and
   // the screen follows whatever the store actually kept.
+  // Foul Rules: the AI match and (as host) multiplayer read the store per
+  // event, so the next call already follows the new value.
+  wristMenu.on('foulRules', ({ on }) => profileStore.setSetting('foulRules', !!on));
   wristMenu.on('mrBackdrop', ({ on }) => {
     const kept = profileStore.setSetting('mrBackdrop', !!on);
     if (backdrop) backdrop.setVisible(kept);

@@ -49,6 +49,11 @@ export const SETTING_SPECS = Object.freeze({
   // Toggled from the wrist menu in MR sessions only; ignored in the Focus
   // Room, which has its own back wall.
   mrBackdrop:          { type: 'boolean', default: false },
+  // ITTF foul calls in the AI match and multiplayer (js/modes/rallyRules.js).
+  // Off is "free play": serve from anywhere, volley, touch the net — only
+  // ordinary scoring ends a point. On by default; the game is ITTF. In
+  // multiplayer the HOST's value is the room's. Toggled from the wrist menu.
+  foulRules:           { type: 'boolean', default: true },
 });
 
 function defaultSettings() {

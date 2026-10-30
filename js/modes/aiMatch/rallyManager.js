@@ -122,6 +122,9 @@ export function createRallyManager({
   config: cfgIn = {},
 } = {}) {
   const config = { ...DEFAULT_CONFIG, ...cfgIn };
+  // Live getter (the wrist-menu toggle can change between rallies), so it is
+  // read through rather than copied like the numeric config.
+  const foulsOn = typeof config.foulsOn === 'function' ? config.foulsOn : () => true;
 
   // --- Match / game / rally state ----------------------------------------
   let aiScore = 0, playerScore = 0;
@@ -146,6 +149,7 @@ export function createRallyManager({
     // Read live: tableBox/tableSurfaceY are null until the models load, and
     // GRAVITY is runtime-tunable from the in-XR physics panel.
     getGeometry: () => ({ tableBox, tableSurfaceY, gravity: GRAVITY }),
+    foulsOn,
   });
 
   // Per-rally bookkeeping owned here.
@@ -629,6 +633,8 @@ export function createRallyManager({
   if (config.strictToss && playerServe && typeof playerServe.onLowToss === 'function') {
     playerServe.onLowToss(() => {
       if (matchOver || currentServer !== 'player') return;
+      // Free play: a short toss is just a toss.
+      if (!foulsOn()) return;
       // onLowToss fires after onLaunch, so the courtesy-ball window is open;
       // closing it keeps the doomed toss's own ballLost from re-offering the
       // serve a second time underneath us.
