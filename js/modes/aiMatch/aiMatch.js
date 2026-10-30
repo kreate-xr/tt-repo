@@ -53,7 +53,7 @@ import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
 import { mark, setMatchSummary } from '../../analytics/session.js';
 import { recordAiMatch } from '../../profile/progress.js';
 import { createArenaLighting } from '../../scene/arenaLighting.js';
-import { faultRuleText } from '../../scene/faultText.js';
+import { faultRuleText, faultCue, LOW_TOSS_WARNING_CUE } from '../../scene/faultText.js';
 import { createServeArrow } from '../../scene/serveArrow.js';
 import { createPointBurst } from '../../scene/pointBurst.js';
 import { pulseActive, pulseFoul } from '../../xr/haptics.js';
@@ -605,7 +605,11 @@ export function createAIMatchDrill({
     }
     // Instant over-net flash where the point just happened — a brief burst
     // under the match-end celebration is fine.
-    if (pointBurst) pointBurst.burst({ winner: e.winner, foul: e.foul });
+    // A foul carries its reason (and, for the player's own, the fix) under
+    // the FOUL word, so the player learns why instead of repeating it.
+    if (pointBurst) {
+      pointBurst.burst({ winner: e.winner, foul: e.foul, cue: e.foul ? faultCue(e.reason, e.detail) : null });
+    }
     // Fouls the PLAYER committed get an immediate tactile call, fired from
     // inside the offending contact's own event — the buzz lands while the
     // paddle is still moving, so the rule attaches to the action that broke
@@ -650,6 +654,9 @@ export function createAIMatchDrill({
       reason: e.reason,
       detail: e.detail,
     });
+  });
+  rallyManager.on('onServeWarning', (e) => {
+    if (e.detail === 'lowToss' && pointBurst) pointBurst.notice(LOW_TOSS_WARNING_CUE);
   });
   rallyManager.on('onServerChange', (e) => {
     updateBoards({ currentServer: e.currentServer });

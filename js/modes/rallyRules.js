@@ -219,13 +219,18 @@ export function createRallyRules({
       }
       // A serve that died on the server's half (a second own bounce, or it
       // fell back off the net), or a rally return that touched the hitter's
-      // own court — either way the hitter loses.
-      return point(opponent, serveStroke ? 'serveFault' : 'ownSideBounce');
+      // own court — either way the hitter loses. Serve faults carry the
+      // server as `foul` and a detail naming HOW, so the player is told what
+      // to change instead of guessing (faultText.js turns it into copy).
+      if (serveStroke) {
+        return point(opponent, 'serveFault', serveNetTouched ? 'net' : 'doubleOwnBounce', lastHitter);
+      }
+      return point(opponent, 'ownSideBounce');
     }
 
     if (serveStroke) {
       // Reached the receiver without touching the server's half first.
-      if (!serveOwnBounceSeen) return point(opponent, 'serveFault');
+      if (!serveOwnBounceSeen) return point(opponent, 'serveFault', 'noOwnBounce', lastHitter);
       // Clipped the cord and still arrived legally — replay.
       if (serveNetTouched) return { let: true };
       serveStroke = false; // serve complete, rally live
@@ -260,9 +265,14 @@ export function createRallyRules({
     if (!active) return null;
     if (!lastHitter) {
       // Nobody ever struck it — a whiffed serve toss. The receiver takes it.
-      return server ? point(other(server), 'ballLost', 'serveMiss') : null;
+      return server ? point(other(server), 'ballLost', 'serveMiss', server) : null;
     }
     const opponent = other(lastHitter);
+    // A serve still in flight never reached the receiver's court — off the
+    // end or side, or dropped off the net. Law 2.6.3: a service fault.
+    if (serveStroke) {
+      return point(opponent, 'serveFault', serveNetTouched ? 'net' : 'missedHalf', lastHitter);
+    }
     // No bounce on the far side means the last shot never landed → it went
     // out or short. A bounce there means the receiver failed to return it.
     const wentOut = bounces[opponent] === 0;

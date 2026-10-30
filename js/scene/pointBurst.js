@@ -4,14 +4,22 @@
 // burst over the net with an expanding shockwave ring, in the winner's side
 // color (or the umpire yellow for a foul). It is deliberately glanceable,
 // not readable: one symbol, ~1 second, gone before the next serve window
-// ends. The DETAIL (who won, why, which rule broke) lives on the scoreboard
-// and the HUD log.
+// ends.
+//
+// A FOUL may also carry a cue ({reason, tip} from faultText.js faultCue):
+// two short lines under the word — what went wrong and what to change —
+// held ~2.4 s so the player can actually read them. Without it, testers
+// repeated the same serve fault point after point with no idea why.
 //
 // Show/hide contract (wired in aiMatch.js / multiplayer.js):
-//   burst({winner, foul}) — point just ended. winner 'player'|'ai' picks the
-//                           side color; a non-null foul overrides both text
-//                           and color with the FOUL treatment. Re-bursting
-//                           mid-animation restarts the timeline.
+//   burst({winner, foul, cue}) — point just ended. winner 'player'|'ai' picks
+//                           the side color; a non-null foul overrides both
+//                           text and color with the FOUL treatment. cue adds
+//                           the reason line (prefixed "Opponent" for their
+//                           foul) and, for the player's own foul, the tip.
+//                           Re-bursting mid-animation restarts the timeline.
+//   notice(cue, title)    — a warning that is not a point (the first short
+//                           toss): same call treatment, title instead of FOUL.
 //   update(dt)            — drives the pop / rise / fade. Called from tick;
 //                           returns immediately while idle.
 //   dispose()             — remove meshes, free GPU resources.
@@ -58,6 +66,21 @@ const RING_LIFE_S = 0.5;
 const RING_SCALE_MIN = 0.10;
 const RING_SCALE_MAX = 0.55;
 const RING_MAX_OPACITY = 0.85;
+
+// Reason card: a wide two-line plane sat just above the net tape, under the
+// rising FOUL word. ~6 cm cap height at the net's ~2 m reads comfortably in
+// the headset. Normal (not additive) blending over a dark backing so the copy
+// stays legible against MR passthrough and bright arena surfaces alike.
+const REASON_CANVAS_W = 1024;
+const REASON_CANVAS_H = 160;
+const REASON_PLANE_W_M = 0.96;
+const REASON_PLANE_H_M = REASON_PLANE_W_M * (REASON_CANVAS_H / REASON_CANVAS_W);
+const REASON_Y_ABOVE_NET_M = 0.065;
+// Held as long as the 2500 ms between-point window allows, so the card is
+// gone before the next serve is offered.
+const REASON_HOLD_S = 2.4;
+const REASON_FADE_IN_S = 0.12;
+const REASON_FADE_START_S = 1.95;
 
 export function createPointBurst() {
   if (!netBox) {
@@ -111,8 +134,36 @@ export function createPointBurst() {
     scene.add(mesh);
   }
 
+  const reasonCanvas = document.createElement('canvas');
+  reasonCanvas.width = REASON_CANVAS_W;
+  reasonCanvas.height = REASON_CANVAS_H;
+  const rctx = reasonCanvas.getContext('2d');
+  const reasonTexture = new THREE.CanvasTexture(reasonCanvas);
+  reasonTexture.colorSpace = THREE.SRGBColorSpace;
+  reasonTexture.minFilter = THREE.LinearFilter;
+  reasonTexture.magFilter = THREE.LinearFilter;
+  const reasonMat = new THREE.MeshBasicMaterial({
+    map: reasonTexture,
+    transparent: true,
+    depthWrite: false,
+    // The card sits in the net's plane; without this the net quad z-fights it.
+    depthTest: false,
+    opacity: 0,
+  });
+  const reasonMesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(REASON_PLANE_W_M, REASON_PLANE_H_M),
+    reasonMat,
+  );
+  reasonMesh.position.set(cx, netBox.max.y + REASON_Y_ABOVE_NET_M, cz);
+  reasonMesh.renderOrder = 7;
+  reasonMesh.frustumCulled = false;
+  reasonMesh.visible = false;
+  scene.add(reasonMesh);
+
   // Time since burst() — negative means idle.
   let t = -1;
+  // Whether this burst carries a reason card (extends the timeline).
+  let reasonShown = false;
 
   function drawLabel(label, color) {
     ctx.clearRect(0, 0, CANVAS_W, CANVAS_H);
@@ -132,16 +183,30 @@ export function createPointBurst() {
     texture.needsUpdate = true;
   }
 
-  // Point just ended. A foul outranks the side color for the same reason it
-  // does on the panel: "a rule was broken" is the story, not who scored.
-  function burst({ winner, foul = null } = {}) {
-    const isFoul = foul === 'player' || foul === 'ai';
-    if (!isFoul && winner !== 'player' && winner !== 'ai') return;
-    const color = isFoul
-      ? FOUL_COLOR
-      : winner === 'player' ? PLAYER_COLOR : AI_COLOR;
-    drawLabel(isFoul ? 'FOUL' : '+1', color);
+  function drawReason(line1, line2) {
+    rctx.clearRect(0, 0, REASON_CANVAS_W, REASON_CANVAS_H);
+    rctx.fillStyle = 'rgba(10, 12, 20, 0.72)';
+    rctx.fillRect(0, 0, REASON_CANVAS_W, REASON_CANVAS_H);
+    rctx.textAlign = 'center';
+    rctx.textBaseline = 'middle';
+    rctx.fillStyle = FOUL_COLOR;
+    rctx.font = 'bold 60px system-ui, sans-serif';
+    rctx.fillText(line1, REASON_CANVAS_W / 2, line2 ? 52 : REASON_CANVAS_H / 2, REASON_CANVAS_W - 40);
+    if (line2) {
+      rctx.fillStyle = 'rgba(255, 255, 255, 0.92)';
+      rctx.font = '44px system-ui, sans-serif';
+      rctx.fillText(line2, REASON_CANVAS_W / 2, 118, REASON_CANVAS_W - 40);
+    }
+    reasonTexture.needsUpdate = true;
+  }
+
+  function start(label, color, reasonLine = null, tipLine = null) {
+    drawLabel(label, color);
     ringMat.color.set(color);
+    reasonShown = !!reasonLine;
+    if (reasonShown) drawReason(reasonLine, tipLine);
+    reasonMesh.visible = reasonShown;
+    reasonMat.opacity = 0;
     t = 0;
     textMesh.visible = true;
     ringMesh.visible = true;
@@ -150,15 +215,55 @@ export function createPointBurst() {
     update(0);
   }
 
+  // Point just ended. A foul outranks the side color for the same reason it
+  // does on the panel: "a rule was broken" is the story, not who scored.
+  function burst({ winner, foul = null, cue = null } = {}) {
+    const isFoul = foul === 'player' || foul === 'ai';
+    if (!isFoul && winner !== 'player' && winner !== 'ai') return;
+    if (!isFoul) {
+      start('+1', winner === 'player' ? PLAYER_COLOR : AI_COLOR);
+      return;
+    }
+    // The tip is coaching — only useful to the player who made the fault.
+    if (cue && foul === 'player') start('FOUL', FOUL_COLOR, cue.reason, cue.tip);
+    else if (cue) start('FOUL', FOUL_COLOR, `Opponent: ${cue.reason}`);
+    else start('FOUL', FOUL_COLOR);
+  }
+
+  function notice(cue, title = 'RETAKE') {
+    if (!cue) return;
+    start(title, FOUL_COLOR, cue.reason, cue.tip);
+  }
+
   function update(dt) {
     if (t < 0) return;
     t += dt;
-    if (t >= DURATION_S) {
+    if (t >= (reasonShown ? REASON_HOLD_S : DURATION_S)) {
       t = -1;
       textMat.opacity = 0;
       ringMat.opacity = 0;
+      reasonMat.opacity = 0;
       textMesh.visible = false;
       ringMesh.visible = false;
+      reasonMesh.visible = false;
+      return;
+    }
+
+    if (reasonShown) {
+      reasonMat.opacity = t < REASON_FADE_IN_S
+        ? t / REASON_FADE_IN_S
+        : t < REASON_FADE_START_S
+          ? 1
+          : Math.max(0, 1 - (t - REASON_FADE_START_S) / (REASON_HOLD_S - REASON_FADE_START_S));
+    }
+    // The word's own timeline ends at DURATION_S; the card may outlast it.
+    if (t >= DURATION_S) {
+      if (textMesh.visible || ringMesh.visible) {
+        textMat.opacity = 0;
+        ringMat.opacity = 0;
+        textMesh.visible = false;
+        ringMesh.visible = false;
+      }
       return;
     }
 
@@ -190,14 +295,16 @@ export function createPointBurst() {
   }
 
   function dispose() {
-    for (const mesh of [textMesh, ringMesh]) {
+    for (const mesh of [textMesh, ringMesh, reasonMesh]) {
       scene.remove(mesh);
       mesh.geometry.dispose();
     }
     textMat.dispose();
     ringMat.dispose();
+    reasonMat.dispose();
     texture.dispose();
+    reasonTexture.dispose();
   }
 
-  return { burst, update, dispose, textMesh, ringMesh };
+  return { burst, notice, update, dispose, textMesh, ringMesh, reasonMesh };
 }

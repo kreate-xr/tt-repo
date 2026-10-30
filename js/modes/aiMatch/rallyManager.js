@@ -201,6 +201,10 @@ export function createRallyManager({
     // A let: replay, no point. `reason` is 'netCord' (cord serve landed
     // good) or 'receiverNotReady' (the serve is being held, ITTF 2.9.1.2).
     onLet: [],
+    // A serve warning that is NOT a point — `detail` 'lowToss' is the first
+    // short toss of the match (retake; the next one is a fault). Lets the UI
+    // say why the serve was taken back instead of silently re-offering it.
+    onServeWarning: [],
   };
   function on(eventName, fn) { if (listeners[eventName]) listeners[eventName].push(fn); }
   function emit(eventName, payload) {
@@ -634,6 +638,7 @@ export function createRallyManager({
       if (!lowTossWarned) {
         lowTossWarned = true;
         hudLog('[serve] WARNING — toss under the 16 cm minimum. Retake; the next short toss is a fault.');
+        emit('onServeWarning', { detail: 'lowToss' });
         scheduleBallDespawn();
         scheduleNextServe();
         return;

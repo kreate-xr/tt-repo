@@ -262,6 +262,8 @@ describe('rallyManager — serve legality', () => {
     expect(points).toHaveLength(1);
     expect(points[0].winner).toBe('player');
     expect(points[0].reason).toBe('serveFault');
+    expect(points[0].detail).toBe('noOwnBounce');
+    expect(points[0].foul).toBe('ai');
     rm.dispose();
   });
 
@@ -279,6 +281,8 @@ describe('rallyManager — serve legality', () => {
     expect(points).toHaveLength(1);
     expect(points[0].winner).toBe('player');
     expect(points[0].reason).toBe('serveFault');
+    expect(points[0].detail).toBe('doubleOwnBounce');
+    expect(points[0].foul).toBe('ai');
     rm.dispose();
   });
 
@@ -324,6 +328,26 @@ describe('rallyManager — serve legality', () => {
     expect(points).toHaveLength(1);
     expect(points[0].winner).toBe('player');
     expect(points[0].reason).toBe('serveFault');
+    expect(points[0].detail).toBe('net');
+    rm.dispose();
+  });
+
+  test('AI serve that bounces on its own half then leaves the table → serveFault missedHalf', () => {
+    const events = makeBallEvents();
+    const server = makeStubServer();
+    const rm = createRallyManager({ ballEvents: events, server });
+    const points = [];
+    rm.on('onPointScored', (e) => points.push(e));
+
+    rm.start();
+    jest.advanceTimersByTime(2500);
+    events.emit('tableBounce', { x: 0, z: -0.8 });     // legal own-half bounce
+    events.emit('ballLost', { reason: 'out' });        // sails past the player's end
+    expect(points).toHaveLength(1);
+    expect(points[0].winner).toBe('player');
+    expect(points[0].reason).toBe('serveFault');
+    expect(points[0].detail).toBe('missedHalf');
+    expect(points[0].foul).toBe('ai');
     rm.dispose();
   });
 
@@ -342,6 +366,8 @@ describe('rallyManager — serve legality', () => {
     expect(points).toHaveLength(3);                    // 2 rotation points + this
     expect(points[2].winner).toBe('ai');
     expect(points[2].reason).toBe('serveFault');
+    expect(points[2].detail).toBe('noOwnBounce');
+    expect(points[2].foul).toBe('player');
     rm.dispose();
   });
 
@@ -981,12 +1007,16 @@ describe('strict toss (ITTF 2.6.2 — 16 cm minimum rise)', () => {
       config: { firstServer: 'player', strictToss: true },
     });
     const points = [];
+    const warnings = [];
     rm.on('onPointScored', (e) => points.push(e));
+    rm.on('onServeWarning', (e) => warnings.push(e));
 
-    // First short toss — warning only: no point, serve re-offered.
+    // First short toss — warning only: no point, serve re-offered, and the
+    // UI is told why so it can show the retake.
     ps.fireLaunch();
     ps.fireLowToss();
     expect(points).toHaveLength(0);
+    expect(warnings).toEqual([{ detail: 'lowToss' }]);
     expect(rm.getScore().aiScore).toBe(0);
     expect(ps.disarm).toHaveBeenCalled();
 

@@ -49,7 +49,7 @@ import { createScoreboard } from '../../scene/scoreboard.js';
 import { createMatchReport } from '../../scene/matchReport.js';
 import { createMatchStats, totalPointsFromSets } from '../matchStats.js';
 import { mark, setMatchSummary, setNetSource } from '../../analytics/session.js';
-import { faultRuleText } from '../../scene/faultText.js';
+import { faultRuleText, faultCue } from '../../scene/faultText.js';
 import { pulseFoul } from '../../xr/haptics.js';
 import { createNetTouchWatcher } from '../../scene/netTouch.js';
 import { playFoulWhistle } from '../../scene/audio.js';
@@ -1044,6 +1044,9 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         pointBurst.burst({
           winner: winnerAbs === myAbs ? 'player' : 'ai',
           foul: foulAbs ? (foulAbs === myAbs ? 'player' : 'ai') : null,
+          // Why — and for our own fault, what to change. Both peers judge
+          // from the same verdict, so each sees the same reason.
+          cue: foulAbs ? faultCue(reason, detail) : null,
         });
       }
     } else if (reason === 'let') {

@@ -13,6 +13,7 @@ beforeAll(() => {
       // burst drew into.
       const ctx = {
         clearRect() {},
+        fillRect() {},
         fillText: jest.fn(),
       };
       return { width: 0, height: 0, getContext: () => ctx };
@@ -114,9 +115,59 @@ test('re-bursting mid-animation restarts the timeline', () => {
   b.dispose();
 });
 
-test('dispose removes both meshes from the scene', () => {
+test('dispose removes all three meshes from the scene', () => {
   const { mod, scene } = loadPointBurst();
   const b = mod.createPointBurst();
   b.dispose();
-  expect(scene.remove).toHaveBeenCalledTimes(2);
+  expect(scene.remove).toHaveBeenCalledTimes(3);
+});
+
+function reasonText(b) {
+  return b.reasonMesh.material.map.image.getContext('2d').fillText.mock.calls.map(c => c[0]);
+}
+const CUE = { reason: "Serve didn't bounce on your side", tip: 'Hit it so it lands on YOUR half first' };
+
+test("the player's own foul shows the reason and the tip, and outlasts the word", () => {
+  const { mod } = loadPointBurst();
+  const b = mod.createPointBurst();
+  b.burst({ winner: 'ai', foul: 'player', cue: CUE });
+  expect(reasonText(b)).toEqual([CUE.reason, CUE.tip]);
+  expect(b.reasonMesh.visible).toBe(true);
+
+  b.update(1.5);                       // word's 1.1 s timeline is over…
+  expect(b.textMesh.visible).toBe(false);
+  expect(b.reasonMesh.visible).toBe(true);   // …the card is still readable
+  expect(b.reasonMesh.material.opacity).toBe(1);
+
+  b.update(1.0);                       // 2.5 s: gone before the next serve
+  expect(b.reasonMesh.visible).toBe(false);
+  expect(b.reasonMesh.material.opacity).toBe(0);
+  b.dispose();
+});
+
+test("the opponent's foul names it as theirs, with no coaching tip", () => {
+  const { mod } = loadPointBurst();
+  const b = mod.createPointBurst();
+  b.burst({ winner: 'player', foul: 'ai', cue: CUE });
+  expect(reasonText(b)).toEqual([`Opponent: ${CUE.reason}`]);
+  b.dispose();
+});
+
+test('an ordinary point shows no reason card', () => {
+  const { mod } = loadPointBurst();
+  const b = mod.createPointBurst();
+  b.burst({ winner: 'player', foul: null, cue: CUE });
+  expect(b.reasonMesh.visible).toBe(false);
+  b.update(1.2);
+  expect(b.textMesh.visible).toBe(false);
+  b.dispose();
+});
+
+test('notice() shows a warning card under RETAKE without a point', () => {
+  const { mod } = loadPointBurst();
+  const b = mod.createPointBurst();
+  b.notice({ reason: 'Toss too low — retake', tip: 'At least 16 cm up' });
+  expect(drawnText(b)).toContain('RETAKE');
+  expect(reasonText(b)).toEqual(['Toss too low — retake', 'At least 16 cm up']);
+  b.dispose();
 });
