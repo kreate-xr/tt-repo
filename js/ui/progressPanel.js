@@ -83,8 +83,8 @@ export function renderProgress() {
   if (!section) return;
   const view = summarizeProgress();
 
-  $('progress-empty').hidden = !view.empty;
-  $('progress-body').hidden = view.empty;
+  // Nothing played yet → no section at all, not an empty placeholder panel.
+  section.hidden = view.empty;
   if (view.empty) return;
 
   const ai = view.ai;

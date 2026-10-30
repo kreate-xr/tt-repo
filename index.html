@@ -484,7 +484,7 @@
       background-clip: text;
       -webkit-text-fill-color: transparent;
     }
-    .progress-empty, .progress-none { color: var(--ink-soft); font-size: 0.92rem; margin-top: 10px; }
+    .progress-none { color: var(--ink-soft); font-size: 0.92rem; margin-top: 10px; }
     .progress-grid {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -1074,14 +1074,12 @@
 
       <!-- Your progress: filled by js/ui/progressPanel.js from the history
            js/profile/progress.js saves at the end of each AI match and full
-           Training Session. Flat page only — never drawn in the headset. -->
-      <section class="progress-section" id="progress">
+           Training Session. Flat page only — never drawn in the headset.
+           Hidden until there is at least one result to show. -->
+      <section class="progress-section" id="progress" hidden>
         <div class="progress-panel">
           <h2>Your <span class="grad">Progress</span></h2>
-          <p class="progress-empty" id="progress-empty">
-            Finish an AI match or a Training Session and your results will show up here.
-          </p>
-          <div id="progress-body" hidden>
+          <div id="progress-body">
             <div class="progress-grid">
               <div class="progress-card">
                 <h4>AI Match</h4>
