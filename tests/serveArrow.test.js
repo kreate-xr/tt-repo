@@ -23,7 +23,10 @@ beforeAll(() => {
         beginPath() {},
         moveTo() {},
         lineTo() {},
+        quadraticCurveTo() {},
         stroke() {},
+        fill() {},
+        fillText() {},
       }),
     }),
   };
@@ -97,6 +100,57 @@ describe('placement', () => {
     expect(apexDirection(arrow.meshes.player).z).toBeCloseTo(-1);
     expect(apexDirection(arrow.meshes.opponent).z).toBeCloseTo(1);
     arrow.dispose();
+  });
+});
+
+describe('labels', () => {
+  test('each half has a flat label at its own end line, upright for the player', () => {
+    const { createServeArrow, scene } = loadServeArrow();
+    const arrow = createServeArrow();
+    const { player, opponent } = arrow.labels;
+    expect(scene.add).toHaveBeenCalledWith(player);
+    expect(scene.add).toHaveBeenCalledWith(opponent);
+    for (const mesh of [player, opponent]) {
+      expect(mesh.position.y).toBeCloseTo(TABLE_SURFACE_Y + 0.002);
+      expect(mesh.visible).toBe(false);
+      // Text-up points away from the player's end on BOTH halves, so the
+      // far label isn't upside down.
+      expect(apexDirection(mesh).z).toBeCloseTo(-1);
+    }
+    // Between the chevrons and the end line, never past the table edge.
+    expect(player.position.z).toBeGreaterThan(arrow.meshes.player.position.z + 0.45);
+    expect(player.position.z + 0.1).toBeLessThanOrEqual(TABLE_BOX.max.z);
+    expect(opponent.position.z).toBeLessThan(arrow.meshes.opponent.position.z - 0.45);
+    expect(opponent.position.z - 0.1).toBeGreaterThanOrEqual(TABLE_BOX.min.z);
+    arrow.dispose();
+  });
+
+  test('a label fades in and out with its own arrow only', () => {
+    const { createServeArrow } = loadServeArrow();
+    const arrow = createServeArrow();
+    arrow.show('opponent');
+    arrow.update(1);
+    expect(arrow.labels.opponent.visible).toBe(true);
+    expect(arrow.labels.opponent.material.opacity).toBeGreaterThan(0.8);
+    expect(arrow.labels.player.visible).toBe(false);
+    arrow.hide();
+    arrow.update(1);
+    expect(arrow.labels.opponent.visible).toBe(false);
+    expect(arrow.labels.opponent.material.opacity).toBe(0);
+    arrow.dispose();
+  });
+
+  test('safety timer force-hides the label too', () => {
+    jest.useFakeTimers();
+    const { createServeArrow } = loadServeArrow();
+    const arrow = createServeArrow();
+    arrow.show('player');
+    arrow.update(1);
+    arrow.hide();
+    jest.advanceTimersByTime(500);
+    expect(arrow.labels.player.visible).toBe(false);
+    arrow.dispose();
+    jest.useRealTimers();
   });
 });
 
@@ -251,4 +305,6 @@ test('dispose() removes both meshes from the scene', () => {
   arrow.dispose();
   expect(scene.remove).toHaveBeenCalledWith(player);
   expect(scene.remove).toHaveBeenCalledWith(opponent);
+  expect(scene.remove).toHaveBeenCalledWith(arrow.labels.player);
+  expect(scene.remove).toHaveBeenCalledWith(arrow.labels.opponent);
 });

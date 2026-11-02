@@ -11,6 +11,12 @@
 // see the same cue — the server sees it under their own paddle, the receiver
 // sees it across the net — where before only the local server saw anything.
 //
+// Chevrons alone don't explain themselves to a first-time player, so each
+// half also carries a flat text label at its end line — "YOUR SERVE" /
+// "OPPONENT SERVES" — fading with its arrow. Both labels read upright from
+// the local player's end; the far one sits at the far end line because the
+// net would hide anything just behind it from a standing player.
+//
 // Show/hide contract (wired in aiMatch.js / multiplayer.js):
 //   show(side)  — fade in one half ('player' | 'opponent'), fade out the
 //                 other. Called on serve-requested / when the serve window
@@ -33,6 +39,20 @@ const CANVAS_SIZE = 256;
 const ARROW_W_M = 0.45;
 const ARROW_L_M = 0.90;
 const CHEVRON_REPEATS = 3;
+
+// Label strip: centered LABEL_INSET_M in from the half's end line, so it
+// fills the gap between the end line and the chevrons without touching
+// either (the chevrons stop ~0.235 m short of the end line).
+const LABEL_W_M = 0.80;
+const LABEL_D_M = 0.20;
+const LABEL_INSET_M = 0.115;
+const LABEL_CANVAS_W = 1024;
+const LABEL_CANVAS_H = 256;
+// Text has to be legible from the far end, so it stays near-opaque and
+// does not breathe with the chevrons.
+const LABEL_OPACITY = 0.9;
+const PLAYER_LABEL = 'YOUR SERVE';
+const OPPONENT_LABEL = 'OPPONENT SERVES';
 
 // 2mm lift — above the felt but below any plausible ball-contact height,
 // and no z-fighting.
@@ -78,12 +98,16 @@ export function createServeArrow() {
     cz: (tableCenterZ + tableBox.max.z) / 2,
     spinZ: 0,
     color: PLAYER_BLUE,
+    label: PLAYER_LABEL,
+    labelZ: tableBox.max.z - LABEL_INSET_M,
   });
   const opponent = createHalfArrow({
     cx,
     cz: (tableCenterZ + tableBox.min.z) / 2,
     spinZ: Math.PI,
     color: OPPONENT_ORANGE,
+    label: OPPONENT_LABEL,
+    labelZ: tableBox.min.z + LABEL_INSET_M,
   });
 
   // Exactly one half is ever shown: showing one hides the other, so a serve
@@ -119,11 +143,12 @@ export function createServeArrow() {
     update,
     dispose,
     meshes: { player: player.mesh, opponent: opponent.mesh },
+    labels: { player: player.labelMesh, opponent: opponent.labelMesh },
   };
 }
 
 // One half's arrow: mesh, fade state machine, and its own safety timer.
-function createHalfArrow({ cx, cz, spinZ, color }) {
+function createHalfArrow({ cx, cz, spinZ, color, label, labelZ }) {
   const canvas = document.createElement('canvas');
   canvas.width = CANVAS_SIZE;
   canvas.height = CANVAS_SIZE;
@@ -162,6 +187,34 @@ function createHalfArrow({ cx, cz, spinZ, color }) {
   mesh.visible = false;
   scene.add(mesh);
 
+  // Text label. No spinZ: canvas-up maps to world -Z, so both labels read
+  // upright for the player standing at the max.z end.
+  const labelCanvas = document.createElement('canvas');
+  labelCanvas.width = LABEL_CANVAS_W;
+  labelCanvas.height = LABEL_CANVAS_H;
+  drawLabel(labelCanvas.getContext('2d'), LABEL_CANVAS_W, LABEL_CANVAS_H, label, color);
+  const labelTexture = new THREE.CanvasTexture(labelCanvas);
+  labelTexture.colorSpace = THREE.SRGBColorSpace;
+  labelTexture.minFilter = THREE.LinearMipmapLinearFilter;
+  labelTexture.magFilter = THREE.LinearFilter;
+  // Seen at a grazing angle from the far end — anisotropy keeps it sharp.
+  labelTexture.anisotropy = 8;
+  const labelGeom = new THREE.PlaneGeometry(LABEL_W_M, LABEL_D_M);
+  const labelMat = new THREE.MeshBasicMaterial({
+    map: labelTexture,
+    transparent: true,
+    opacity: 0,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  const labelMesh = new THREE.Mesh(labelGeom, labelMat);
+  labelMesh.rotation.set(-Math.PI / 2, 0, 0);
+  labelMesh.position.set(cx, tableSurfaceY + SURFACE_LIFT_M, labelZ);
+  labelMesh.renderOrder = 2;
+  labelMesh.frustumCulled = false;
+  labelMesh.visible = false;
+  scene.add(labelMesh);
+
   // Fade state machine — a 0..1 progress ramped toward a target at a
   // per-phase rate. Actual material opacity is progress * (BASE + pulse),
   // composed in update().
@@ -186,12 +239,15 @@ function createHalfArrow({ cx, cz, spinZ, color }) {
     targetFade = 0;
     mat.opacity = 0;
     mesh.visible = false;
+    labelMat.opacity = 0;
+    labelMesh.visible = false;
   }
 
   function show() {
     clearHideSafetyTimer();
     pulseT = 0;
     mesh.visible = true;
+    labelMesh.visible = true;
     targetFade = 1;
     fadeRatePerSec = 1000 / FADE_IN_MS;
   }
@@ -224,6 +280,8 @@ function createHalfArrow({ cx, cz, spinZ, color }) {
       if (mesh.visible) {
         mat.opacity = 0;
         mesh.visible = false;
+        labelMat.opacity = 0;
+        labelMesh.visible = false;
       }
       return;
     }
@@ -233,6 +291,7 @@ function createHalfArrow({ cx, cz, spinZ, color }) {
     texture.offset.y = (texture.offset.y - FLOW_SPEED_TILES_PER_S * dt) % 1;
     const pulse = PULSE_AMPLITUDE * Math.sin((pulseT * 2 * Math.PI) / PULSE_PERIOD_S);
     mat.opacity = fadeProgress * (BASE_OPACITY + pulse);
+    labelMat.opacity = fadeProgress * LABEL_OPACITY;
   }
 
   function dispose() {
@@ -241,9 +300,13 @@ function createHalfArrow({ cx, cz, spinZ, color }) {
     geom.dispose();
     mat.dispose();
     texture.dispose();
+    scene.remove(labelMesh);
+    labelGeom.dispose();
+    labelMat.dispose();
+    labelTexture.dispose();
   }
 
-  return { show, hide, update, dispose, mesh };
+  return { show, hide, update, dispose, mesh, labelMesh };
 }
 
 // One chevron on a transparent tile, apex pointing canvas-up. Vertically the
@@ -262,4 +325,27 @@ function drawChevronTile(ctx, size, color) {
   ctx.lineTo(size * 0.50, size * 0.28);
   ctx.lineTo(size * 0.87, size * 0.72);
   ctx.stroke();
+}
+
+// Label text, centered, in the half's colour on a dark backing pill so it
+// stays readable on the blue felt (the player's own colour is blue too).
+function drawLabel(ctx, w, h, text, color) {
+  ctx.clearRect(0, 0, w, h);
+  const r = h * 0.3;
+  ctx.fillStyle = 'rgba(10, 14, 24, 0.55)';
+  ctx.beginPath();
+  ctx.moveTo(r, h * 0.12);
+  ctx.lineTo(w - r, h * 0.12);
+  ctx.quadraticCurveTo(w, h * 0.12, w, h * 0.5);
+  ctx.quadraticCurveTo(w, h * 0.88, w - r, h * 0.88);
+  ctx.lineTo(r, h * 0.88);
+  ctx.quadraticCurveTo(0, h * 0.88, 0, h * 0.5);
+  ctx.quadraticCurveTo(0, h * 0.12, r, h * 0.12);
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = `bold ${Math.round(h * 0.5)}px system-ui, sans-serif`;
+  // Long copy ("OPPONENT SERVES") squeezes to fit rather than clipping.
+  ctx.fillText(text, w / 2, h * 0.52, w * 0.9);
 }
