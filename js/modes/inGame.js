@@ -73,6 +73,7 @@ import { PhysicsTuner } from '../scene/physicsTuner.js';
 import { PaddleQuickFit } from '../scene/paddleQuickFit.js';
 import { paddleAngularVelocity } from '../physics/ball.js';
 import { update as updateTrackingLossGuard, noteDiscontinuity } from '../xr/trackingLossGuard.js';
+import { createViewerAlign } from '../xr/viewerAlign.js';
 import { getProfile } from './training/difficulty.js';
 import {
   initStatsHud, setLiveLine, hideLiveLine, showSummary, hideSummary, clearStatsHud,
@@ -491,6 +492,13 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // snap the paddle instead of smoothing across it, and suppress contacts
   // for the guard window so the jump cannot register as a swing.
   const baseRefSpace = renderer.xr.getReferenceSpace();
+  // The local-floor origin is NOT where the player faces on entry (Quest keeps
+  // it at the last system recenter), so the world is re-based onto the head's
+  // floor position + yaw on the first tracked frame — see viewerAlign.js.
+  const viewerAlign = createViewerAlign(renderer.xr, baseRefSpace, () => {
+    noteDiscontinuity();
+    xr.snapToGrip();
+  });
   if (baseRefSpace) {
     baseRefSpace.addEventListener('reset', (event) => {
       const t = event.transform && event.transform.position;
@@ -498,6 +506,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
         + (t ? ` — origin moved by (${t.x.toFixed(2)}, ${t.y.toFixed(2)}, ${t.z.toFixed(2)})` : ''));
       noteDiscontinuity();
       xr.snapToGrip();
+      // The runtime moved the base origin; our offset on top of it is now
+      // stale. Re-align to the (possibly new) wearer next frame.
+      viewerAlign.request();
     });
   }
 
@@ -524,7 +535,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   scene.add(loadPanel.mesh);
   const _loadCamPos = new THREE.Vector3();
   const _loadCamFwd = new THREE.Vector3();
-  renderer.setAnimationLoop(() => {
+  renderer.setAnimationLoop((_timeMs, frame) => {
+    viewerAlign.update(frame);
     const xrCam = renderer.xr.getCamera();
     xrCam.getWorldPosition(_loadCamPos);
     xrCam.getWorldDirection(_loadCamFwd);
@@ -1523,6 +1535,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // Advance the tracking-loss guard first — its state feeds updatePaddleVisual
     // (freeze anchor on emulated) and tickPhysics (suppress contact). Reads
     // XRFrame.getPose().emulatedPosition on the paddle grip's inputSource.
+    viewerAlign.update(frame);
     updateTrackingLossGuard(frame, xr.getActiveInputSource(), renderer.xr.getReferenceSpace());
 
     // P16 §5.1: drive key + hemi from the room's real light when
