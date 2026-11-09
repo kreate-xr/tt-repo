@@ -120,3 +120,17 @@ describe('PaddleQuickFit', () => {
     }
   });
 });
+
+// Session-end leak: the panel's mesh lives in the module-level scene, and
+// startInGame adds a fresh one on every entry. dispose() must take it out of
+// the scene graph, or every past session's panel keeps rendering/traversing.
+describe('PaddleQuickFit dispose', () => {
+  test('detaches the mesh from its parent', () => {
+    const panel = new PaddleQuickFit();
+    const parent = new THREE.Group();
+    parent.add(panel.mesh);
+    panel.dispose();
+    expect(panel.mesh.parent).toBeNull();
+    expect(parent.children).not.toContain(panel.mesh);
+  });
+});

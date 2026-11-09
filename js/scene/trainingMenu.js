@@ -136,6 +136,9 @@ export class TrainingMenu {
   dispose() {
     if (this.texture) this.texture.dispose();
     if (this.mesh) {
+      // Out of the scene graph too: the mesh lives in the module-level scene,
+      // so a disposed-but-attached panel survived into every later session.
+      if (this.mesh.parent) this.mesh.parent.remove(this.mesh);
       if (this.mesh.geometry) this.mesh.geometry.dispose();
       if (this.mesh.material) this.mesh.material.dispose();
     }

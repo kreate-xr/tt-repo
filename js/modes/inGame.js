@@ -26,7 +26,8 @@ import { refreshProgress } from '../ui/progressPanel.js';
 import { showTrialOver, showReconnect, refreshAccessSoon, isPlayMetered } from '../ui/accountPanel.js';
 import { createTrialClock } from '../account/trialClock.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
-// FPS HUD disabled — import kept commented for easy restore.
+// Frame-time meter: opt-in with ?fps in the URL (see fpsMeter.js).
+import { createFpsMeter, FPS_METER_ENABLED } from '../scene/fpsMeter.js';
 import {
   tickPhysics, clearListeners, spawnBallAt,
   onPaddleHit, onTableBounce, onNetHit, onBallLost,
@@ -523,6 +524,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // Hand on the serving (non-paddle) controller. Loads on its own and follows
   // whichever grip is the off-hand each frame, so it needs no attach hook.
   const offHand = createOffHand({ xr, isAR: !isVR });
+  // Not even built without ?fps, so a normal session pays nothing for it.
+  const fpsMeter = FPS_METER_ENABLED ? createFpsMeter(scene) : null;
 
   // --- In-session asset loading -------------------------------------------
   // The player is already in the headset while the table/paddle GLBs
@@ -1438,11 +1441,20 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     teardownDrill();
     clearStatsHud();
     offHand.dispose();
+    if (fpsMeter) fpsMeter.dispose();
     unsubscribeHandRedraw();
     wristMenu.hide();
     wristMenu.dispose();
     tuner.hide();
     tuner.dispose();
+    // Both panels are added to the module-level scene on every entry, so
+    // without this each session left another pair (canvas, texture, mesh)
+    // behind. quickFit is NOT hide()n: its hide() commits an in-progress
+    // fit, and quitting mid-fit must not start saving one. dispose() pulls
+    // the mesh out of the scene, so it cannot render in the next session.
+    trainingMenu.hide();
+    trainingMenu.dispose();
+    quickFit.dispose();
     // hide() cancels any in-flight room the panel still owns; a DELIVERED
     // connection is torn down below via the `multiplayer` bundle instead.
     mpMenu.hide();
@@ -1514,7 +1526,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     lastFrameTimeMs = timeMs;
     // Uncapped display-time delta for the FPS meter — it must see the real
     // gap a hitch produced, not the physics-capped version of it.
-    // const rawDt = dt;
+    const rawDt = dt;
     // Hitch cap: after a real stall (browser menu, tab focus loss, session
     // pause) advance at most 100 ms of physics and DROP the remainder. The
     // previous clamp substituted a fake 16 ms for the whole gap, which held
@@ -1640,6 +1652,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       showDrillSummary();
     }
 
+    if (fpsMeter) fpsMeter.update(rawDt, renderer.xr.getCamera());
     renderer.render(scene, camera);
   });
 }
