@@ -7,7 +7,9 @@ import globals from 'globals';
 
 export default [
   {
-    ignores: ['node_modules/**', 'dist/**', 'vr-assets/**', 'ai-docs/**'],
+    // public/draco and public/basis are vendored three.js decoders, copied
+    // in as shipped.
+    ignores: ['node_modules/**', 'dist/**', 'vr-assets/**', 'ai-docs/**', 'public/draco/**', 'public/basis/**'],
   },
 
   js.configs.recommended,

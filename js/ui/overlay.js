@@ -1,8 +1,6 @@
 // Start-screen wiring. Two flows:
 //   - Solo: click a venue button (Mixed Reality / Focus Room) → straight
 //     into XR. The venue IS the entry point; there is no second Enter step.
-//     The Desktop Preview escape hatch is commented out for the beta launch
-//     (below, and in index.html).
 //   - Multiplayer: Create Room / Join Room → lobby negotiates a peer
 //     connection BEFORE entering XR, then both peers click a venue with the
 //     live NetworkManager handed through.
@@ -25,7 +23,7 @@ import { canUseVenue, canHostRoom, onTierChange } from '../account/tier.js';
 import { loadModels } from '../scene/models.js';
 import { loadArenaVenue, isArenaVenueLoaded, removeArenaProgressListener } from '../scene/arenaVenue.js';
 
-export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, startDesktop */ }) {
+export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame }) {
   const createRoomBtn = document.getElementById('create-room');
   const joinRoomBtn = document.getElementById('join-room');
   const roomCodeInput = document.getElementById('room-code-input');
@@ -284,27 +282,6 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
   // live. A big gap between pageLoad and this one is a bundle problem; a big
   // drop-off AFTER it is a "player looked at the page and left" problem.
   mark('entryArmed');
-
-  // BETA LAUNCH: no Desktop Preview on the landing page — the two venue
-  // buttons above are the whole choice. This block also *created* the button when the
-  // markup lacked it, so it has to stay off for the markup change to hold.
-  // Re-enable together with the button in index.html (and the startDesktop
-  // param in the signature above).
-  //
-  // let enterDesktopBtn = document.getElementById('enter-desktop');
-  // if (!enterDesktopBtn) {
-  //   enterDesktopBtn = document.createElement('button');
-  //   enterDesktopBtn.id = 'enter-desktop';
-  //   enterDesktopBtn.textContent = 'Desktop Preview';
-  //   enterDesktopBtn.style.cssText = `
-  //     margin-top: 12px; padding: 12px 36px; font-size: 1rem;
-  //     border: 2px solid rgba(255,255,255,0.2); border-radius: 12px;
-  //     background: transparent; color: #aaa; cursor: pointer;
-  //     transition: all 0.2s;
-  //   `;
-  //   modeSlot.append(enterDesktopBtn);
-  // }
-  // enterDesktopBtn.addEventListener('click', () => startDesktop({ overlay, loadingScreen, statusEl }));
 
   function wireHelloEcho(nm, role) {
     nm.on('eventMessage', (msg) => {

@@ -73,7 +73,6 @@ function preloadLobbyManager() {
 import * as profileStore from '../profile/store.js';
 import { PhysicsTuner } from '../scene/physicsTuner.js';
 import { PaddleQuickFit } from '../scene/paddleQuickFit.js';
-import { paddleAngularVelocity } from '../physics/ball.js';
 import { update as updateTrackingLossGuard, noteDiscontinuity } from '../xr/trackingLossGuard.js';
 import { createViewerAlign } from '../xr/viewerAlign.js';
 import { getProfile } from './training/difficulty.js';

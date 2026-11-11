@@ -294,31 +294,6 @@
       box-shadow: none;
     }
 
-    /* Desktop Preview button — hidden for the beta launch (markup commented
-       out above); styles kept so re-enabling it is a one-line change.
-    #enter-desktop {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      padding: 14px 22px;
-      font-size: 0.98rem;
-      font-weight: 600;
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      background: var(--surface);
-      color: var(--ink);
-      cursor: pointer;
-      box-shadow: var(--shadow-card);
-      transition: transform 0.15s, border-color 0.15s;
-    }
-    #enter-desktop::before {
-      content: '';
-      width: 22px; height: 22px; flex: none;
-      background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Ccircle cx='12' cy='12' r='11' fill='none' stroke='%234f46e5' stroke-width='2'/%3E%3Cpath d='M10 8.2v7.6l6-3.8z' fill='%234f46e5'/%3E%3C/svg%3E") no-repeat center / contain;
-    }
-    #enter-desktop:hover { transform: translateY(-2px); border-color: #c9cff0; }
-    */
-
     #status {
       margin-top: 16px;
       color: #dc2626;
@@ -1010,12 +985,7 @@
                WebXR session type. They ship disabled so an early click can't
                land before the app's modules are in; js/ui/overlay.js wires
                and enables them (data-mode must match an id in
-               js/ui/xrModes.js).
-
-               BETA LAUNCH: desktop preview is off the landing page — these
-               three headset venues are the only choices players get. Uncomment
-               to bring the flat-screen preview back (see js/ui/overlay.js).
-               <button id="enter-desktop">Desktop Preview</button> -->
+               js/ui/xrModes.js). -->
           <div id="xr-mode-slot" class="hero-actions">
             <button type="button" class="enter-venue primary" data-mode="ar" disabled>
               <span class="venue-text">

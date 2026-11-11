@@ -813,8 +813,8 @@ async function loadModelsOnce(loadingScreen, statusEl) {
     // The env map (a neutral RoomEnvironment PMREM) is the right lever for
     // this rather than the lights: it is per-material, so it lifts the ball
     // without touching the paddle, table or arena, and at roughness 0.6 it
-    // arrives as a soft wrap rather than a specular hotspot. Measured in
-    // ball-preview.html — 0.70 visibly flattens the sphere's shading
+    // arrives as a soft wrap rather than a specular hotspot. Measured on a
+    // desk preview — 0.70 visibly flattens the sphere's shading
     // gradient (the actual "glowing plastic" failure mode), 0.40 lifts the
     // shadow side while keeping the gradient that makes it read as round.
     //

@@ -439,7 +439,7 @@ describe('main screen dock', () => {
     menu._driftFlagCache = false;
     menu.draw();
     const gear = menu.buttons.find((b) => b.id === 'settings');
-    const atGearCorner = () => arcs.some(([x, y, r]) => r === 7 && x === gear.x + gear.w - 8);
+    const atGearCorner = () => arcs.some(([x, , r]) => r === 7 && x === gear.x + gear.w - 8);
     expect(atGearCorner()).toBe(false);
     arcs.length = 0;
     menu._driftFlagCache = true;

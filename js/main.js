@@ -4,10 +4,6 @@
 import './analytics/gtm.js';
 import './scene/sceneSetup.js';
 import { startInGame } from './modes/inGame.js';
-// BETA LAUNCH: desktop mode is off the landing page, so it is not imported
-// either — this keeps js/modes/desktop.js out of the bundle. Restore
-// alongside the button in index.html / js/ui/overlay.js.
-// import { startDesktop } from './modes/desktop.js';
 import { wireOverlay } from './ui/overlay.js';
 import { mark, recordError, installUnloadFlush } from './analytics/session.js';
 import { wirePostSession } from './ui/postSession.js';
@@ -45,5 +41,4 @@ wireOverlay({
   loadingScreen,
   statusEl,
   startInGame,
-  // startDesktop,
 });

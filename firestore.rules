@@ -270,11 +270,8 @@ service cloud.firestore {
       allow list, write: if false;
     }
 
-    // Server-only: order → uid mapping, webhook dedupe. trialIps / trialNets are
-    // left over from the old 10-minute trial: nothing uses them, still closed.
+    // Server-only: order → uid mapping, webhook dedupe.
     match /orders/{orderId}        { allow read, write: if false; }
     match /paylayerEvents/{eventId} { allow read, write: if false; }
-    match /trialIps/{bucket}       { allow read, write: if false; }
-    match /trialNets/{network}     { allow read, write: if false; }
   }
 }

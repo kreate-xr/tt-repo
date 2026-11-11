@@ -28,7 +28,7 @@
 //
 // Callers pass `env` rather than importing js/scene/models.js so this module
 // stays outside the scene module graph and can run headless under Jest —
-// the same reason serveBallistics.js was split out of launchKinematics.js.
+// the same reason serveBallistics.js stays free of scene imports.
 // `env` is { ballRadius, tableSurfaceY, tableBox }.
 //
 // dt is a per-caller choice, not a physics choice: finer dt costs time and

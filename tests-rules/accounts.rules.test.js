@@ -60,6 +60,8 @@ describe.each(['users', 'entitlements'])('%s/{uid}', (col) => {
   });
 });
 
+// trialIps / trialNets (the old 10-minute trial) have no rule of their own:
+// Firestore denies any path without one, and leftover docs stay unreadable.
 describe.each(['orders', 'paylayerEvents', 'trialIps', 'trialNets'])('%s (server-only)', (col) => {
   beforeEach(() => seed(`${col}/x1`, { uid: ME }));
 

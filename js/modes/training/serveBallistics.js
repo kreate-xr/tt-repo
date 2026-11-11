@@ -1,4 +1,4 @@
-// Pure two-stage serve solver. Extracted from launchKinematics.js so callers
+// Pure two-stage serve solver. Kept free of scene imports so callers
 // outside the scene module graph (e.g. the AI opponent's serve adapter and its
 // unit tests) can use it without pulling in scene/models/sceneSetup.
 
