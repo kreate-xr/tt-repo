@@ -6,6 +6,8 @@ rules_version = '2';
 //   - All access requires (anonymous) auth.
 //   - `list` is denied everywhere — room codes cannot be enumerated; a peer
 //     must know the exact code to even read a room.
+//   - Only an account that owns the full game may create (or reclaim) a
+//     room; joining is open to any signed-in player.
 //   - The creating host stamps hostUid, the joining guest stamps guestUid
 //     (both must equal request.auth.uid); every later write is bound to one
 //     of those two uids, so a third party who guesses a live code cannot
@@ -42,12 +44,23 @@ service cloud.firestore {
         && d.sdp.size() < 30000;
     }
 
+    // Hosting a room is in the full game (js/account/tier.js canHostRoom).
+    // The client hides it on the free version; this is the server-side
+    // check. entitlements/{uid} is written only by the payment webhook
+    // (rules below deny every client write), and a refund sets active false.
+    // Joining a room stays free: guests are not checked.
+    function ownsFullGame() {
+      let ent = /databases/$(database)/documents/entitlements/$(request.auth.uid);
+      return exists(ent) && get(ent).data.active == true;
+    }
+
     // The full doc a host writes when creating (or reclaiming) a room.
     function validHostDoc() {
       return request.resource.data.keys().hasOnly(['host', 'hostUid', 'createdAt'])
         && request.resource.data.host is map
         && request.resource.data.hostUid == request.auth.uid
-        && request.resource.data.createdAt == request.time;
+        && request.resource.data.createdAt == request.time
+        && ownsFullGame();
     }
 
     match /rooms/{room} {

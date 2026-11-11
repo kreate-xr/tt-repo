@@ -65,7 +65,20 @@ beforeAll(async () => {
   });
 });
 
-beforeEach(() => env.clearFirestore());
+// Hosting needs the full game (ownsFullGame in firestore.rules). The room
+// tests below run with HOST and OTHER owning it; GUEST deliberately does not,
+// so every guest test also proves joining stays free.
+async function seedEntitlement(uid, active = true) {
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    await setDoc(doc(ctx.firestore(), 'entitlements', uid), { active });
+  });
+}
+
+beforeEach(async () => {
+  await env.clearFirestore();
+  await seedEntitlement(HOST);
+  await seedEntitlement(OTHER);
+});
 afterAll(() => env.cleanup());
 
 describe('auth boundary', () => {
@@ -117,6 +130,35 @@ describe('room create', () => {
       ...hostDoc(),
       createdAt: Timestamp.fromMillis(Date.now() - 3 * 3600 * 1000),
     }));
+  });
+});
+
+describe('hosting needs the full game', () => {
+  const FREE = 'free-uid';
+
+  test('a free player cannot create a room', async () => {
+    await assertFails(setDoc(doc(db(FREE), 'rooms/NEWAAA'), hostDoc(FREE)));
+  });
+
+  test('a refunded player cannot create a room', async () => {
+    await seedEntitlement(FREE, false);
+    await assertFails(setDoc(doc(db(FREE), 'rooms/NEWAAA'), hostDoc(FREE)));
+  });
+
+  test('a free player cannot take over an expired room code either', async () => {
+    await seedRoom('OLDAAA', expiredRoom());
+    await assertFails(setDoc(doc(db(FREE), 'rooms/OLDAAA'), hostDoc(FREE)));
+  });
+
+  test('after buying, the same player can create one', async () => {
+    await seedEntitlement(FREE, true);
+    await assertSucceeds(setDoc(doc(db(FREE), 'rooms/NEWAAA'), hostDoc(FREE)));
+  });
+
+  test('a free player can still join a paid host\'s room', async () => {
+    await seedRoom('LIVEAA', freshRoom());
+    await assertSucceeds(updateDoc(doc(db(FREE), 'rooms/LIVEAA'),
+      { guest: { joinedAt: serverTimestamp() }, guestUid: FREE }));
   });
 });
 

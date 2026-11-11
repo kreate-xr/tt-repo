@@ -1,8 +1,11 @@
 // Smoke test for the Firestore-based signaling stack.
-// Reads .env.local, initializes Firebase, signs in anonymously, writes +
-// reads + deletes a test document, then exits. If this passes, the browser
-// path will work end-to-end. If it fails, the error tells us what to fix
-// (missing config, auth not enabled, rules not deployed, etc.).
+// Reads .env.local, initializes Firebase, signs in anonymously, reads a
+// room doc (the lobby warm-up read) and checks that creating a room is
+// REFUSED: hosting is in the full game (firestore.rules ownsFullGame), and a
+// fresh anonymous account has not bought it. A refusal proves the current
+// rules are deployed; a successful write means old rules are still live. If
+// it fails, the error tells us what to fix (missing config, auth not
+// enabled, rules not deployed, etc.).
 //
 // Run:  node scripts/check-firebase.mjs                            (sportyxr-test)
 //       ENV_FILE=.env.prod.local node scripts/check-firebase.mjs   (sportyxr-tech)
@@ -78,33 +81,41 @@ async function main() {
   console.log(`[3/5] signed in anonymously — uid=${user.uid.slice(0, 8)}…`);
 
   const db = getFirestore(app, DATABASE_ID);
-  const testId = `smoketest-${Date.now().toString(36)}`;
-  const testRef = doc(db, 'rooms', testId);
   try {
-    // Must match firestore.rules validHostDoc() exactly: only these three
-    // keys, hostUid == our uid, createdAt == request.time. Anything extra
-    // (an old version added a `_smoke` marker) is rejected by the rules.
+    // Same id the lobby warm-up reads (js/network/firebaseClient.js): never a
+    // real room code, so this is a plain signed-in get.
+    await getDoc(doc(db, 'rooms', '0warmup'));
+  } catch (err) {
+    console.error('[FAIL] read /rooms:', err.code || err.message);
+    console.error('       Likely: firestore.rules not deployed, or Firestore not in Native mode');
+    process.exit(3);
+  }
+  console.log('[4/5] read /rooms works for a signed-in player');
+
+  const testRef = doc(db, 'rooms', `smoketest-${Date.now().toString(36)}`);
+  let created = false;
+  try {
+    // Shaped exactly like validHostDoc(), so the ONLY reason to refuse it is
+    // that this account does not own the full game.
     await setDoc(testRef, {
       host: { joinedAt: serverTimestamp() },
       hostUid: user.uid,
       createdAt: serverTimestamp(),
     });
+    created = true;
   } catch (err) {
-    console.error('[FAIL] write to /rooms:', err.code || err.message);
-    console.error('       Likely: firestore.rules not deployed, or Firestore not in Native mode');
-    process.exit(3);
+    if (err.code !== 'permission-denied') {
+      console.error('[FAIL] create /rooms:', err.code || err.message);
+      process.exit(4);
+    }
   }
-  console.log(`[4/5] wrote test doc /rooms/${testId}`);
-
-  try {
-    const snap = await getDoc(testRef);
-    if (!snap.exists()) throw new Error('test doc disappeared');
-    await deleteDoc(testRef);
-  } catch (err) {
-    console.error('[FAIL] read/delete test doc:', err.code || err.message);
-    process.exit(4);
+  if (created) {
+    await deleteDoc(testRef).catch(() => {});
+    console.error('[FAIL] a free (anonymous) account created a room: the deployed rules');
+    console.error('       predate the full-game hosting check. Deploy firestore.rules.');
+    process.exit(5);
   }
-  console.log('[5/5] read + cleaned up test doc');
+  console.log('[5/5] a free account is refused when hosting a room (full-game check is live)');
 
   console.log('');
   console.log('PASS — Firestore signaling stack is wired correctly.');
