@@ -20,9 +20,9 @@ import { setFull, canUseVenue, LOCKED } from '../account/tier.js';
 const PRICE_INR = '₹1,997';
 const PRICE_USD = '$19.97';
 
-/** The line under a price: the INR price includes GST, the USD price carries none. */
+/** The line beside a price: the INR price includes GST, the USD price carries none. */
 export function priceNote(price) {
-  return price === PRICE_INR ? 'incl. GST · one-time · lifetime' : 'one-time · lifetime';
+  return price === PRICE_INR ? 'incl. GST · pay once' : 'pay once';
 }
 
 /** What the phone typed so far will be charged: +91 → INR, any other country code → USD. */
@@ -128,8 +128,8 @@ export function accessLine(acc) {
   return {
     state: 'free',
     title: 'Free to play — no time limit',
-    sub: 'Unlock the full game: International and Elite AI, best of 3 and 5, the Arena, '
-      + 'Player training and hosting rooms. Pay once, keep it forever.',
+    sub: 'The full game adds International and Elite AI, best of 3 and 5, the Arena, '
+      + 'Player training and hosting rooms.',
   };
 }
 

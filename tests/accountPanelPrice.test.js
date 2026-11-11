@@ -33,6 +33,6 @@ test('the landing-page offer guesses the currency from the time zone', () => {
 });
 
 test('the rupee price says it includes GST; the dollar price does not', () => {
-  expect(priceNote('₹1,997')).toBe('incl. GST · one-time · lifetime');
-  expect(priceNote('$19.97')).toBe('one-time · lifetime');
+  expect(priceNote('₹1,997')).toBe('incl. GST · pay once');
+  expect(priceNote('$19.97')).toBe('pay once');
 });

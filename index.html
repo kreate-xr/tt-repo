@@ -327,6 +327,9 @@
     .offer-body { flex: 1; min-width: 0; }
     .offer-title { font-size: 0.98rem; font-weight: 800; color: var(--ink); line-height: 1.25; }
     .offer-sub { margin-top: 3px; font-size: 0.82rem; color: var(--ink-soft); line-height: 1.4; }
+    .offer-trust { margin-top: 6px; font-size: 0.78rem; font-weight: 700; color: #15803d; line-height: 1.4; }
+    .offer-trust a { color: inherit; text-decoration: underline; text-underline-offset: 2px; white-space: nowrap; }
+    .offer-card[data-state="owned"] .offer-trust { display: none; }
     .offer-cta {
       flex: none;
       display: flex; flex-direction: column; align-items: center; gap: 5px;
@@ -801,7 +804,9 @@
       cursor: pointer;
     }
     .acct-consent input { flex: none; width: 16px; height: 16px; margin: 1px 0 0; accent-color: var(--brand-1); }
+    .acct-buy-terms { margin-top: -4px; font-size: 0.86rem; font-weight: 700; color: #15803d; }
     .acct-refund-terms { margin-top: 6px; font-size: 0.74rem; line-height: 1.4; color: var(--ink-soft); }
+    .acct-buy-terms + .acct-refund-terms { margin: 4px 0 12px; }
     .acct-refund { margin-top: 12px; }
 
     #room-code-input {
@@ -976,7 +981,7 @@
               <svg viewBox="0 0 24 16" fill="currentColor"><path d="M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>
               WebXR
             </span>
-            Free to Play · No Sign-up
+            Free to Play · Full Game: Pay Once, No Subscription
           </div>
 
           <h1>Table Tennis,<br><span class="grad">Anytime, Anywhere.</span></h1>
@@ -1020,11 +1025,14 @@
             </span>
             <div class="offer-body">
               <p class="offer-title" id="access-text">Free to play — no time limit</p>
-              <p class="offer-sub" id="access-sub">No sign-up needed. Club AI, single games, Beginner training, Mixed Reality and Focus Room.</p>
+              <p class="offer-sub" id="access-sub">No sign-up needed. The full game adds International and Elite AI, best of 3 and 5, the Arena, Player training and hosting rooms.</p>
+              <!-- The purchase terms, beside the price. Static in every state
+                   but owned (the card hides the CTA then; this goes with it). -->
+              <p class="offer-trust" id="access-trust">One-time payment · No subscription · <a href="/refund.html" target="_blank" rel="noopener">3-day refund</a></p>
             </div>
             <div class="offer-cta" id="access-cta">
               <button type="button" id="access-buy" class="btn btn-primary offer-buy">Unlock full game</button>
-              <span class="offer-price"><b id="access-price">₹1,997</b> <span id="access-price-note">incl. GST · one-time · lifetime</span></span>
+              <span class="offer-price"><b id="access-price">₹1,997</b> <span id="access-price-note">incl. GST · pay once</span></span>
             </div>
           </div>
         </div>
@@ -1324,8 +1332,10 @@
              only: the server decides the charge (functions/src/pricing.js). -->
         <div class="acct-price-row">
           <span class="acct-price" id="acct-buy-price">₹1,997</span>
-          <span class="acct-price-note" id="acct-buy-price-note">incl. GST · one-time · lifetime</span>
+          <span class="acct-price-note" id="acct-buy-price-note">incl. GST · pay once</span>
         </div>
+        <p class="acct-buy-terms">No subscription. You're never charged again.</p>
+        <p class="acct-refund-terms">Refunds: within 3 days of purchase if you've played less than 2 hours since buying. A refund removes the unlock. One refund per account.</p>
         <form id="acct-buy-form" novalidate>
           <input id="acct-buy-name" type="text" class="field" autocomplete="name" maxlength="100"
                  placeholder="Full name" aria-label="Full name" required>
@@ -1339,7 +1349,6 @@
             <input type="checkbox" id="acct-buy-consent">
             <span>I agree that the game unlocks immediately after payment and that I lose my 14-day right of withdrawal once it does.</span>
           </label>
-          <p class="acct-refund-terms">Refunds: within 3 days of purchase if you've played less than 2 hours since buying. A refund removes the unlock. One refund per account.</p>
           <button type="submit" class="btn btn-primary btn-block btn-send" id="acct-buy-submit" disabled>Pay ₹1,997</button>
         </form>
         <p class="acct-secure">
@@ -1347,7 +1356,7 @@
           Secure checkout by Razorpay
         </p>
         <p class="acct-legal">
-          One-time payment, no subscription. By paying you agree to our
+          By paying you agree to our
           <a href="/terms.html" target="_blank" rel="noopener">Terms</a> and
           <a href="/refund.html" target="_blank" rel="noopener">Refund Policy</a>.
         </p>
