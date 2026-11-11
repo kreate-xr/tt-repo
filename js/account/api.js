@@ -42,13 +42,13 @@ async function call(method, path, body) {
 }
 
 /**
- * { entitled, metered, trial: { remainingSec },
+ * { entitled, metered, trial (legacy, ignored),
  *   refund: null | { eligible, reason, refundableUntil, playedSec },
  *   account: { anonymous, email, emailVerified, hasCheckoutProfile } }
  */
 export const fetchMe = () => call('GET', '/api/me');
 
-/** @param {'start'|'renew'|'end'} action → { entitled, metered?, leaseSec, remainingSec } */
+/** Paid-play lease. @param {'start'|'renew'|'end'} action → { entitled, metered, leaseSec, remainingSec } */
 export const postLease = (action) => call('POST', '/api/trial/lease', { action });
 
 /** `consent`: the checkout checkbox, re-checked by the server. → { intentId, clientSecret } */

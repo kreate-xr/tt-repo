@@ -18,7 +18,8 @@ function loadLobbyManager() {
   return import('../lobby/LobbyManager.js');
 }
 import { XR_MODES } from './xrModes.js';
-import { canEnter } from './accountPanel.js';
+import { canEnter, showUnlock } from './accountPanel.js';
+import { canUseVenue, canHostRoom, onTierChange } from '../account/tier.js';
 // Already in the entry graph through inGame.js — importing them here costs
 // nothing extra and lets the Arena preload run before the session request.
 import { loadModels } from '../scene/models.js';
@@ -120,9 +121,9 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
       setMpStatus('Still connecting to your opponent — wait for the ✓ Connected message (or click Create/Join again to start over).', true);
       return;
     }
-    // Free trial used up and not unlocked: the paywall opens instead.
+    // A full-game venue on the free version: the unlock dialog opens instead.
     // Synchronous on purpose — see canEnter in accountPanel.js.
-    if (!canEnter()) return;
+    if (!canEnter(mode.id)) return;
     // The Arena is a ~10 MB stadium GLB. Loading it inside the session left
     // the player standing next to a bare table with loading text for the
     // whole download, so it is fetched and decoded HERE first, behind a
@@ -257,6 +258,27 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
     });
   }
 
+  // Full-game markers on the free version: the Arena venue and hosting a
+  // room. The buttons stay clickable — a click opens the unlock dialog
+  // (canEnter / handleCreate) instead of doing nothing.
+  const createRoomLabel = createRoomBtn ? createRoomBtn.textContent : '';
+  function renderLocks() {
+    venueBtns.forEach((b, i) => {
+      const m = XR_MODES[i];
+      const locked = !canUseVenue(m.id);
+      b.classList.toggle('locked', locked);
+      const sub = b.querySelector('.venue-sub');
+      if (sub) sub.textContent = locked ? `${m.sub} · full game` : m.sub;
+    });
+    if (createRoomBtn) {
+      const locked = !canHostRoom();
+      createRoomBtn.classList.toggle('locked', locked);
+      createRoomBtn.textContent = locked ? `${createRoomLabel} · full game` : createRoomLabel;
+    }
+  }
+  renderLocks();
+  onTierChange(renderLocks);
+
   setEntryEnabled(true);
   // The funnel's second step: modules are loaded and the venue buttons are
   // live. A big gap between pageLoad and this one is a bundle problem; a big
@@ -315,6 +337,11 @@ export function wireOverlay({ overlay, loadingScreen, statusEl, startInGame /*, 
   }
 
   async function handleCreate() {
+    // Hosting is in the full game; joining a room stays free.
+    if (!canHostRoom()) {
+      showUnlock('hostRoom');
+      return;
+    }
     await resetLobby();
     const mySession = lobbySession;
     // Latch the format for this room before the first await — resetLobby just

@@ -21,6 +21,7 @@ import { friendlyLobbyError } from '../../lobby/lobbyErrors.js';
 import {
   BEST_OF_OPTIONS, normalizeBestOf, loadBestOf, saveBestOf,
 } from '../matchFormat.js';
+import { canHostRoom, LOCKED } from '../../account/tier.js';
 
 export { ROOM_CODE_ALPHABET, ROOM_CODE_LEN, BEST_OF_OPTIONS };
 
@@ -32,11 +33,18 @@ export const MP_SCREENS = Object.freeze({
 });
 
 export class LobbyMenuModel {
-  constructor({ createLobby, onChange = null, onConnected = null } = {}) {
+  /**
+   * @param {object} opts
+   * @param {() => object} opts.createLobby
+   * @param {() => boolean} [opts.canHost] hosting is in the full game
+   *        (js/account/tier.js); joining is open to everyone
+   */
+  constructor({ createLobby, onChange = null, onConnected = null, canHost = canHostRoom } = {}) {
     if (typeof createLobby !== 'function') {
       throw new Error('LobbyMenuModel requires a createLobby factory');
     }
     this.createLobby = createLobby;
+    this.canHost = canHost;
     this.onChange = onChange;       // re-render hook for the panel
     this.onConnected = onConnected; // receives { networkManager, role, lobby }
 
@@ -91,6 +99,13 @@ export class LobbyMenuModel {
   }
 
   async startCreate() {
+    // Free version: say so on HOME and stay there — nothing is created.
+    if (!this.canHost()) {
+      if (this.screen !== MP_SCREENS.HOME) return;
+      this.error = LOCKED.hostRoom.head;
+      this._changed();
+      return;
+    }
     this._reset();
     const my = this.session;
     // Latch the format for this room before anything can await.

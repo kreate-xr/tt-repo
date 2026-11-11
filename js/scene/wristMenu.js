@@ -8,6 +8,9 @@
 //     each with a coloured crosshair ring, icon, main label + subtitle.
 //   - Right dock: Settings (gear).
 //   - Top pills: difficulty segmented control, and match length (BEST OF).
+//     On the free version (js/account/tier.js) INTERNATIONAL, ELITE and best
+//     of 3 / 5 carry a padlock; tapping one says so on the caption line
+//     instead of selecting it.
 //   - Below the tiles: hover caption naming the dock button under the cursor.
 //   - Bottom pill: Exit.
 //
@@ -29,6 +32,14 @@ import { BALL_COLORS, getBallColorId, TABLE_COLORS, getTableColorId } from './mo
 import { getDriftFlag as getCalibrationDriftFlag } from '../xr/driftDetector.js';
 import { TUNER_ENABLED } from './hud.js';
 import { BEST_OF_OPTIONS, loadBestOf, saveBestOf } from '../modes/matchFormat.js';
+import { drawPadlock } from './panelStyle.js';
+import {
+  canUseAiLevel, canUseBestOf, effectiveAiLevel, effectiveBestOf, onTierChange, LOCKED,
+} from '../account/tier.js';
+
+// How long the "that is in the full game" line holds the caption after a tap
+// on a locked segment.
+const LOCK_NOTICE_MS = 4000;
 
 // Rotation order for the ball-color toggle. Keep in sync with BALL_COLORS.
 const BALL_COLOR_ORDER = ['orange', 'white'];
@@ -61,6 +72,7 @@ const COLORS = {
   chromeBg:       'rgba(0,0,0,0.35)',
   chromeText:     '#e6edf5',
   chromeMuted:    '#8ba3bd',
+  lockNotice:     '#ffc857',
   chromeHoverBg:  'rgba(255,255,255,0.12)',
 
   segmentSelBg:   ACCENT,
@@ -544,6 +556,17 @@ export class WristMenu {
     // this player hosts (the lobby reads the same stored preference). Best-of-5
     // to 11 is 20-40 minutes in a headset; this is how you ask for one game.
     this.bestOf = loadBestOf();
+    // { text, untilMs } after a tap on a locked segment; the caption shows it.
+    this.lockNotice = null;
+    // An /api/me answer can land while the menu is up (it is fetched on an
+    // idle moment): repaint so the padlocks match, and step off a tier that
+    // just became locked.
+    this._offTier = onTierChange(() => {
+      const current = DIFFICULTIES[this.selectedDifficultyIndex].id;
+      const allowed = DIFFICULTIES.findIndex((d) => d.id === effectiveAiLevel(current));
+      this.selectedDifficultyIndex = Math.max(0, allowed);
+      this.draw();
+    });
 
     this.hoverProgress = 0;
     this.showProgress  = 0;
@@ -674,6 +697,12 @@ export class WristMenu {
     const drift = getCalibrationDriftFlag();
     if (drift !== this._driftFlagCache) {
       this._driftFlagCache = drift;
+      dirty = true;
+    }
+
+    // The locked-segment notice ran its course: back to the usual caption.
+    if (this.lockNotice && performance.now() >= this.lockNotice.untilMs) {
+      this.lockNotice = null;
       dirty = true;
     }
 
@@ -1036,12 +1065,15 @@ export class WristMenu {
     // Falls back to the service law rather than going blank — see
     // SERVE_RULE_CAPTION. Hovering a dock button still wins, because that is
     // an answer to a question the player just asked.
-    const text = (b && DOCK_CAPTIONS[b.id])
+    const notice = this.lockNotice && performance.now() < this.lockNotice.untilMs
+      ? this.lockNotice.text : null;
+    const text = notice
+      || (b && DOCK_CAPTIONS[b.id])
       || (this.getFoulRulesOn() ? SERVE_RULE_CAPTION : FREE_PLAY_CAPTION);
 
     const ctx = this.ctx;
     ctx.save();
-    ctx.fillStyle = COLORS.chromeMuted;
+    ctx.fillStyle = notice ? COLORS.lockNotice : COLORS.chromeMuted;
     ctx.font = FONT_CAPTION;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -1192,8 +1224,9 @@ export class WristMenu {
   drawSegment(b, hp, pp) {
     const ctx = this.ctx;
     const isSelected = b.kind === 'format'
-      ? b.value === this.bestOf
+      ? b.value === effectiveBestOf(this.bestOf)
       : b.index === this.selectedDifficultyIndex;
+    const locked = this.isLocked(b);
     const pad = 3;
     if (isSelected) {
       ctx.save();
@@ -1208,7 +1241,9 @@ export class WristMenu {
       ctx.fill();
       ctx.restore();
     }
-    ctx.fillStyle = isSelected ? COLORS.segmentSelText : COLORS.chromeText;
+    ctx.fillStyle = isSelected
+      ? COLORS.segmentSelText
+      : (locked ? COLORS.chromeMuted : COLORS.chromeText);
     ctx.font = FONT_PILL;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
@@ -1217,8 +1252,35 @@ export class WristMenu {
     // that outgrows its third of the control condenses instead of running
     // under the neighbouring segment. "INTERNATIONAL" already uses 143 of
     // the 155 available.
-    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 - 1.5 * pp, b.w - 18);
+    //
+    // A locked difficulty gives up room on the right for the padlock. On a
+    // best-of digit the lock sits at the number's top right instead: the
+    // 54px segment has no room beside it.
+    const cy = b.y + b.h / 2 - 1.5 * pp;
+    if (locked && b.kind === 'segment') {
+      const LOCK_W = 18;
+      const maxW = b.w - 18 - LOCK_W;
+      const textCx = b.x + b.w / 2 - LOCK_W / 2;
+      ctx.fillText(b.label, textCx, cy, maxW);
+      const half = Math.min(ctx.measureText(b.label).width, maxW) / 2;
+      drawPadlock(ctx, textCx + half + LOCK_W / 2 + 2, cy, 12, COLORS.chromeMuted);
+    } else {
+      ctx.fillText(b.label, b.x + b.w / 2, cy, b.w - 18);
+      if (locked) drawPadlock(ctx, b.x + b.w / 2 + 12, cy - 11, 9, COLORS.chromeMuted);
+    }
     if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+  }
+
+  /** A difficulty or match-length segment that is in the full game only. */
+  isLocked(b) {
+    if (b.kind === 'format') return !canUseBestOf(b.value);
+    if (b.kind === 'segment') return !canUseAiLevel(DIFFICULTIES[b.index].id);
+    return false;
+  }
+
+  showLockNotice(text) {
+    this.lockNotice = { text, untilMs: performance.now() + LOCK_NOTICE_MS };
+    this.draw();
   }
 
   drawDock(b, hp, pp) {
@@ -1385,6 +1447,12 @@ export class WristMenu {
       this.setScreen('main');
       return;
     }
+    if ((button.kind === 'segment' || button.kind === 'format') && this.isLocked(button)) {
+      const feature = button.kind === 'format' ? 'bestOf' : 'aiLevel';
+      this.showLockNotice(LOCKED[feature].head);
+      this.emit('locked', { feature });
+      return;
+    }
     if (button.kind === 'segment') {
       this.selectedDifficultyIndex = button.index;
       this.draw();
@@ -1400,8 +1468,10 @@ export class WristMenu {
       return;
     }
     if (button.kind === 'mode') {
-      const difficultyId = DIFFICULTIES[this.selectedDifficultyIndex].id;
-      const bestOf = this.bestOf;
+      // What the tier allows, whatever was stored: a best-of-5 saved while
+      // the full game was unlocked plays as a single game on the free one.
+      const difficultyId = effectiveAiLevel(DIFFICULTIES[this.selectedDifficultyIndex].id);
+      const bestOf = effectiveBestOf(this.bestOf);
       if (button.modeId === 'training') {
         // Opens the unified PLAY menu; what to play is chosen in there.
         this.emit('training', { difficulty: difficultyId });
@@ -1478,6 +1548,7 @@ export class WristMenu {
     this.mesh.geometry.dispose();
     this.mesh.material.dispose();
     this.texture.dispose();
+    if (this._offTier) { this._offTier(); this._offTier = null; }
     // Clearing the Map drops every event's handlers, including ones added
     // after construction — the per-key list here was another place a new
     // event name had to be remembered, and silently leaked when it wasn't.

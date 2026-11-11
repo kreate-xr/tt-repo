@@ -2,7 +2,7 @@
   "name": "tt-webxr-functions",
   "version": "1.0.0",
   "private": true,
-  "description": "Accounts, trial and payments backend (Cloud Functions 2nd gen, behind Firebase Hosting /api/**)",
+  "description": "Accounts, full unlock and payments backend (Cloud Functions 2nd gen, behind Firebase Hosting /api/**)",
   "type": "module",
   "main": "index.js",
   "engines": {

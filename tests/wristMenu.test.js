@@ -42,6 +42,11 @@ beforeAll(() => {
 
 const { WristMenu, RULES_COLUMNS } = require('../js/scene/wristMenu.js');
 
+// These suites describe the FULL version; js/account/tier.js defaults to the
+// free one, whose locks have their own tests below.
+const tier = require('../js/account/tier.js');
+beforeEach(() => tier.setFull(true));
+
 function uvOfButton(menu, id) {
   const b = menu.buttons.find((x) => x.id === id);
   if (!b) throw new Error(`no button "${id}" — buttons: ${menu.buttons.map((x) => x.id).join(', ')}`);
@@ -619,5 +624,68 @@ describe('Settings tiles', () => {
     expect(textOfDraw(menu)).toMatch(/Paddle Fit \| Recheck/);
     menu._driftFlagCache = false;
     expect(textOfDraw(menu)).toMatch(/Paddle Fit \| Adjust/);
+  });
+});
+
+describe('free version locks', () => {
+  beforeEach(() => tier.setFull(false));
+
+  test('INTERNATIONAL, ELITE and best of 3 / 5 are locked; CLUB and a single game are not', () => {
+    const menu = new WristMenu();
+    const locked = (id) => menu.isLocked(menu.buttons.find((b) => b.id === id));
+    expect(['diff-0', 'diff-1', 'diff-2'].map(locked)).toEqual([false, true, true]);
+    expect(['bestOf-1', 'bestOf-3', 'bestOf-5'].map(locked)).toEqual([false, true, true]);
+  });
+
+  test('a tap on a locked tier does not select it, says why, and emits locked', () => {
+    const menu = new WristMenu();
+    const seen = [];
+    menu.on('locked', (p) => seen.push(p));
+    click(menu, 'diff-2');
+    expect(menu.selectedDifficultyIndex).toBe(0);
+    expect(menu.lockNotice.text).toBe(tier.LOCKED.aiLevel.head);
+    expect(seen).toEqual([{ feature: 'aiLevel' }]);
+  });
+
+  test('a tap on a locked length leaves the stored preference alone', () => {
+    const menu = new WristMenu();
+    const before = menu.bestOf;
+    const changes = [];
+    menu.on('bestOf', (p) => changes.push(p));
+    click(menu, 'bestOf-3');
+    expect(menu.bestOf).toBe(before);
+    expect(changes).toEqual([]);
+    expect(menu.lockNotice.text).toBe(tier.LOCKED.bestOf.head);
+  });
+
+  test('a stored best-of-5 plays as a single game against Club AI', () => {
+    const menu = new WristMenu();
+    menu.bestOf = 5;
+    const starts = [];
+    menu.on('start', (p) => starts.push(p));
+    click(menu, 'mode-aiMatch');
+    expect(starts).toEqual([{ drill: 'aiMatch', difficulty: 'beginner', options: { bestOf: 1 } }]);
+  });
+
+  test('the notice clears itself after a few seconds', () => {
+    const menu = new WristMenu();
+    menu.show = menu.show || (() => {});
+    menu.mesh.visible = true;
+    click(menu, 'diff-1');
+    expect(menu.lockNotice).not.toBeNull();
+    menu.lockNotice.untilMs = performance.now() - 1;
+    menu.update(0.016);
+    expect(menu.lockNotice).toBeNull();
+  });
+
+  test('an unlock while the menu is open lifts the locks; losing it steps off a locked tier', () => {
+    const menu = new WristMenu();
+    tier.setFull(true);
+    expect(menu.isLocked(menu.buttons.find((b) => b.id === 'diff-2'))).toBe(false);
+    click(menu, 'diff-2');
+    expect(menu.selectedDifficultyIndex).toBe(2);
+    tier.setFull(false);
+    expect(menu.selectedDifficultyIndex).toBe(0);
+    menu.dispose();
   });
 });

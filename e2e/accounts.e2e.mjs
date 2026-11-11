@@ -1,4 +1,4 @@
-// End-to-end: accounts, free trial and the lifetime unlock, driven through
+// End-to-end: accounts, the free version and the lifetime unlock, driven through
 // the real landing page in headless Chromium against the real backend
 // (functions/ in the Functions emulator) and real Auth / Firestore
 // emulators. Only PayLayer + Razorpay are faked (e2e/fakePayLayer.mjs).
@@ -67,50 +67,6 @@ function killTree(child) {
   child.kill('SIGKILL');
 }
 
-/** Admin write through the emulator REST API (bypasses rules). */
-async function setTrialUsed(uid, usedMs) {
-  const url = `${FIRESTORE}/v1/projects/${PROJECT}/databases/tabletennis/documents/users/${uid}?updateMask.fieldPaths=trial`;
-  const res = await fetch(url, {
-    method: 'PATCH',
-    headers: { authorization: 'Bearer owner', 'content-type': 'application/json' },
-    body: JSON.stringify({ fields: { trial: { mapValue: { fields: {
-      usedMs: { integerValue: String(usedMs) }, lastTickMs: { nullValue: null }, leaseMs: { integerValue: '0' },
-    } } } } }),
-  });
-  assert.equal(res.status, 200, `emulator PATCH failed: ${await res.text()}`);
-}
-
-/** Every trialNets doc (all e2e browsers share one network: localhost). */
-async function listNetworks() {
-  const res = await fetch(`${FIRESTORE}/v1/projects/${PROJECT}/databases/tabletennis/documents/trialNets`, {
-    headers: { authorization: 'Bearer owner' },
-  });
-  const body = await res.text();
-  assert.equal(res.status, 200, `emulator list failed: ${body}`);
-  return JSON.parse(body).documents || [];
-}
-
-/** Marks the shared network's trial as used, as if played out from it. */
-async function setNetworkUsed(usedMs) {
-  const docs = await listNetworks();
-  assert.ok(docs.length > 0, 'the trial lease should have recorded a network');
-  for (const d of docs) {
-    const res = await fetch(`${FIRESTORE}/v1/${d.name}?updateMask.fieldPaths=usedMs`, {
-      method: 'PATCH',
-      headers: { authorization: 'Bearer owner', 'content-type': 'application/json' },
-      body: JSON.stringify({ fields: { usedMs: { integerValue: String(usedMs) } } }),
-    });
-    assert.equal(res.status, 200, `emulator PATCH failed: ${await res.text()}`);
-  }
-}
-
-/** Forgets every network — the next browser behaves as if on a different one. */
-async function clearNetworks() {
-  for (const d of await listNetworks()) {
-    await fetch(`${FIRESTORE}/v1/${d.name}`, { method: 'DELETE', headers: { authorization: 'Bearer owner' } });
-  }
-}
-
 async function readDoc(docPath) {
   const res = await fetch(`${FIRESTORE}/v1/projects/${PROJECT}/databases/tabletennis/documents/${docPath}`, {
     headers: { authorization: 'Bearer owner' },
@@ -131,7 +87,9 @@ async function waitAccess(page, pattern) {
   await page.waitForFunction((src) => {
     const el = document.getElementById('access-text');
     const line = document.getElementById('access-line');
-    return el && line && !line.hidden && new RegExp(src).test(el.textContent);
+    // 'intro' is the static copy in index.html: wait for the /api/me answer.
+    return el && line && !line.hidden && line.dataset.state !== 'intro'
+      && new RegExp(src).test(el.textContent);
   }, pattern.source, { timeout: 20_000 });
 }
 
@@ -164,56 +122,63 @@ async function main() {
     page.on('pageerror', (e) => consoleErrors.push(`pageerror: ${e.message}`));
     page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text()); });
 
-    let trialUid;
-    await step('first visit: anonymous, full 10-minute trial shown', async () => {
+    let uidA;
+    await step('first visit: anonymous, free version shown — no clock, full-game items marked', async () => {
       await page.goto(APP_URL);
-      await waitAccess(page, /Free trial: 10:00 of play left/);
+      await waitAccess(page, /Free to play/);
+      assert.doesNotMatch(await page.locator('#access-line').textContent(), /trial|of play left/i);
       assert.equal((await page.locator('#account-chip').textContent()).trim(), 'Sign in');
       assert.equal(await page.locator('#access-buy').isVisible(), true);
-      trialUid = await uidOf(page);
-      assert.ok(trialUid, 'anonymous uid');
-      await shot(page, '01-landing-trial');
+      const arena = page.locator('.enter-venue[data-mode="vr-arena"]');
+      assert.match(await arena.getAttribute('class'), /\blocked\b/);
+      assert.match(await arena.locator('.venue-sub').textContent(), /full game/);
+      assert.doesNotMatch(await page.locator('.enter-venue[data-mode="ar"]').getAttribute('class'), /\blocked\b/);
+      assert.match(await page.locator('#create-room').textContent(), /full game/);
+      uidA = await uidOf(page);
+      assert.ok(uidA, 'anonymous uid');
+      await shot(page, '01-landing-free');
     });
 
-    await step('trial lease from the browser bills real time on the server', async () => {
+    await step('free play is never metered: a lease is answered and nothing is written', async () => {
       const r = await page.evaluate(async () => {
         const api = await import('/js/account/api.js');
         const a = await api.postLease('start');
-        await new Promise((res) => setTimeout(res, 2100));
+        await new Promise((res) => setTimeout(res, 1100));
         const b = await api.postLease('end');
         return { a, b };
       });
-      assert.deepEqual(r.a, { entitled: false, leaseSec: 60, remainingSec: 600 });
-      assert.ok(r.b.remainingSec <= 598 && r.b.remainingSec >= 590, `remaining after ~2 s: ${r.b.remainingSec}`);
-      const user = await readDoc(`users/${trialUid}`);
-      assert.ok(Number(user.fields.trial.mapValue.fields.usedMs.integerValue) >= 2000);
+      assert.deepEqual(r.a, { entitled: false, metered: false, leaseSec: 60, remainingSec: 600 });
+      assert.deepEqual(r.b, r.a);
+      assert.equal(await readDoc(`users/${uidA}`), null, 'no user doc for a free player');
     });
 
-    await step('venue button is allowed while trial remains (reaches the WebXR check)', async () => {
-      await page.click('.enter-venue.primary');
-      await page.waitForFunction(() => /WebXR not available|not supported on this device/.test(document.getElementById("status").textContent));
+    await step('free venues pass the gate (reach the WebXR check)', async () => {
+      for (const mode of ['ar', 'vr-focus']) {
+        await page.evaluate(() => { document.getElementById('status').textContent = ''; });
+        await page.click(`.enter-venue[data-mode="${mode}"]`);
+        await page.waitForFunction(() => /WebXR not available|not supported on this device/.test(document.getElementById('status').textContent));
+        assert.equal(await modalView(page), null, mode);
+      }
+    });
+
+    await step('hosting a room opens the unlock dialog; no room is created', async () => {
+      await page.click('#create-room');
+      await page.waitForFunction(() => !document.getElementById('account-modal').hidden);
+      assert.equal(await modalView(page), 'signup');
+      assert.match(await page.locator('#account-sub').textContent(), /Hosting a room is in the full game/);
+      assert.doesNotMatch(await page.locator('#multiplayer-status').textContent(), /Room code/);
+      await page.keyboard.press('Escape');
       assert.equal(await modalView(page), null);
     });
 
-    await step('trial used up: landing says so and the venue opens the paywall', async () => {
-      await setTrialUsed(trialUid, 600_000);
-      await page.reload();
-      await waitAccess(page, /free trial is over/);
-      await page.click('.enter-venue.primary');
+    await step('the Arena opens the unlock dialog on the free version', async () => {
+      await page.click('.enter-venue[data-mode="vr-arena"]');
       await page.waitForFunction(() => !document.getElementById('account-modal').hidden);
       assert.equal(await modalView(page), 'signup');
-      assert.match(await page.locator('#account-sub').textContent(), /free trial has ended/);
-      await shot(page, '02-paywall-signup');
-    });
-
-    await step('private window on the same network does not get a fresh trial', async () => {
-      await setNetworkUsed(600_000);
-      const ctxP = await browser.newContext({ viewport: { width: 1280, height: 860 } });
-      const pageP = await ctxP.newPage();
-      await pageP.goto(APP_URL);
-      await waitAccess(pageP, /free trial is over/);
-      assert.notEqual(await uidOf(pageP), trialUid, 'a private window is a new anonymous uid');
-      await ctxP.close();
+      assert.match(await page.locator('#account-sub').textContent(), /The Arena is in the full game/);
+      // No stadium download started behind the dialog.
+      assert.equal(await page.locator('#loading').isVisible(), false);
+      await shot(page, '02-unlock-signup');
     });
 
     await step('create account: short password rejected client-side', async () => {
@@ -223,11 +188,11 @@ async function main() {
       assert.match(await page.locator('#account-status').textContent(), /at least 8 characters/);
     });
 
-    await step('create account links the anonymous trial uid (same uid, now with email)', async () => {
+    await step('create account links the anonymous uid (same uid, now with email)', async () => {
       await page.fill('#acct-signup-password', PASSWORD);
       await page.click('#acct-signup-form button[type=submit]');
       await page.waitForFunction(() => !document.getElementById('acct-view-buy').hidden, null, { timeout: 20_000 });
-      assert.equal(await uidOf(page), trialUid, 'linkWithCredential must keep the uid');
+      assert.equal(await uidOf(page), uidA, 'linkWithCredential must keep the uid');
       assert.equal((await page.locator('#account-chip').textContent()).trim(), email);
       assert.equal((await page.locator('#acct-buy-price').textContent()).trim(), '₹1,997');
       // The price and the button follow the phone typed: +91 → INR, else USD.
@@ -261,7 +226,7 @@ async function main() {
       assert.match(await page.locator('label.acct-consent').textContent(),
         /I agree that the game unlocks immediately after payment and that I lose my 14-day right of withdrawal once it does\./);
       assert.equal((await page.locator('.acct-refund-terms').textContent()).trim(),
-        "Refunds: within 3 days of purchase if you've played less than 2 hours. A refund removes the unlock. One refund per account.");
+        "Refunds: within 3 days of purchase if you've played less than 2 hours since buying. A refund removes the unlock. One refund per account.");
       assert.match(await page.locator('.acct-legal').textContent(), /By paying you agree to our/);
       await consent.check();
       assert.equal(await payBtn.isDisabled(), false);
@@ -299,8 +264,10 @@ async function main() {
       assert.equal(paidIntent.currency, 'INR');
       assert.deepEqual(paidIntent.customer, { name: 'Asha Rao', email, contact: '+919876543210' });
       assert.equal(paidIntent.idempotencyKey, paidIntent.siteReference);
-      const ent = await readDoc(`entitlements/${trialUid}`);
+      const ent = await readDoc(`entitlements/${uidA}`);
       assert.equal(ent.fields.active.booleanValue, true);
+      // The refund's two hours count from the purchase; nothing was played before it.
+      assert.equal(ent.fields.playAtGrantMs.integerValue, '0');
       await shot(page, '04-unlocked');
       await page.click('#acct-done-close');
       await waitAccess(page, /Full game unlocked/);
@@ -308,11 +275,17 @@ async function main() {
       await shot(page, '05-landing-unlocked');
     });
 
-    await step('unlocked: the venue button gets past the gate again', async () => {
+    await step('unlocked: the full-game markers are gone and venues pass the gate', async () => {
+      const arena = page.locator('.enter-venue[data-mode="vr-arena"]');
+      assert.doesNotMatch(await arena.getAttribute('class'), /\blocked\b/);
+      assert.equal((await arena.locator('.venue-sub').textContent()).trim(), 'stadium VR');
+      assert.equal((await page.locator('#create-room').textContent()).trim(), 'Create Multiplayer Room');
       await page.evaluate(() => { document.getElementById('status').textContent = ''; });
       await page.click('.enter-venue.primary');
       await page.waitForFunction(() => /WebXR not available|not supported on this device/.test(document.getElementById("status").textContent));
       assert.equal(await modalView(page), null);
+      // The tier the in-headset menus read survives a reload.
+      assert.equal(await page.evaluate(() => localStorage.getItem('tt.fullVersion')), '1');
     });
 
     await step('account view shows the unlock; buying again is refused', async () => {
@@ -340,14 +313,13 @@ async function main() {
       assert.equal(await modalView(page), null);
     });
 
-    await step('new device: fresh trial, then sign-in restores the purchase', async () => {
-      await clearNetworks(); // a device on another network
+    await step('new device: free version, then sign-in restores the purchase', async () => {
       const ctxB = await browser.newContext({ viewport: { width: 1280, height: 860 } });
       const pageB = await ctxB.newPage();
       await pageB.goto(APP_URL);
-      await waitAccess(pageB, /Free trial: 10:00/);
+      await waitAccess(pageB, /Free to play/);
       const anonB = await uidOf(pageB);
-      assert.notEqual(anonB, trialUid);
+      assert.notEqual(anonB, uidA);
 
       await pageB.click('#account-chip');
       assert.equal(await modalView(pageB), 'signin');
@@ -359,7 +331,7 @@ async function main() {
       await pageB.fill('#acct-signin-password', PASSWORD);
       await pageB.click('#acct-signin-form button[type=submit]');
       await pageB.waitForFunction(() => !document.getElementById('acct-view-done').hidden, null, { timeout: 20_000 });
-      assert.equal(await uidOf(pageB), trialUid);
+      assert.equal(await uidOf(pageB), uidA);
       await pageB.click('#acct-done-close');
       await waitAccess(pageB, /Full game unlocked/);
       await shot(pageB, '06-restored-on-new-device');
@@ -368,10 +340,13 @@ async function main() {
         await pageB.click('#account-chip');
         await pageB.click('#acct-signout');
         await pageB.waitForFunction(() => document.getElementById('account-modal').hidden);
-        await waitAccess(pageB, /Free trial/);
+        await waitAccess(pageB, /Free to play/);
         assert.equal((await pageB.locator('#account-chip').textContent()).trim(), 'Sign in');
         const after = await uidOf(pageB);
-        assert.ok(after && after !== trialUid);
+        assert.ok(after && after !== uidA);
+        // Signing out takes the full version off this browser too.
+        assert.equal(await pageB.evaluate(() => localStorage.getItem('tt.fullVersion')), null);
+        assert.match(await pageB.locator('.enter-venue[data-mode="vr-arena"] .venue-sub').textContent(), /full game/);
       });
 
       await step('forgot password: neutral confirmation', async () => {
@@ -405,17 +380,19 @@ async function main() {
       const end = Date.now() + 15_000;
       let user;
       while (Date.now() < end) {
-        user = await readDoc(`users/${trialUid}`);
+        user = await readDoc(`users/${uidA}`);
         if (user && user.fields.refundUsed && user.fields.refundUsed.booleanValue) break;
         await new Promise((r) => setTimeout(r, 200));
       }
       assert.equal(user.fields.refundUsed.booleanValue, true);
-      const ent = await readDoc(`entitlements/${trialUid}`);
+      const ent = await readDoc(`entitlements/${uidA}`);
       assert.equal(ent.fields.active.booleanValue, false);
 
       await page.keyboard.press('Escape');
       await page.reload();
-      await waitAccess(page, /free trial is over/);
+      await waitAccess(page, /Free to play/);
+      // Back on the free version: the Arena is marked again.
+      assert.match(await page.locator('.enter-venue[data-mode="vr-arena"] .venue-sub').textContent(), /full game/);
       await page.click('#account-chip');
       assert.match(await page.locator('#acct-refund-note').textContent(), /was refunded/);
       assert.equal(await page.locator('#acct-refund-btn').isVisible(), false);

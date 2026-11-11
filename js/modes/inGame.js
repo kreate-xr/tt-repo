@@ -23,7 +23,8 @@ import { loadModels, ballModel, tableBox, tableSurfaceY, setBallColor, setTableC
 import { beginSession, endSession as endAnalyticsRun, mark } from '../analytics/session.js';
 import { showPostSession } from '../ui/postSession.js';
 import { refreshProgress } from '../ui/progressPanel.js';
-import { showTrialOver, showReconnect, refreshAccessSoon, isPlayMetered } from '../ui/accountPanel.js';
+import { showReconnect, refreshAccessSoon, isPlayMetered } from '../ui/accountPanel.js';
+import { isFull } from '../account/tier.js';
 import { createTrialClock } from '../account/trialClock.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
 // Frame-time meter: opt-in with ?fps in the URL (see fpsMeter.js).
@@ -683,34 +684,33 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   let lastDrillParams = null;
   let prevStateBeforeTuner = 'menu'; // restore target when leaving the tuner
 
-  // --- Free trial + paid-play metering (js/account/trialClock.js) ---
-  // Metered only while actually playing — free play or a drill/match, with
-  // the session visible; menus and the tuner are free. The frame loop feeds
-  // setPlaying() every frame (a no-op unless the answer changed). When the
-  // server says the trial is over — or a paid player who can still get a
-  // refund has played too long without reaching the server — the current
-  // ball is allowed to finish (TRIAL_END_GRACE_MS at most) and the session
-  // ends; the 2D page then shows the paywall (or a reconnect message) in
-  // place of the post-session dialog. The API module, and the Firebase SDK
-  // behind it, load on the first lease call — never on entry.
-  const TRIAL_END_GRACE_MS = 8000;
-  let trialExpiry = null; // { reason: 'trial_over'|'ip_limit'|'offline', atMs }
-  let trialEndRequested = false;
-  const trialClock = createTrialClock({
-    lease: (action) => import('../account/api.js').then((m) => m.postLease(action)),
-    onExpired: ({ reason }) => {
-      trialExpiry = { reason, atMs: performance.now() };
-      hudLog(`[trial] over (${reason}) — ending after the current ball`);
-    },
-    onWarn: (sec) => hudLog(`[trial] ${sec}s of free play left`),
-    onBlocked: () => {
-      trialExpiry = { reason: 'offline', atMs: performance.now() };
-      hudLog('[trial] no connection to the server — ending after the current ball');
-    },
-    metered: isPlayMetered(),
-    offlineStore: unmeteredPlayStore,
-    log: (msg, err) => console.warn(msg, (err && (err.code || err.message)) || ''),
-  });
+  // --- Paid-play metering (js/account/trialClock.js) ---
+  // The free version is unlimited and never metered, so a free session makes
+  // no lease calls at all. A full-version session is metered while actually
+  // playing — free play or a drill/match, with the session visible; menus and
+  // the tuner are free — and only while a refund is still possible (the
+  // server says when to stop). The frame loop feeds setPlaying() every frame
+  // (a no-op unless the answer changed). If a still-refundable player plays
+  // too long without reaching the server, the current ball is allowed to
+  // finish (METER_END_GRACE_MS at most) and the session ends; the 2D page
+  // then shows a reconnect message in place of the post-session dialog. The
+  // API module, and the Firebase SDK behind it, load on the first lease call
+  // — never on entry.
+  const METER_END_GRACE_MS = 8000;
+  let meterBlockedAt = null; // performance.now() when the clock blocked play
+  let meterEndRequested = false;
+  const trialClock = isFull()
+    ? createTrialClock({
+      lease: (action) => import('../account/api.js').then((m) => m.postLease(action)),
+      onBlocked: () => {
+        meterBlockedAt = performance.now();
+        hudLog('[meter] no connection to the server — ending after the current ball');
+      },
+      metered: isPlayMetered(),
+      offlineStore: unmeteredPlayStore,
+      log: (msg, err) => console.warn(msg, (err && (err.code || err.message)) || ''),
+    })
+    : { setPlaying() {}, dispose() {} };
 
   const ballEvents = {
     onPaddleHit, onTableBounce, onNetHit, onBallLost,
@@ -829,6 +829,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     enterTuner(trainingMenu);
   });
   trainingMenu.on('back', onTunerBack);
+  // A full-game level on the free version: the row itself says so; this is
+  // for the diagnostics log only.
+  trainingMenu.on('locked', ({ feature }) => hudLog(`[tier] locked: ${feature}`));
   trainingMenu.on('start', ({ drill, difficulty, config, options }) => {
     trainingMenu.hide();
     currentTuner = null;
@@ -1483,16 +1486,15 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     refreshProgress();
     // The overlay coming back used to be the whole of "the session ended".
     // The card goes up with it — see js/ui/postSession.js for why this
-    // moment and no other. A session the free trial ended gets the paywall
-    // instead: one dialog at a time, and that one explains the exit.
+    // moment and no other. A session the meter ended (paid, still
+    // refundable, offline too long) gets the reconnect message instead: one
+    // dialog at a time, and that one explains the exit.
     trialClock.dispose();
-    if (trialExpiry && trialExpiry.reason === 'offline') {
+    if (meterBlockedAt !== null) {
       showReconnect();
-    } else if (trialExpiry) {
-      showTrialOver(trialExpiry.reason);
     } else {
       showPostSession();
-      // The landing page's trial line moved while we played.
+      // A refund or a purchase made elsewhere may have changed the tier.
       refreshAccessSoon();
     }
     renderer.setAnimationLoop(null);
@@ -1540,10 +1542,10 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
 
     trialClock.setPlaying((state === 'freePlay' || state === 'drill')
       && session.visibilityState === 'visible');
-    if (trialExpiry && !trialEndRequested
+    if (meterBlockedAt !== null && !meterEndRequested
         && (!ballModel || !ballModel.visible
-            || performance.now() - trialExpiry.atMs > TRIAL_END_GRACE_MS)) {
-      trialEndRequested = true;
+            || performance.now() - meterBlockedAt > METER_END_GRACE_MS)) {
+      meterEndRequested = true;
       endSession();
     }
 

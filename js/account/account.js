@@ -4,11 +4,11 @@
 //
 // ── IDENTITY ────────────────────────────────────────────────────────────────
 //
-// Everyone starts anonymous (js/network/firebaseClient.js) and the free trial
-// is metered against that uid. Creating an account LINKS email/password onto
-// the same uid (linkWithCredential), so the trial already used, and any beta
-// rows, stay with the player. Signing IN to an existing account switches to
-// that account's uid instead — the anonymous trial uid is simply left behind.
+// Everyone starts anonymous (js/network/firebaseClient.js) on the free
+// version — no sign-up needed to play. Creating an account LINKS
+// email/password onto the same uid (linkWithCredential), so any beta rows
+// stay with the player. Signing IN to an existing account switches to that
+// account's uid instead — the anonymous uid is simply left behind.
 //
 // Email/password only, deliberately: no popup or redirect (the reason the
 // Google link was dropped before — js/data/submissions.js), nothing to pay per
@@ -47,7 +47,8 @@ function publish(next) {
 
 /**
  * Latest known access. null until the first /api/me answer.
- * { entitled, metered, refund, remainingSec, signedIn, email, emailVerified, hasCheckoutProfile }
+ * { entitled, metered, refund, signedIn, email, emailVerified, hasCheckoutProfile }
+ * entitled = the full version (js/account/tier.js); false = the free one.
  */
 export function getAccess() { return access; }
 
@@ -63,7 +64,6 @@ export async function refreshAccess() {
     entitled: me.entitled === true,
     metered: me.metered === true,
     refund: me.refund || null,
-    remainingSec: me.trial ? me.trial.remainingSec : 0,
     signedIn: !me.account.anonymous,
     email: me.account.email,
     emailVerified: me.account.emailVerified,
@@ -103,7 +103,7 @@ export function authErrorMessage(err) {
 
 /**
  * Create an account. Upgrades the current anonymous user in place when there
- * is one, so the trial clock and uid carry over.
+ * is one, so the uid carries over.
  */
 export async function signUp(email, password) {
   const auth = getFirebaseAuth();

@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  applyPlayLease, playedMs, playState, refundBlock, meterPaidPlay, REFUND_PLAY_LIMIT_MS,
+  applyPlayLease, playedMs, playState, refundBlock, meterPaidPlay, paidPlayedMs, playAtGrant,
+  REFUND_PLAY_LIMIT_MS,
 } from '../src/playtime.js';
 
 const T0 = 1_700_000_000_000;
@@ -17,7 +18,7 @@ test('play lease credits server-clock time, capped at lease + grace', () => {
   assert.deepEqual(s, { totalMs: 50_000 + 75_000, lastTickMs: null, leaseMs: 0 });
 });
 
-test('playedMs includes an open lease; playState seeds from the trial', () => {
+test('playedMs includes an open lease; playState seeds from a legacy trial', () => {
   assert.equal(playedMs({ totalMs: 1000, lastTickMs: T0, leaseMs: 60_000 }, T0 + 30_000), 31_000);
   assert.deepEqual(playState({ trial: { usedMs: 240_000, lastTickMs: null, leaseMs: 0 } }),
     { totalMs: 240_000, lastTickMs: null, leaseMs: 0 });
@@ -54,4 +55,22 @@ test('meterPaidPlay: only an active, paid, still-refundable purchase is metered'
   const old = { active: true, grantedAt: new Date(T0) };
   assert.equal(meterPaidPlay({ ent: old, order, user, nowMs: T0 + 2 * DAY }), true);
   assert.equal(meterPaidPlay({ ent: old, order, user, nowMs: T0 + 3 * DAY }), false);
+});
+
+test('paid play counts from the purchase; grants from before playAtGrantMs count from zero', () => {
+  const user = { play: { totalMs: 50 * 60_000, lastTickMs: null, leaseMs: 0 } };
+  assert.equal(playAtGrant({}), 0);
+  assert.equal(playAtGrant({ playAtGrantMs: 'x' }), 0);
+  assert.equal(paidPlayedMs(user, { playAtGrantMs: 30 * 60_000 }, T0), 20 * 60_000);
+  assert.equal(paidPlayedMs(user, {}, T0), 50 * 60_000);
+  // Never negative, whatever the stored numbers say.
+  assert.equal(paidPlayedMs(user, { playAtGrantMs: 99 * 60_000 }, T0), 0);
+});
+
+test('meterPaidPlay reads paid play only', () => {
+  const order = { status: 'paid', refundWindowDays: 3 };
+  const user = { play: { totalMs: 3 * 3600_000, lastTickMs: null, leaseMs: 0 } };
+  const ent = { active: true, refundableUntil: T0 + DAY, playAtGrantMs: 2 * 3600_000 };
+  assert.equal(meterPaidPlay({ ent, order, user, nowMs: T0 }), true);
+  assert.equal(meterPaidPlay({ ent: { ...ent, playAtGrantMs: 0 }, order, user, nowMs: T0 }), false);
 });

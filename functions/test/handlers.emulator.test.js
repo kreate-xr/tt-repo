@@ -1,5 +1,5 @@
 // End-to-end flows through the real handlers against the Firestore emulator:
-// trial lease, IP cap, shared network clock, checkout, webhook grant / dedupe,
+// the free version (no metering), checkout, webhook grant / dedupe,
 // paid-play metering and the refund rules. Token verification and PayLayer
 // are stubbed; Firestore is real.
 //
@@ -13,7 +13,6 @@ import { initializeApp } from 'firebase-admin/app';
 import { getFirestore } from 'firebase-admin/firestore';
 import { createHandler } from '../src/handlers.js';
 import { signWebhookPayload } from '../src/paylayer.js';
-import { TRIAL_MS } from '../src/trial.js';
 
 const RUN = !!process.env.FIRESTORE_EMULATOR_HOST;
 const PROJECT = process.env.GCLOUD_PROJECT || 'demo-functions-test';
@@ -25,7 +24,6 @@ let db;
 let clock;
 let pay;   // what the PayLayer stub holds and was asked
 let logs;
-let ipLimit;
 
 // Token = "uid|provider|email" — stands in for verifyIdToken.
 const token = (uid, provider = 'anonymous', email = null) => [uid, provider, email || ''].join('|');
@@ -86,8 +84,6 @@ function makeHandler() {
     log: (e) => logs.push(e),
     config: () => ({
       appCheckEnforce: false,
-      trialIpDailyLimit: ipLimit,
-      trialIpSalt: 'salt',
       paylayerUrl: 'https://pay.test',
       paylayerApiKey: 'sk_test_x',
       paylayerWebhookSecret: WEBHOOK_SECRET,
@@ -96,11 +92,11 @@ function makeHandler() {
   });
 }
 
-async function call(method, path, { auth, body, headers = {}, rawBody, ip = '203.0.113.7' } = {}) {
+async function call(method, path, { auth, body, headers = {}, rawBody } = {}) {
   const req = {
     method,
     path,
-    headers: { ...headers, 'x-forwarded-for': `${ip}, 10.0.0.1` },
+    headers: { ...headers },
     body,
     rawBody: rawBody ?? Buffer.from(body ? JSON.stringify(body) : ''),
   };
@@ -186,121 +182,38 @@ beforeEach(async () => {
   clock = Date.now();
   pay = { intents: new Map(), byKey: new Map(), calls: [], onCreate: null, onRefund: null };
   logs = [];
-  ipLimit = 5;
   await fetch(`http://${process.env.FIRESTORE_EMULATOR_HOST}/emulator/v1/projects/${PROJECT}/databases/tabletennis/documents`, { method: 'DELETE' });
 });
 
-test('trial: start, renew, end, then exhaustion', { skip: !RUN }, async () => {
-  const t = token('u-trial');
-  let r = await call('POST', '/api/trial/lease', { auth: t, body: { action: 'start' } });
+// ── free version ────────────────────────────────────────────────────────────
+
+test('free: /api/me says free, with the legacy trial field old builds gate on', { skip: !RUN }, async () => {
+  const r = await call('GET', '/api/me', { auth: token('u-free') });
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body, { entitled: false, leaseSec: 60, remainingSec: 600 });
   assert.equal(r.headers['Cache-Control'], 'no-store');
-
-  clock += 50_000;
-  r = await call('POST', '/api/trial/lease', { auth: t, body: { action: 'renew' } });
-  assert.equal(r.body.remainingSec, 550);
-
-  clock += 30_000;
-  r = await call('POST', '/api/trial/lease', { auth: t, body: { action: 'end' } });
-  assert.equal(r.body.remainingSec, 520);
-  assert.equal(r.body.leaseSec, 0);
-
-  r = await call('GET', '/api/me', { auth: t });
-  assert.equal(r.body.trial.remainingSec, 520);
   assert.equal(r.body.entitled, false);
+  assert.equal(r.body.metered, false);
+  assert.equal(r.body.refund, null);
   assert.equal(r.body.account.anonymous, true);
-
-  await db.doc('users/u-trial').set({ trial: { usedMs: TRIAL_MS, lastTickMs: null, leaseMs: 0 } }, { merge: true });
-  r = await call('POST', '/api/trial/lease', { auth: t, body: { action: 'start' } });
-  assert.deepEqual(r.body, { entitled: false, leaseSec: 0, remainingSec: 0 });
+  assert.deepEqual(r.body.trial, { remainingSec: 600 });
 });
 
-test('trial: renew/end without a trial does not create one', { skip: !RUN }, async () => {
-  const r = await call('POST', '/api/trial/lease', { auth: token('u-stray'), body: { action: 'renew' } });
-  assert.equal(r.status, 200);
-  assert.equal((await db.doc('users/u-stray').get()).exists, false);
+test('free: a lease is answered but nothing is metered or written', { skip: !RUN }, async () => {
+  const t = token('u-free-lease');
+  for (const action of ['start', 'renew', 'end']) {
+    clock += 50_000;
+    const r = await call('POST', '/api/trial/lease', { auth: t, body: { action } });
+    assert.equal(r.status, 200);
+    // An old build reads leaseSec / remainingSec and keeps renewing — harmless.
+    assert.deepEqual(r.body, { entitled: false, metered: false, leaseSec: 60, remainingSec: 600 });
+  }
+  assert.equal((await db.doc('users/u-free-lease').get()).exists, false);
 });
 
-test('trial: rejects bad input and missing auth', { skip: !RUN }, async () => {
+test('lease: rejects bad input and missing auth', { skip: !RUN }, async () => {
   assert.equal((await call('POST', '/api/trial/lease', { body: { action: 'start' } })).status, 401);
   assert.equal((await call('POST', '/api/trial/lease', { auth: token('u'), body: { action: 'reset' } })).status, 400);
   assert.equal((await call('GET', '/api/nope', { auth: token('u') })).status, 404);
-});
-
-test('trial: per-IP cap on NEW trials only', { skip: !RUN }, async () => {
-  ipLimit = 2;
-  for (const uid of ['a', 'b']) {
-    const r = await call('POST', '/api/trial/lease', { auth: token(uid), body: { action: 'start' } });
-    assert.equal(r.status, 200);
-  }
-  let r = await call('POST', '/api/trial/lease', { auth: token('c'), body: { action: 'start' } });
-  assert.equal(r.status, 429);
-  assert.equal(r.body.error.code, 'trial_ip_limit');
-  assert.equal((await db.doc('users/c').get()).exists, false);
-
-  // Existing trials keep working from the same network.
-  r = await call('POST', '/api/trial/lease', { auth: token('a'), body: { action: 'start' } });
-  assert.equal(r.status, 200);
-  // A different network is unaffected.
-  r = await call('POST', '/api/trial/lease', { auth: token('c'), body: { action: 'start' }, ip: '198.51.100.9' });
-  assert.equal(r.status, 200);
-});
-
-// Plays `ms` of trial for `uid` from `ip`, renewing every lease like the client.
-async function play(uid, ms, ip) {
-  const lease = (action) => call('POST', '/api/trial/lease', { auth: token(uid), body: { action }, ip });
-  await lease('start');
-  for (let left = ms; left > 0; left -= 60_000) {
-    clock += Math.min(60_000, left);
-    if (left > 60_000) await lease('renew');
-  }
-  return lease('end');
-}
-
-test('trial: a private window on the same network inherits the minutes left', { skip: !RUN }, async () => {
-  let r = await play('ravi', 7 * 60_000 - 20_000, '203.0.113.7');
-  r = await play('ravi', 20_000, '203.0.113.7');
-  assert.equal(r.body.remainingSec, 180);
-
-  // New anonymous uid (private window), same Wi-Fi: 3 min, not 10.
-  r = await call('GET', '/api/me', { auth: token('ravi-private') });
-  assert.equal(r.body.trial.remainingSec, 180);
-  r = await call('POST', '/api/trial/lease', { auth: token('ravi-private'), body: { action: 'start' } });
-  assert.deepEqual(r.body, { entitled: false, leaseSec: 60, remainingSec: 180 });
-  clock += 60_000;
-  r = await call('POST', '/api/trial/lease', { auth: token('ravi-private'), body: { action: 'end' } });
-  assert.equal(r.body.remainingSec, 120);
-
-  // Used up on this network → the next fresh uid gets nothing.
-  await play('ravi-private', 3 * 60_000, '203.0.113.7');
-  r = await call('POST', '/api/trial/lease', { auth: token('ravi-again'), body: { action: 'start' } });
-  assert.deepEqual(r.body, { entitled: false, leaseSec: 0, remainingSec: 0 });
-
-  // The player's own clock still follows them to another network…
-  r = await call('POST', '/api/trial/lease', { auth: token('ravi'), body: { action: 'start' }, ip: '198.51.100.9' });
-  assert.equal(r.body.remainingSec, 180);
-  // …while a fresh uid there gets a full trial.
-  r = await call('POST', '/api/trial/lease', { auth: token('friend'), body: { action: 'start' }, ip: '198.51.100.9' });
-  assert.equal(r.body.remainingSec, 600);
-});
-
-test('trial: IPv6 privacy addresses in one /64 share a network', { skip: !RUN }, async () => {
-  await play('v6-a', 4 * 60_000, '2001:db8:abcd:12:1111:2222:3333:4444');
-  const r = await call('POST', '/api/trial/lease', {
-    auth: token('v6-b'), body: { action: 'start' }, ip: '2001:db8:abcd:12:aaaa:bbbb:cccc:dddd',
-  });
-  assert.equal(r.body.remainingSec, 360);
-});
-
-test('trial: a network forgets its minutes 30 days after it last played', { skip: !RUN }, async () => {
-  await play('old', TRIAL_MS, '203.0.113.7');
-  clock += 29 * 24 * 3600_000;
-  let r = await call('GET', '/api/me', { auth: token('new-1') });
-  assert.equal(r.body.trial.remainingSec, 0);
-  clock += 2 * 24 * 3600_000;
-  r = await call('POST', '/api/trial/lease', { auth: token('new-2'), body: { action: 'start' } });
-  assert.equal(r.body.remainingSec, 600);
 });
 
 // ── orders ──────────────────────────────────────────────────────────────────
@@ -568,18 +481,27 @@ test('metering: paid play is metered server-side while refundable, then stops', 
   assert.deepEqual([r.body.refund.eligible, r.body.refund.reason], [false, 'refund_window_expired']);
 });
 
-test('metering: trial minutes count, and metering stops at two hours', { skip: !RUN }, async () => {
-  const t = token('u-2h', 'password', 'u-2h@example.com');
-  await playFor(t, 4 * 60_000); // trial play before buying
+test('metering: play before the purchase does not count; metering stops at two paid hours', { skip: !RUN }, async () => {
+  // An account from the free-trial days arrives with trial play on record.
+  await db.doc('users/u-2h').set({ play: { totalMs: 30 * 60_000, lastTickMs: null, leaseMs: 0 } });
   const c = await checkout('u-2h');
   await payFor(c);
-  assert.equal((await user('u-2h')).play.totalMs, 4 * 60_000);
+  assert.equal((await ent('u-2h')).playAtGrantMs, 30 * 60_000);
+  let me = (await call('GET', '/api/me', { auth: c.t })).body;
+  assert.equal(me.refund.playedSec, 0, 'only play after the purchase is shown');
 
-  const end = await playFor(c.t, 2 * HOUR - 4 * 60_000);
-  assert.equal(end.body.metered, false, 'reaching 2 h ends metering');
-  const me = (await call('GET', '/api/me', { auth: c.t })).body;
+  let end = await playFor(c.t, 2 * HOUR - 60_000);
+  assert.equal(end.body.metered, true, 'just under two PAID hours is still refundable');
+  me = (await call('GET', '/api/me', { auth: c.t })).body;
+  assert.equal(me.refund.eligible, true);
+  assert.equal(me.refund.playedSec, 2 * 3600 - 60);
+
+  end = await playFor(c.t, 60_000);
+  assert.equal(end.body.metered, false, 'reaching 2 h of paid play ends metering');
+  me = (await call('GET', '/api/me', { auth: c.t })).body;
   assert.equal(me.metered, false);
   assert.equal(me.refund.reason, 'played_too_long');
+  assert.equal((await requestRefund(c.t)).body.error.code, 'played_too_long');
 });
 
 // ── refunds ─────────────────────────────────────────────────────────────────

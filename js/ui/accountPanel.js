@@ -1,16 +1,19 @@
-// Landing-page side of accounts and the paywall: the nav account button, the
-// trial / unlock line under the venue buttons, and one modal with every step
-// (sign in, create account, reset password, checkout, done).
+// Landing-page side of accounts and the full unlock: the nav account button,
+// the free / unlocked line under the venue buttons, and one modal with every
+// step (sign in, create account, reset password, checkout, done).
 //
 // Everything Firebase lives in js/account/account.js, imported lazily on the
 // first idle moment after load — this module itself is in the startup bundle
 // and must not pull the SDK in with it.
 //
+// There is no trial: the free version is unlimited, and js/account/tier.js
+// says what the full version adds. Every /api/me answer is handed to it here.
 // The ENTRY GATE (canEnter) is synchronous on purpose: requestSession has to
 // run inside the click's short user-activation window, which a network round
-// trip could eat. So the gate reads the last /api/me answer and fails OPEN
-// while that is unknown — the in-session trial clock (js/account/trialClock.js)
-// closes the gap within one lease if the trial was in fact used up.
+// trip could eat. So it reads the tier's last known answer — only the Arena
+// is gated at the door.
+
+import { setFull, canUseVenue, LOCKED } from '../account/tier.js';
 
 // Display only — the backend (functions/src/pricing.js) decides what is
 // charged, from the phone number entered at checkout. Keep in step.
@@ -77,8 +80,6 @@ export function refundState(refund, formatDate = (d) => d.toLocaleString()) {
   return note ? { show: true, button: false, note } : { show: false, button: false, note: '' };
 }
 
-// Mirrors functions/src/trial.js TRIAL_MS, for the meter only.
-const TRIAL_SEC = 10 * 60;
 // The refund button asks twice: a refund takes the game away.
 const REFUND_CONFIRM_MS = 6000;
 
@@ -100,7 +101,11 @@ function loadAccount() {
   if (!loading) {
     loading = import('../account/account.js').then((m) => {
       accountMod = m;
-      m.subscribe((next) => { access = next; render(); });
+      m.subscribe((next) => {
+        access = next;
+        setFull(!!(next && next.entitled));
+        render();
+      });
       return m;
     });
     loading.catch(() => { loading = null; });
@@ -108,9 +113,24 @@ function loadAccount() {
   return loading;
 }
 
-function formatClock(sec) {
-  const s = Math.max(0, Math.floor(sec));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+/**
+ * The line under the venue buttons for an /api/me answer.
+ * @returns {{ state: 'free'|'owned', title: string, sub: string }}
+ */
+export function accessLine(acc) {
+  if (acc && acc.entitled) {
+    return {
+      state: 'owned',
+      title: 'Full game unlocked — thanks for your support!',
+      sub: 'Every AI level, full matches, the Arena and hosting, on any headset signed in to this account.',
+    };
+  }
+  return {
+    state: 'free',
+    title: 'Free to play — no time limit',
+    sub: 'Unlock the full game: International and Elite AI, best of 3 and 5, the Arena, '
+      + 'Player training and hosting rooms. Pay once, keep it forever.',
+  };
 }
 
 // ── page chrome ─────────────────────────────────────────────────────────────
@@ -125,32 +145,11 @@ function renderChrome() {
   if (!els.line) return;
   // No answer yet (or no backend): the static intro copy in index.html stays.
   if (!access) return;
-  let state, title, sub;
-  if (access.entitled) {
-    state = 'owned';
-    title = 'Full game unlocked — thanks for your support!';
-    sub = 'Unlimited play on any headset signed in to this account.';
-  } else if (access.remainingSec > 0) {
-    state = 'trial';
-    title = `Free trial: ${formatClock(access.remainingSec)} of play left.`;
-    sub = access.remainingSec >= TRIAL_SEC
-      ? 'No sign-up needed. Only time in a rally counts — menus and setup are free.'
-      : 'Enjoying it? Unlock unlimited play — pay once, keep it forever.';
-  } else {
-    state = 'over';
-    title = 'Your free trial is over.';
-    sub = 'Unlock the full game to keep playing — one payment, lifetime access.';
-  }
+  const { state, title, sub } = accessLine(access);
   els.line.dataset.state = state;
   els.lineText.textContent = title;
   if (els.lineSub) els.lineSub.textContent = sub;
   if (els.lineCta) els.lineCta.hidden = state === 'owned';
-  els.lineBuy.textContent = state === 'over' ? 'Unlock the full game' : 'Unlock full game';
-  if (els.lineMeter) {
-    els.lineMeter.hidden = state !== 'trial';
-    const frac = Math.min(1, Math.max(0, access.remainingSec / TRIAL_SEC));
-    if (els.lineMeterFill) els.lineMeterFill.style.width = `${(frac * 100).toFixed(1)}%`;
-  }
 }
 
 // ── modal ───────────────────────────────────────────────────────────────────
@@ -184,7 +183,7 @@ function render() {
     els.accountEmail.textContent = signedIn ? access.email : '';
     els.accountStatus.textContent = access && access.entitled
       ? 'Full game unlocked.'
-      : `Free trial: ${formatClock(access ? access.remainingSec : 0)} of play left.`;
+      : 'Free version — unlock the full game any time.';
     els.accountBuy.hidden = !!(access && access.entitled);
     els.accountVerify.hidden = !(signedIn && !access.emailVerified);
     const refund = refundState(access && access.refund);
@@ -366,22 +365,19 @@ function wireForms() {
 // ── public API ──────────────────────────────────────────────────────────────
 
 /**
- * Synchronous entry gate for the venue buttons. false = the trial is used up
- * and the paywall was opened instead.
+ * Synchronous entry gate for a venue button. false = that venue is in the full
+ * game and the unlock dialog was opened instead.
  */
-export function canEnter() {
-  if (!access || access.entitled || access.remainingSec > 0) return true;
-  startPurchase('Your free trial has ended.');
+export function canEnter(modeId) {
+  if (canUseVenue(modeId)) return true;
+  startPurchase(LOCKED.arena.page);
   return false;
 }
 
-/** Called by js/modes/inGame.js when the trial ran out inside the headset. */
-export function showTrialOver(reason) {
-  const text = reason === 'ip_limit'
-    ? 'Free trials from this network are used up today.'
-    : 'Your free trial has ended.';
-  loadAccount().then((m) => m.refreshAccess()).catch(() => {});
-  startPurchase(text);
+/** Open the unlock dialog for a locked feature (a key of LOCKED in tier.js). */
+export function showUnlock(feature) {
+  const locked = LOCKED[feature];
+  startPurchase(locked ? locked.page : '');
 }
 
 /**
@@ -400,7 +396,7 @@ export function isPlayMetered() {
   return !!(access && access.metered);
 }
 
-/** Re-read access (e.g. after a session, when the trial clock moved). */
+/** Re-read access (e.g. after a session: a refund or a purchase elsewhere). */
 export function refreshAccessSoon() {
   loadAccount().then((m) => m.refreshAccess()).catch((err) => {
     console.warn('[account] could not refresh access:', err && (err.code || err.message));
@@ -424,8 +420,6 @@ export function wireAccountPanel() {
     lineBuy: $('access-buy'),
     lineSub: $('access-sub'),
     lineCta: $('access-cta'),
-    lineMeter: $('access-meter'),
-    lineMeterFill: $('access-meter-fill'),
     views: {
       signin: $('acct-view-signin'),
       signup: $('acct-view-signup'),

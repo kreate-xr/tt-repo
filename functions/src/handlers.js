@@ -4,13 +4,15 @@
 //
 // ── DATA (named database 'tabletennis') ─────────────────────────────────────
 //
-//   users/{uid}           trial clock, total play (`play`, playtime.js),
+//   users/{uid}           paid play (`play`, playtime.js),
 //                         checkout profile, `refundUsed` (one refund per
 //                         account, ever) and `pendingOrderId`. Client may READ
 //                         its own; only this backend writes.
 //   entitlements/{uid}    { active, product, intentId, orderId, refundableUntil,
-//                         ... } — the one thing the game checks. orderId is the
-//                         purchase it came from. Client may READ its own.
+//                         playAtGrantMs, ... } — the one thing the game checks:
+//                         active = the full version, absent = the free one.
+//                         orderId is the purchase it came from. Client may
+//                         READ its own.
 //   orders/{orderId}      one per checkout attempt; maps PayLayer's
 //                         siteReference back to a uid. status:
 //                         awaiting_payment → paid → refund_requested → refunded,
@@ -19,24 +21,19 @@
 //                         Server-only.
 //   paylayerEvents/{id}   webhook dedupe (PayLayer delivers at least once).
 //                         Server-only; `expireAt` is for a TTL policy.
-//   trialIps/{hash_day}   new-trial counter per hashed network per UTC day.
-//                         Server-only; `expireAt` is for a TTL policy.
-//   trialNets/{hash}      trial minutes used by a hashed network (trial.js),
-//                         so a private window cannot start a fresh 10 min.
-//                         Server-only; `expireAt` is for a TTL policy and is
-//                         also honoured in code (TTL deletes lazily).
+//   trialIps/, trialNets/ are left over from the 10-minute free trial (gone
+//                         since the free version). Nothing reads or writes
+//                         them; their TTL policy, if set, clears them out.
 //
 // firestore.rules spells out the same split.
 
-import { createHash, createHmac, randomBytes } from 'node:crypto';
-import { applyLease, remainingMs, LEASE_ACTIONS, LEASE_MS, NETWORK_MEMORY_MS } from './trial.js';
-import { networkKey } from './network.js';
+import { createHash, randomBytes } from 'node:crypto';
 import {
   priceFor, E164, PRODUCT_ID, PRODUCT_DESCRIPTION, REFUND_WINDOW_DAYS, CONSENT_TEXT_VERSION,
 } from './pricing.js';
 import {
-  playState, applyPlayLease, playedMs, refundBlock, meterPaidPlay, cachedRefundableUntil,
-  REFUND_PLAY_LIMIT_MS,
+  playState, applyPlayLease, playedMs, paidPlayedMs, playAtGrant, refundBlock, meterPaidPlay,
+  cachedRefundableUntil, REFUND_PLAY_LIMIT_MS, LEASE_ACTIONS, LEASE_MS,
 } from './playtime.js';
 import {
   verifyWebhook, createPaymentIntent, retrieveIntent, createRefund,
@@ -91,7 +88,7 @@ export class HttpError extends Error {
  * @property {() => number} now
  * @property {(event: object) => void} log    structured log; `alert: true` marks pageable lines
  * @property {() => {
- *   appCheckEnforce: boolean, trialIpDailyLimit: number, trialIpSalt: string,
+ *   appCheckEnforce: boolean,
  *   paylayerUrl: string, paylayerApiKey: string, paylayerWebhookSecret: string,
  * }} config  read per request: secrets are only readable at runtime
  * @property {typeof fetch} [fetchImpl]
@@ -102,13 +99,6 @@ export class HttpError extends Error {
 function header(req, name) {
   const v = req.headers[name];
   return Array.isArray(v) ? v[0] : v;
-}
-
-// Firebase Hosting puts the visitor's address first in X-Forwarded-For.
-function clientIp(req) {
-  const fwd = header(req, 'x-forwarded-for');
-  if (fwd) return fwd.split(',')[0].trim();
-  return req.ip || '';
 }
 
 async function requireUser(req, deps) {
@@ -146,28 +136,6 @@ async function requireUser(req, deps) {
   };
 }
 
-function networkHash(req, salt) {
-  const ip = clientIp(req);
-  return createHmac('sha256', salt).update(networkKey(ip) || ip).digest('hex').slice(0, 32);
-}
-
-function ipBucketId(netHash, nowMs) {
-  const day = new Date(nowMs).toISOString().slice(0, 10).replace(/-/g, '');
-  return `${netHash}_${day}`;
-}
-
-// Minutes the network has used, or 0 once its memory has lapsed.
-function networkUsedMs(snap, nowMs) {
-  if (!snap.exists) return 0;
-  const { usedMs, expireAt } = snap.data();
-  const expMs = expireAt && typeof expireAt.toMillis === 'function' ? expireAt.toMillis() : 0;
-  return expMs > nowMs ? Number(usedMs) || 0 : 0;
-}
-
-function networkRef(db, req, salt) {
-  return clientIp(req) ? db.doc(`trialNets/${networkHash(req, salt)}`) : null;
-}
-
 async function readAccess(db, uid) {
   const [userSnap, entSnap] = await Promise.all([
     db.doc(`users/${uid}`).get(),
@@ -203,7 +171,7 @@ function refundView(ent, order, user, uid, nowMs) {
   if (!ent || !order || order.uid !== uid) return null;
   if (!['paid', 'refund_requested', 'refunded'].includes(order.status)) return null;
   const until = cachedRefundableUntil(ent, order);
-  const played = playedMs(playState(user), nowMs);
+  const played = paidPlayedMs(user, ent, nowMs);
   const reason = order.status === 'refund_requested'
     ? 'refund_in_progress'
     : refundBlock({
@@ -228,12 +196,13 @@ async function getMe(req, deps) {
   const nowMs = deps.now();
   const { user, ent, entitled } = await readAccess(deps.db, who.uid);
   const order = ent ? await readOrder(deps.db, ent.orderId) : null;
-  let netUsed = 0;
-  const netRef = entitled ? null : networkRef(deps.db, req, deps.config().trialIpSalt);
-  if (netRef) netUsed = networkUsedMs(await netRef.get(), nowMs);
   return {
+    // true = the full version, false = the free one. There is no trial.
     entitled,
-    trial: { remainingSec: Math.floor(remainingMs((user && user.trial) || {}, netUsed) / 1000) },
+    // Builds from before the free version gate on this (0 = paywall). A full
+    // allowance keeps a page left open across the deploy playable until it
+    // reloads. Drop it a release after the free version ships.
+    trial: { remainingSec: LEGACY_TRIAL_SEC },
     // Paid play is metered — and the client fails closed — while a refund
     // is still possible (playtime.js).
     metered: meterPaidPlay({ ent, order, user, nowMs }),
@@ -251,17 +220,24 @@ async function getMe(req, deps) {
 
 // ── POST /api/trial/lease  { action: 'start' | 'renew' | 'end' } ────────────
 //
-// One lease serves two clocks: the free trial (trial.js) and total play
-// (playtime.js). A paid player only has the second, and only while a refund
-// is still possible; past that the answer is `metered: false` and the client
-// stops calling.
+// Paid-play metering (playtime.js), and nothing else: the free version is not
+// metered. The path keeps the old trial name so older builds keep working.
+// A paid player is metered only while a refund is still possible; past that
+// the answer is `metered: false` and the client stops calling.
+
+// What a build from before the free version needs to keep playing: a lease
+// that never runs out (see LEGACY_TRIAL_SEC). Nothing is written for it.
+const LEGACY_TRIAL_SEC = 10 * 60;
+const FREE_LEASE = Object.freeze({
+  entitled: false, metered: false, leaseSec: LEASE_MS / 1000, remainingSec: LEGACY_TRIAL_SEC,
+});
 
 function paidLease(tx, userRef, user, ent, order, action, nowMs) {
   const prev = playState(user);
   const metered = meterPaidPlay({ ent, order, user, nowMs });
   const next = applyPlayLease(prev, action, nowMs, metered ? LEASE_MS : 0);
-  // The call that crosses two hours ends metering on the spot.
-  const still = metered && next.totalMs < REFUND_PLAY_LIMIT_MS;
+  // The call that crosses two hours of paid play ends metering on the spot.
+  const still = metered && next.totalMs - playAtGrant(ent) < REFUND_PLAY_LIMIT_MS;
   const play = still ? next : { ...next, lastTickMs: null, leaseMs: 0 };
   if (metered || Number.isFinite(prev.lastTickMs) || !(user && user.play)) {
     tx.set(userRef, { play, updatedAt: new Date(nowMs) }, { merge: true });
@@ -283,66 +259,15 @@ async function postLease(req, deps) {
   const nowMs = deps.now();
   const userRef = db.doc(`users/${who.uid}`);
   const entRef = db.doc(`entitlements/${who.uid}`);
-  const { trialIpDailyLimit, trialIpSalt } = deps.config();
-  const netRef = networkRef(db, req, trialIpSalt);
 
   return db.runTransaction(async (tx) => {
-    const [userSnap, entSnap, netSnap] = await Promise.all([
-      tx.get(userRef), tx.get(entRef), netRef ? tx.get(netRef) : null,
-    ]);
+    const [userSnap, entSnap] = await Promise.all([tx.get(userRef), tx.get(entRef)]);
+    if (!entSnap.exists || entSnap.data().active !== true) return { ...FREE_LEASE };
     const user = userSnap.exists ? userSnap.data() : null;
-    if (entSnap.exists && entSnap.data().active === true) {
-      const ent = entSnap.data();
-      const orderSnap = ent.orderId ? await tx.get(db.doc(`orders/${ent.orderId}`)) : null;
-      const order = orderSnap && orderSnap.exists ? orderSnap.data() : null;
-      return paidLease(tx, userRef, user, ent, order, action, nowMs);
-    }
-    const netUsed = netSnap ? networkUsedMs(netSnap, nowMs) : 0;
-
-    const isNewTrial = !userSnap.exists;
-    if (isNewTrial && action !== 'start') {
-      // Nothing to renew or end — do not let a stray call create a trial.
-      return { entitled: false, leaseSec: 0, remainingSec: Math.floor(remainingMs({}, netUsed) / 1000) };
-    }
-
-    // Soft cap on new trials per IP per day. Loose on purpose: mobile carriers
-    // put many real players behind one address (CGNAT), so this only slows
-    // down someone wiping site data over and over. 0 disables it.
-    let ipRef = null;
-    let ipCount = 0;
-    if (isNewTrial && trialIpDailyLimit > 0) {
-      ipRef = db.doc(`trialIps/${ipBucketId(networkHash(req, trialIpSalt), nowMs)}`);
-      const ipSnap = await tx.get(ipRef);
-      ipCount = ipSnap.exists ? ipSnap.data().count || 0 : 0;
-      if (ipCount >= trialIpDailyLimit) {
-        throw new HttpError(429, 'trial_ip_limit', 'Too many new trials from this network today');
-      }
-    }
-
-    const prev = user ? user.trial || {} : {};
-    const next = applyLease(prev, action, nowMs, netUsed);
-
-    const userPatch = {
-      trial: { usedMs: next.usedMs, lastTickMs: next.lastTickMs, leaseMs: next.leaseMs },
-      // Trial minutes are play too: they count toward the refund's two hours.
-      play: applyPlayLease(playState(user), action, nowMs, next.leaseMs),
-      updatedAt: new Date(nowMs),
-    };
-    if (isNewTrial) userPatch.createdAt = new Date(nowMs);
-    tx.set(userRef, userPatch, { merge: true });
-
-    if (ipRef) {
-      tx.set(ipRef, { count: ipCount + 1, expireAt: new Date(nowMs + 2 * DAY_MS) });
-    }
-    if (netRef) {
-      tx.set(netRef, { usedMs: next.networkUsedMs, expireAt: new Date(nowMs + NETWORK_MEMORY_MS) });
-    }
-
-    return {
-      entitled: false,
-      leaseSec: Math.floor(next.leaseMs / 1000),
-      remainingSec: Math.floor(next.remainingMs / 1000),
-    };
+    const ent = entSnap.data();
+    const orderSnap = ent.orderId ? await tx.get(db.doc(`orders/${ent.orderId}`)) : null;
+    const order = orderSnap && orderSnap.exists ? orderSnap.data() : null;
+    return paidLease(tx, userRef, user, ent, order, action, nowMs);
   });
 }
 
@@ -520,8 +445,8 @@ async function postRefund(req, deps) {
     orderStatus: order.status,
     refundUsed,
     refundableUntil: intent.refundableUntil ?? null,
-    // d: server-metered play, including a lease that is still open
-    played: playedMs(playState(user), nowMs),
+    // d: server-metered play since the purchase, including a lease still open
+    played: paidPlayedMs(user, ent, nowMs),
     nowMs,
   });
   if (block) throw refundError(block);
@@ -678,7 +603,10 @@ async function postPayLayerWebhook(req, deps) {
           refundIt = true;
           break;
         }
+        // The refund's two hours count from here (playtime.js).
+        const userSnap = await tx.get(userRef);
         tx.set(entRef, {
+          playAtGrantMs: playedMs(playState(userSnap.exists ? userSnap.data() : null), nowMs),
           active: true,
           product: order.product,
           intentId: intent.id,

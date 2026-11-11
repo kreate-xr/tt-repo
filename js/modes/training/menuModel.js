@@ -12,6 +12,10 @@
 
 import { SETTING_SPECS } from '../../profile/store.js';
 import { LEVELS, LEVEL_ORDER } from './session.js';
+import { canUseTrainingLevel } from '../../account/tier.js';
+
+// The row subtitle of a level that is in the full game only.
+export const LOCKED_LEVEL_SUBTITLE = 'Full game  ·  unlock it on the start page';
 
 export const SCREENS = Object.freeze({
   ROOT: 'root',
@@ -49,7 +53,15 @@ export const SESSION_LEVEL_ITEMS = Object.freeze(LEVEL_ORDER.map((id) => ({
 })));
 
 export class TrainingMenuModel {
-  constructor({ settings = null } = {}) {
+  /**
+   * @param {object} [opts]
+   * @param {object} [opts.settings] profile store (getSetting / setSetting)
+   * @param {(levelId: string) => boolean} [opts.canUseLevel] whether this
+   *        player's tier has the level (js/account/tier.js); read on every
+   *        call, so an unlock that lands mid-session shows on the next redraw
+   */
+  constructor({ settings = null, canUseLevel = canUseTrainingLevel } = {}) {
+    this.canUseLevel = canUseLevel;
     this.stack = [SCREENS.ROOT];
     // Injected so the model stays testable without localStorage; the renderer
     // passes the real profile store.
@@ -103,7 +115,12 @@ export class TrainingMenuModel {
   items() {
     if (this.screen === SCREENS.SETTINGS) return this.settingItems();
     // The subtitle carries the level's best score to beat, once there is one.
+    // A level in the full game only stays tappable — the tap says so — and
+    // its subtitle says it up front.
     return SESSION_LEVEL_ITEMS.map((i) => {
+      if (!this.canUseLevel(i.id)) {
+        return { ...i, action: 'locked', locked: true, subtitle: LOCKED_LEVEL_SUBTITLE };
+      }
       const best = this.settingsApi
         ? Number(this.settingsApi.getSetting(i.bestKey)) || 0 : 0;
       return { ...i, subtitle: best > 0 ? `${i.subtitle}  ·  Best ${best}%` : i.subtitle };
@@ -145,6 +162,11 @@ export class TrainingMenuModel {
     if (item.action === 'cycleSetting') {
       this.cycleSetting(item.settingKey);
       return null;
+    }
+
+    // A full-game level on the free version: nothing starts, the host says why.
+    if (item.action === 'locked') {
+      return { action: 'locked', feature: 'trainingLevel' };
     }
 
     // The Training Session at the chosen level. Every feed value is the

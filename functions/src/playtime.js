@@ -1,26 +1,37 @@
-// Total play time per player, and the refund rule that reads it. Pure — no
-// Firestore, no Date.now() — like trial.js, whose lease model this reuses.
+// Paid play time per player, and the refund rule that reads it. Pure — no
+// Firestore, no Date.now() — so the arithmetic under test is the arithmetic
+// that decides a refund.
 //
 // ── MODEL ───────────────────────────────────────────────────────────────────
 //
-// users/{uid}.play = { totalMs, lastTickMs, leaseMs } moves on every
-// /api/trial/lease call, trial or paid: the server credits the real time
-// elapsed since the previous call on its own clock, capped at the lease it
-// granted plus GRACE_MS. So the total is never client-reported, but it only
-// grows while the client keeps calling. js/account/trialClock.js therefore
-// FAILS CLOSED for a paid player who could still get a refund: play stops if
-// the server has not been reachable for a while (see meterPaidPlay below).
-// Past that point nothing depends on the total any more and metering stops.
+// The free version is not metered at all: only a player with an active
+// unlock calls /api/trial/lease (the path keeps its old name so builds from
+// before the free version keep working). users/{uid}.play =
+// { totalMs, lastTickMs, leaseMs } moves on every such call: the server
+// credits the real time elapsed since the previous call on its own clock,
+// capped at the lease it granted plus GRACE_MS. So the total is never
+// client-reported, but it only grows while the client keeps calling.
+// js/account/trialClock.js therefore FAILS CLOSED for a paid player who could
+// still get a refund: play stops if the server has not been reachable for a
+// while (see meterPaidPlay below). Past that point nothing depends on the
+// total any more and metering stops.
 //
-// A user doc from before this existed has no `play`; its trial minutes are
-// the play it had, so the total starts from trial.usedMs.
+// The refund's two hours are PAID play: the entitlement stores the total at
+// the moment of purchase (`playAtGrantMs`) and only what came after counts.
+// A user doc from the old free-trial days has no `play`; its trial minutes
+// seed the total, and an entitlement granted before `playAtGrantMs` existed
+// counts from zero, as it always did.
 
-import { LEASE_MS, GRACE_MS } from './trial.js';
+/** Length of one play lease handed to the client. */
+export const LEASE_MS = 60 * 1000;
+/** Network slack credited on top of a lease before the server stops counting. */
+export const GRACE_MS = 15 * 1000;
+export const LEASE_ACTIONS = ['start', 'renew', 'end'];
 
 export const REFUND_PLAY_LIMIT_MS = 2 * 3600 * 1000;
 const DAY_MS = 24 * 3600 * 1000;
 
-/** users/{uid} data → its play state, seeded from the trial clock when absent. */
+/** users/{uid} data → its play state, seeded from a legacy trial clock when absent. */
 export function playState(user) {
   if (user && user.play) return user.play;
   const trial = (user && user.trial) || {};
@@ -53,6 +64,17 @@ export function applyPlayLease(state, action, nowMs, grantMs) {
 /** Played so far, including an open lease up to now (capped as above). */
 export function playedMs(state, nowMs) {
   return Math.round(credit(state || {}, nowMs));
+}
+
+/** Total play when the entitlement was granted (0 for grants from before it was stored). */
+export function playAtGrant(ent) {
+  const v = Number(ent && ent.playAtGrantMs);
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/** Play since the purchase — what the refund's two hours are measured against. */
+export function paidPlayedMs(user, ent, nowMs) {
+  return Math.max(0, playedMs(playState(user), nowMs) - playAtGrant(ent));
 }
 
 function toMs(v) {
@@ -101,7 +123,7 @@ export function meterPaidPlay({ ent, order, user, nowMs }) {
     orderStatus: order.status,
     refundUsed: !!(user && user.refundUsed),
     refundableUntil: cachedRefundableUntil(ent, order),
-    played: playedMs(playState(user), nowMs),
+    played: paidPlayedMs(user, ent, nowMs),
     nowMs,
   }) === null;
 }

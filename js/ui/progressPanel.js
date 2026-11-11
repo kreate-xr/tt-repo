@@ -7,8 +7,16 @@
 //
 // textContent / createElementNS throughout — no innerHTML, so a hand-edited
 // localStorage entry cannot inject markup.
+//
+// Free version (js/account/tier.js): the latest numbers and the last result
+// only. The trend lines and the recent-history list are in the full game; the
+// history itself is still recorded, so it all appears the moment they unlock.
 
 import { summarizeProgress, KINDS } from '../profile/progress.js';
+import { canSeeProgressHistory, onTierChange } from '../account/tier.js';
+
+// Under the latest numbers, where the trend line would be.
+const TREND_LOCKED = 'Your trend over the last 10 is in the full game.';
 
 // The AI's internal ids, under the names the wrist menu shows.
 const AI_LEVEL_LABELS = Object.freeze({
@@ -82,6 +90,7 @@ export function renderProgress() {
   const section = $('progress');
   if (!section) return;
   const view = summarizeProgress();
+  const full = canSeeProgressHistory();
 
   // Nothing played yet → no section at all, not an empty placeholder panel.
   section.hidden = view.empty;
@@ -105,8 +114,9 @@ export function renderProgress() {
       }
     }
     setText('progress-ai-speed', `${ai.bestSpeedKmh} km/h`);
-    drawSparkline($('progress-ai-spark'), ai.accuracyTrend,
+    drawSparkline($('progress-ai-spark'), full ? ai.accuracyTrend : [],
       $('progress-ai-spark-label'), 'Accuracy, last 10 matches', '%');
+    if (!full && ai.played > 1) setText('progress-ai-spark-label', TREND_LOCKED);
   }
 
   const tr = view.training;
@@ -117,14 +127,15 @@ export function renderProgress() {
     setText('progress-tr-last', String(tr.lastScore));
     setText('progress-tr-best', String(tr.bestScore));
     setText('progress-tr-weakest', tr.weakestLabel || '—');
-    drawSparkline($('progress-tr-spark'), tr.scoreTrend,
+    drawSparkline($('progress-tr-spark'), full ? tr.scoreTrend : [],
       $('progress-tr-spark-label'), 'Score, last 10 sessions', '');
+    if (!full && tr.played > 1) setText('progress-tr-spark-label', TREND_LOCKED);
   }
 
   const list = $('progress-recent');
   if (list) {
     while (list.firstChild) list.removeChild(list.firstChild);
-    for (const e of view.recent) {
+    for (const e of full ? view.recent : view.recent.slice(0, 1)) {
       const li = document.createElement('li');
       li.textContent = recentLine(e);
       list.appendChild(li);
@@ -132,8 +143,15 @@ export function renderProgress() {
   }
 }
 
+let tierWatched = false;
+
 /** Never lets a progress-render bug break the start page. */
 export function refreshProgress() {
+  // An unlock (or a refund) re-renders the section without a reload.
+  if (!tierWatched) {
+    tierWatched = true;
+    onTierChange(() => refreshProgress());
+  }
   try {
     renderProgress();
   } catch (e) {

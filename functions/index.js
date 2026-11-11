@@ -1,9 +1,9 @@
-// Accounts, free trial and payments backend. One HTTPS function, `api`, served
+// Accounts, free version / full unlock and payments backend. One HTTPS function, `api`, served
 // on the game's own origin through Firebase Hosting rewrites (firebase.json):
 //
-//   GET  /api/me              entitlement + trial remaining + account kind
-//   POST /api/trial/lease     start / renew / end a play lease (src/trial.js,
-//                             src/playtime.js)
+//   GET  /api/me              entitlement (full or free) + refund + account kind
+//   POST /api/trial/lease     start / renew / end a paid-play lease
+//                             (src/playtime.js; old name, kept for old builds)
 //   POST /api/orders          create (or hand back) a PayLayer payment intent
 //   POST /api/refund          self-service refund of the account's purchase
 //   POST /webhooks/paylayer   PayLayer → grant / revoke entitlements/{uid}
@@ -26,17 +26,16 @@
 //        PAYLAYER_URL=https://<paylayer-host>
 //        PAYLAYER_API_KEY=sk_test_...            (from site:create)
 //        PAYLAYER_WEBHOOK_SECRET=whsec_...       (from site:create)
-//        TRIAL_IP_SALT=<any long random string>
-//        TRIAL_IP_DAILY_LIMIT=5
 //        APP_CHECK_ENFORCE=false
 //      Kept out of Secret Manager by choice: the values are visible in plain
 //      text to anyone with view access to the function's Cloud Run config.
 //      Emulator runs read the same keys from functions/.env.local instead.
-//   3. Firestore TTL policies on `paylayerEvents.expireAt`, `trialIps.expireAt`
-//      and `trialNets.expireAt` (console → Firestore → TTL), database 'tabletennis'.
+//   3. Firestore TTL policy on `paylayerEvents.expireAt` (console → Firestore →
+//      TTL), database 'tabletennis'. Old `trialIps` / `trialNets` docs from the
+//      free-trial days are unused: keep their TTL policies or delete them.
 //   4. npm run deploy:test
 //
-// The game itself runs entirely in the browser, so the trial and the paywall
+// The game itself runs entirely in the browser, so the full-version locks
 // are ENFORCED client-side; this backend is the source of truth the client
 // asks. A patched client can skip the gate — that is accepted at this price.
 
@@ -45,7 +44,7 @@ import { getFirestore } from 'firebase-admin/firestore';
 import { getAuth } from 'firebase-admin/auth';
 import { getAppCheck } from 'firebase-admin/app-check';
 import { onRequest } from 'firebase-functions/v2/https';
-import { defineString, defineInt, defineBoolean } from 'firebase-functions/params';
+import { defineString, defineBoolean } from 'firebase-functions/params';
 import * as logger from 'firebase-functions/logger';
 import { createHandler } from './src/handlers.js';
 
@@ -56,9 +55,7 @@ const REGION = 'us-central1';
 
 const PAYLAYER_API_KEY = defineString('PAYLAYER_API_KEY');
 const PAYLAYER_WEBHOOK_SECRET = defineString('PAYLAYER_WEBHOOK_SECRET');
-const TRIAL_IP_SALT = defineString('TRIAL_IP_SALT');
 const PAYLAYER_URL = defineString('PAYLAYER_URL');
-const TRIAL_IP_DAILY_LIMIT = defineInt('TRIAL_IP_DAILY_LIMIT', { default: 5 });
 // Flip to true together with the App Check enforcement switch in the console.
 const APP_CHECK_ENFORCE = defineBoolean('APP_CHECK_ENFORCE', { default: false });
 
@@ -73,8 +70,6 @@ const handler = createHandler({
   log: (event) => (event.alert ? logger.error(event) : logger.info(event)),
   config: () => ({
     appCheckEnforce: APP_CHECK_ENFORCE.value(),
-    trialIpDailyLimit: TRIAL_IP_DAILY_LIMIT.value(),
-    trialIpSalt: TRIAL_IP_SALT.value(),
     paylayerUrl: PAYLAYER_URL.value(),
     paylayerApiKey: PAYLAYER_API_KEY.value(),
     paylayerWebhookSecret: PAYLAYER_WEBHOOK_SECRET.value(),

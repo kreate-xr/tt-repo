@@ -18,7 +18,7 @@ import { installHoverRedraw } from './hoverRedraw.js';
 import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
 import * as haptics from '../xr/haptics.js';
 import { Panel, WIDGETS } from './panelKit.js';
-import { COLORS, F, roundRect } from './panelStyle.js';
+import { COLORS, F, roundRect, drawPadlock } from './panelStyle.js';
 import { TrainingMenuModel, SCREENS } from '../modes/training/menuModel.js';
 import { TUNER_ENABLED } from './hud.js';
 
@@ -178,6 +178,10 @@ export class TrainingMenu {
       if (res && res.action === 'start') {
         return this.start(res.drill, res.config, res.options);
       }
+      if (res && res.action === 'locked') {
+        this.emit('locked', { feature: res.feature });
+        return undefined;
+      }
       return this.rebuild();
     }
     return undefined;
@@ -322,7 +326,7 @@ export class TrainingMenu {
 
       ctx.textAlign = 'left';
       ctx.textBaseline = 'middle';
-      ctx.fillStyle = disabled ? COLORS.disabled : COLORS.text;
+      ctx.fillStyle = disabled ? COLORS.disabled : (item.locked ? COLORS.muted : COLORS.text);
       ctx.font = F(600, compact ? 19 : tall ? 25 : 22);
       const sub = item.subtitle || item.note;
       // In compact rows there is no room for two stacked lines, so the
@@ -344,6 +348,10 @@ export class TrainingMenu {
           ctx.fillText(sub, rect.x + rect.w - 46, rect.y + rect.h / 2);
           ctx.textAlign = 'left';
         }
+      }
+
+      if (item.locked) {
+        drawPadlock(ctx, rect.x + rect.w - 34, rect.y + rect.h / 2, 22, COLORS.muted);
       }
 
       if (item.screen) {

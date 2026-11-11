@@ -36,6 +36,11 @@ beforeAll(() => {
 const { MultiplayerMenu } = require('../js/scene/multiplayerMenu.js');
 const { MP_SCREENS, ROOM_CODE_ALPHABET } = require('../js/modes/multiplayer/lobbyMenuModel.js');
 
+// These suites describe the FULL version; js/account/tier.js defaults to the
+// free one, whose locks have their own tests below.
+const tier = require('../js/account/tier.js');
+beforeEach(() => tier.setFull(true));
+
 function makeLobby() {
   const lobby = {
     role: null,
@@ -265,5 +270,13 @@ describe('MultiplayerMenu dispose', () => {
     panel.dispose();
     expect(panel.mesh.parent).toBeNull();
     expect(parent.children).not.toContain(panel.mesh);
+  });
+});
+
+describe('free version', () => {
+  test('the CREATE card says it is in the full game', () => {
+    tier.setFull(false);
+    const menu = new MultiplayerMenu({ createLobby: () => { throw new Error('must not be called'); } });
+    expect(menu.panel.get('create').sub).toBe('Full game only');
   });
 });

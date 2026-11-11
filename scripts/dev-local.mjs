@@ -1,4 +1,4 @@
-// `npm run dev:local` — the whole accounts / free-trial / payment flow on
+// `npm run dev:local` — the whole accounts / free version / payment flow on
 // this PC, to click through by hand:
 //
 //   http://localhost:5180      the game (vite --mode localdev, .env.localdev)
@@ -21,7 +21,6 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 
 const PROJECT = 'demo-tt-local';
 const APP_ORIGIN = 'http://localhost:5180';
@@ -76,7 +75,6 @@ function registerSite() {
   writeFileSync(SECRET_FILE, [
     `PAYLAYER_API_KEY=${apiKey}`,
     `PAYLAYER_WEBHOOK_SECRET=${webhookSecret}`,
-    `TRIAL_IP_SALT=${randomBytes(16).toString('hex')}`,
     '',
   ].join('\n'));
   console.log(`  site ${siteId} registered; key + webhook secret saved to ${SECRET_FILE}`);
@@ -140,9 +138,8 @@ async function main() {
 ────────────────────────────────────────────────────────────────────
   Ready:  ${APP_ORIGIN}
 
-  • Free trial: 10 min of PLAY. To skip ahead (then reload the page):
-    npm run dev:local:expire              (trial over)
-    npm run dev:local:expire -- --left 30 (30 s left)
+  • A new visitor is on the free version (Club AI, best of 1, Beginner
+    training, Mixed Reality + Focus Room). Buy to see the full version.
   • Payments are Razorpay TEST mode — use a Razorpay test card / UPI
     success ID from Razorpay's test docs. Nothing is charged.
   • Accounts and purchases are kept in .emulator-data/ between runs.

@@ -4,6 +4,11 @@ const {
   TrainingMenuModel, SCREENS, SETTING_ROWS,
 } = require('../js/modes/training/menuModel.js');
 
+// These suites describe the FULL version; js/account/tier.js defaults to the
+// free one, whose locks have their own tests below.
+const tier = require('../js/account/tier.js');
+beforeEach(() => tier.setFull(true));
+
 // Fake settings store with the same contract as profile/store.js: setSetting
 // returns what was actually stored, and rejects unknown keys.
 const fakeSettings = (initial = {}) => {
@@ -139,5 +144,32 @@ describe('handedness', () => {
     m.navigate(SCREENS.SETTINGS);
     m.selectItem('setting:dominantHand');
     expect(m.hand).toBe('L');
+  });
+});
+
+describe('free version', () => {
+  const free = (id) => id === 'beginner';
+
+  test('Beginner stays open; Player is locked, tappable, and says so', () => {
+    const m = new TrainingMenuModel({ settings: fakeSettings({ sessionBestPlayer: 82 }), canUseLevel: free });
+    const [beginner, player] = m.items();
+    expect(beginner.locked).toBeUndefined();
+    expect(player).toMatchObject({ id: 'player', locked: true, available: true, action: 'locked' });
+    expect(player.subtitle).toMatch(/full game/i);
+    expect(player.subtitle).not.toMatch(/Best/);
+  });
+
+  test('a tap on the locked level starts nothing', () => {
+    const m = new TrainingMenuModel({ settings: fakeSettings(), canUseLevel: free });
+    expect(m.selectItem('player')).toEqual({ action: 'locked', feature: 'trainingLevel' });
+    expect(m.selectItem('beginner')).toMatchObject({ action: 'start', options: { level: 'beginner' } });
+  });
+
+  test('the default reads the tier, live', () => {
+    tier.setFull(false);
+    const m = new TrainingMenuModel({ settings: fakeSettings() });
+    expect(m.selectItem('player').action).toBe('locked');
+    tier.setFull(true);
+    expect(m.selectItem('player').action).toBe('start');
   });
 });

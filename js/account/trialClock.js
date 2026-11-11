@@ -1,16 +1,16 @@
-// In-session side of the free trial and of paid-play metering
-// (functions/src/trial.js and playtime.js are the server side). While the
-// player is actually PLAYING — free play or a drill / match, with the XR
-// session visible — this holds a short lease from the backend and renews it
-// before it runs out. Menus, the tuner and a hidden session stop the clock
-// with an explicit `end`, so they cost nothing.
+// In-session side of paid-play metering (functions/src/playtime.js is the
+// server side). The file keeps its name from the free-trial days; there is
+// no trial any more, and the free version is never metered — js/modes/
+// inGame.js only creates this clock for a full-version player.
 //
-// TRIAL: FAIL-OPEN. Only a definitive answer from the server ends the trial:
-// no lease left, or the per-network new-trial cap. A network error or a 5xx
-// just retries — a backend outage must never kick a trial player out of a
-// rally. The server bills real elapsed time on the next successful call,
-// capped per lease, so an outage costs the player little and gains a cheater
-// little.
+// While the player is actually PLAYING — free play or a drill / match, with
+// the XR session visible — this holds a short lease from the backend and
+// renews it before it runs out. Menus, the tuner and a hidden session stop
+// the clock with an explicit `end`, so they cost nothing.
+//
+// An answer that says the account is NOT entitled (the unlock was refunded,
+// or the cached tier was stale) just stops the clock: the free version has
+// nothing to meter. A network error or a 5xx retries.
 //
 // PAID, WHILE A REFUND IS STILL POSSIBLE: FAIL-CLOSED. The refund rule reads
 // the play time the server metered, and the server only meters what it hears
@@ -28,15 +28,12 @@
 
 const RENEW_MARGIN_MS = 10_000;
 const RETRY_MS = 10_000;
-const WARN_AT_SEC = 60;
 export const OFFLINE_GRACE_MS = 120_000;
 const WATCH_MS = 5_000;
 
 /**
  * @param {object} deps
- * @param {(action: 'start'|'renew'|'end') => Promise<{entitled: boolean, metered?: boolean, leaseSec: number|null, remainingSec: number|null}>} deps.lease
- * @param {(info: {reason: 'trial_over'|'ip_limit'}) => void} deps.onExpired  called once
- * @param {(remainingSec: number) => void} [deps.onWarn]  called once, near the end
+ * @param {(action: 'start'|'renew'|'end') => Promise<{entitled: boolean, metered?: boolean, leaseSec: number|null}>} deps.lease
  * @param {() => void} [deps.onBlocked]  called once: paid play went unmetered too long
  * @param {boolean} [deps.metered]  last /api/me answer, so a session that starts
  *        offline fails closed before any lease call has answered
@@ -48,8 +45,6 @@ const WATCH_MS = 5_000;
  */
 export function createTrialClock({
   lease,
-  onExpired,
-  onWarn = () => {},
   onBlocked = () => {},
   metered: meteredHint = false,
   offlineStore = { get: () => 0, set: () => {} },
@@ -59,11 +54,9 @@ export function createTrialClock({
   log = () => {},
 }) {
   let playing = false;
-  let done = false;      // entitled, expired or blocked: the clock never runs again
-  let expired = false;
+  let done = false;      // settled (nothing to meter) or blocked: the clock never runs again
   let blocked = false;
-  let warned = false;
-  let entitledSeen = false;
+  let settled = false;   // the server said there is nothing to meter
   let timer = null;
   // Paid-play metering (fail-closed) state.
   let metered = !!meteredHint;
@@ -124,16 +117,6 @@ export function createTrialClock({
     onBlocked();
   }
 
-  function expire(reason) {
-    if (expired) return;
-    expired = true;
-    done = true;
-    playing = false;
-    cancelTimer();
-    stopWatch();
-    onExpired({ reason });
-  }
-
   function handle(action, res) {
     if (done) return;
     // Any answer proves the server is reachable.
@@ -150,25 +133,13 @@ export function createTrialClock({
       }
       return;
     }
+    // Paid and past any refund, or not paid at all: nothing to meter, now or
+    // later in this session.
     metered = false;
     stopWatch();
-    if (res.entitled) {
-      // Paid and past any refund: nothing to meter, now or later in this session.
-      entitledSeen = true;
-      done = true;
-      cancelTimer();
-      return;
-    }
-    if (action === 'end') return;
-    if (!res.leaseSec) {
-      expire('trial_over');
-      return;
-    }
-    if (!warned && res.remainingSec !== null && res.remainingSec <= WARN_AT_SEC) {
-      warned = true;
-      onWarn(res.remainingSec);
-    }
-    if (playing) schedule(Math.max(1000, res.leaseSec * 1000 - RENEW_MARGIN_MS), 'renew');
+    settled = true;
+    done = true;
+    cancelTimer();
   }
 
   // `final`: the closing `end` from dispose(), which must go out even though
@@ -176,17 +147,13 @@ export function createTrialClock({
   function send(action, final = false) {
     chain = chain.then(async () => {
       if (done && !final) return;
-      if (final && (expired || entitledSeen || blocked)) return;
+      if (final && (settled || blocked)) return;
       // A queued renew that lost a race with setPlaying(false) has nothing to do.
       if (action === 'renew' && !playing) return;
       try {
         handle(action, await lease(action));
       } catch (err) {
-        if (err && err.code === 'trial_ip_limit') {
-          expire('ip_limit');
-          return;
-        }
-        log(`[trial] ${action} failed — retrying`, err);
+        log(`[meter] ${action} failed — retrying`, err);
         if (playing && action !== 'end') schedule(RETRY_MS, action === 'start' ? 'start' : 'renew');
       }
     });
@@ -216,7 +183,6 @@ export function createTrialClock({
       if (settle) send('end', true);
       return chain;
     },
-    get expired() { return expired; },
     get blocked() { return blocked; },
     get running() { return playing && !done; },
     /** Test seam: resolves once every queued call has settled. */

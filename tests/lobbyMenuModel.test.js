@@ -9,6 +9,11 @@ const {
   LobbyMenuModel, MP_SCREENS, ROOM_CODE_LEN,
 } = require('../js/modes/multiplayer/lobbyMenuModel.js');
 
+// These suites describe the FULL version; js/account/tier.js defaults to the
+// free one, whose locks have their own tests below.
+const tier = require('../js/account/tier.js');
+beforeEach(() => tier.setFull(true));
+
 function makeLobby(overrides = {}) {
   const lobby = {
     role: null,
@@ -329,5 +334,30 @@ describe('back navigation', () => {
   test('HOME returns false — the host closes the panel', () => {
     const { model } = makeModel(() => makeLobby());
     expect(model.back()).toBe(false);
+  });
+});
+
+describe('free version', () => {
+  test('CREATE is refused on HOME with the reason; no lobby is made', () => {
+    let made = 0;
+    const m = new LobbyMenuModel({ createLobby: () => { made++; return makeLobby(); }, canHost: () => false });
+    m.startCreate();
+    expect(made).toBe(0);
+    expect(m.screen).toBe(MP_SCREENS.HOME);
+    expect(m.error).toBe(tier.LOCKED.hostRoom.head);
+  });
+
+  test('joining stays open', () => {
+    const m = new LobbyMenuModel({ createLobby: () => makeLobby(), canHost: () => false });
+    m.openJoin();
+    expect(m.screen).toBe(MP_SCREENS.JOIN);
+  });
+
+  test('the default reads the tier', () => {
+    tier.setFull(false);
+    const m = new LobbyMenuModel({ createLobby: () => makeLobby() });
+    expect(m.canHost()).toBe(false);
+    tier.setFull(true);
+    expect(m.canHost()).toBe(true);
   });
 });

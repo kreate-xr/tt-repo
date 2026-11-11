@@ -47,3 +47,24 @@ export function roundRect(ctx, x, y, w, h, r) {
   ctx.arcTo(x, y, x + w, y, rr);
   ctx.closePath();
 }
+
+/**
+ * A small padlock centred on (cx, cy), `size` px tall: a shackle arc over a
+ * rounded body. Drawn with paths, because an emoji glyph is not reliable in
+ * the headset browser's canvas.
+ */
+export function drawPadlock(ctx, cx, cy, size, color) {
+  const bodyW = size * 0.9;
+  const bodyH = size * 0.62;
+  const bodyY = cy - size / 2 + size * 0.38;
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.fillStyle = color;
+  ctx.lineWidth = Math.max(1.5, size * 0.14);
+  ctx.beginPath();
+  ctx.arc(cx, bodyY, bodyW * 0.3, Math.PI, 0);
+  ctx.stroke();
+  roundRect(ctx, cx - bodyW / 2, bodyY, bodyW, bodyH, size * 0.12);
+  ctx.fill();
+  ctx.restore();
+}

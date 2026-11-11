@@ -283,6 +283,10 @@
 
     /* Both venues ship disabled and are armed by js/ui/overlay.js once the
        app's modules are loaded — see the markup below. */
+    /* Full-game venue on the free version (js/ui/overlay.js): still
+       clickable — it opens the unlock dialog. */
+    .enter-venue.locked .venue-sub { opacity: 1; font-weight: 700; color: var(--brand-1); }
+    .enter-venue.primary.locked .venue-sub { color: inherit; }
     .enter-venue:disabled {
       opacity: 0.45;
       cursor: not-allowed;
@@ -323,8 +327,8 @@
       min-height: 1.2em;
     }
 
-    /* Free trial + unlock offer under the venue buttons
-       (js/ui/accountPanel.js sets data-state: intro | trial | over | owned). */
+    /* Free version + unlock offer under the venue buttons
+       (js/ui/accountPanel.js sets data-state: intro | free | owned). */
     .offer-card {
       display: flex;
       align-items: center;
@@ -348,15 +352,6 @@
     .offer-body { flex: 1; min-width: 0; }
     .offer-title { font-size: 0.98rem; font-weight: 800; color: var(--ink); line-height: 1.25; }
     .offer-sub { margin-top: 3px; font-size: 0.82rem; color: var(--ink-soft); line-height: 1.4; }
-    .offer-meter {
-      margin-top: 8px; height: 5px;
-      border-radius: 999px; background: #e9ecf8; overflow: hidden;
-    }
-    .offer-meter span {
-      display: block; height: 100%; width: 100%;
-      border-radius: inherit; background: var(--brand-grad);
-      transition: width 0.3s ease-out;
-    }
     .offer-cta {
       flex: none;
       display: flex; flex-direction: column; align-items: center; gap: 5px;
@@ -364,8 +359,6 @@
     .offer-buy { padding: 9px 16px; font-size: 0.86rem; }
     .offer-price { font-size: 0.72rem; color: var(--ink-soft); white-space: nowrap; }
     .offer-price b { color: var(--ink); font-weight: 800; }
-    .offer-card[data-state="over"] { border-color: #f3c6a5; background: #fff8f2; }
-    .offer-card[data-state="over"] .offer-icon { background: #ffedd5; color: #c2410c; }
     .offer-card[data-state="owned"] { border-color: #bbe5c8; background: #f3fbf5; }
     .offer-card[data-state="owned"] .offer-icon { background: #dcfce7; color: #15803d; }
     @media (max-width: 520px) {
@@ -1008,7 +1001,7 @@
               <svg viewBox="0 0 24 16" fill="currentColor"><path d="M4 0h16a4 4 0 0 1 4 4v6a4 4 0 0 1-4 4h-3.2a3 3 0 0 1-2.4-1.2l-1.2-1.6a1.5 1.5 0 0 0-2.4 0l-1.2 1.6A3 3 0 0 1 7.2 14H4a4 4 0 0 1-4-4V4a4 4 0 0 1 4-4zm3.5 4.5a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5zm9 0a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5z"/></svg>
               WebXR
             </span>
-            10 Minutes Free · No Sign-up
+            Free to Play · No Sign-up
           </div>
 
           <h1>Table Tennis,<br><span class="grad">Anytime, Anywhere.</span></h1>
@@ -1046,18 +1039,18 @@
 
           <div id="status"></div>
 
-          <!-- Free trial + unlock offer. The static copy below is what a
+          <!-- Free version + unlock offer. The static copy below is what a
                visitor sees before (or without) an /api/me answer, so the offer
                never depends on the backend; js/ui/accountPanel.js swaps in the
-               live clock, the trial-over state or the unlocked state. -->
+               free or the unlocked state (js/account/tier.js says what is in
+               which). -->
           <div id="access-line" class="offer-card" data-state="intro">
             <span class="offer-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="13.5" r="7.5"/><path d="M12 9.5v4l2.5 2M9.5 2.5h5M12 2.5V6"/></svg>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="4.5" y="11" width="15" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.6-1.7"/></svg>
             </span>
             <div class="offer-body">
-              <p class="offer-title" id="access-text">10 minutes of free play</p>
-              <p class="offer-sub" id="access-sub">No sign-up needed. Only time in a rally counts — menus and setup are free.</p>
-              <div class="offer-meter" id="access-meter" hidden><span id="access-meter-fill"></span></div>
+              <p class="offer-title" id="access-text">Free to play — no time limit</p>
+              <p class="offer-sub" id="access-sub">No sign-up needed. Club AI, single games, Beginner training, Mixed Reality and Focus Room.</p>
             </div>
             <div class="offer-cta" id="access-cta">
               <button type="button" id="access-buy" class="btn btn-primary offer-buy">Unlock full game</button>
@@ -1292,7 +1285,7 @@
   <!-- Account + paywall dialog (js/ui/accountPanel.js). Same modal shell as
        the post-session dialog above; one view visible at a time. Lives on the
        2D page only — nothing here can run inside an immersive session, which
-       is why the trial ending in the headset drops the player back here. -->
+       is why the in-headset locks point the player back to this page. -->
   <div id="account-modal" class="modal-backdrop" hidden>
     <div class="modal acct-modal" role="dialog" aria-modal="true" aria-labelledby="account-title">
       <button type="button" id="account-dismiss" class="modal-close" aria-label="Close">&times;</button>
@@ -1376,7 +1369,7 @@
             <input type="checkbox" id="acct-buy-consent">
             <span>I agree that the game unlocks immediately after payment and that I lose my 14-day right of withdrawal once it does.</span>
           </label>
-          <p class="acct-refund-terms">Refunds: within 3 days of purchase if you've played less than 2 hours. A refund removes the unlock. One refund per account.</p>
+          <p class="acct-refund-terms">Refunds: within 3 days of purchase if you've played less than 2 hours since buying. A refund removes the unlock. One refund per account.</p>
           <button type="submit" class="btn btn-primary btn-block btn-send" id="acct-buy-submit" disabled>Pay ₹1,997</button>
         </form>
         <p class="acct-secure">

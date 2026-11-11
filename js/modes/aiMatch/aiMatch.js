@@ -46,6 +46,7 @@ import { createPlayerServeController } from './playerServe.js';
 import { createRallyManager } from './rallyManager.js';
 import { getSetting } from '../../profile/store.js';
 import { normalizeBestOf, loadBestOf, gamesToWin, matchLengthLabel } from '../matchFormat.js';
+import { effectiveBestOf } from '../../account/tier.js';
 import { createFailureHandler } from './failureHandler.js';
 import { createScoreboard } from '../../scene/scoreboard.js';
 import { createSideScreen } from '../../scene/sideScreen.js';
@@ -198,7 +199,8 @@ export function createAIMatchDrill({
   // has no opinion — headless tests, a restart replaying old params — in which
   // case the stored preference stands in). Normalized here rather than trusted,
   // because an even bestOf has no majority and would make gamesToWin lie.
-  const bestOf = normalizeBestOf(bestOfIn === null ? loadBestOf() : bestOfIn);
+  // No length handed in: the stored preference, as far as the tier allows.
+  const bestOf = normalizeBestOf(bestOfIn === null ? effectiveBestOf(loadBestOf()) : bestOfIn);
   const gamesNeeded = gamesToWin(bestOf);
 
   // Competition rules: the match runs on the certified ITTF table instead of

@@ -192,7 +192,7 @@ export class MultiplayerMenu {
       const x0 = (CANVAS_W - cardW * 2 - gap) / 2;
       p.add({
         id: 'create', shape: 'rect', x: x0, y: 170, w: cardW, h: cardH,
-        label: 'CREATE ROOM', sub: 'Get a code to share',
+        label: 'CREATE ROOM', sub: m.canHost() ? 'Get a code to share' : 'Full game only',
       });
       p.add({
         id: 'join', shape: 'rect', x: x0 + cardW + gap, y: 170, w: cardW, h: cardH,

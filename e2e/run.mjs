@@ -27,7 +27,6 @@ const previous = existsSync(SECRET_FILE) ? readFileSync(SECRET_FILE, 'utf8') : n
 writeFileSync(SECRET_FILE, [
   `PAYLAYER_API_KEY=${FAKE_API_KEY}`,
   `PAYLAYER_WEBHOOK_SECRET=${FAKE_WEBHOOK_SECRET}`,
-  'TRIAL_IP_SALT=e2e-salt',
   '',
 ].join('\n'));
 

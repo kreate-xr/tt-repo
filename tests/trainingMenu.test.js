@@ -48,6 +48,11 @@ beforeAll(() => {
 const { TrainingMenu } = require('../js/scene/trainingMenu.js');
 const { SCREENS } = require('../js/modes/training/menuModel.js');
 
+// These suites describe the FULL version; js/account/tier.js defaults to the
+// free one, whose locks have their own tests below.
+const tier = require('../js/account/tier.js');
+beforeEach(() => tier.setFull(true));
+
 // Resolve a widget id to a UV point at its centre, mirroring what a laser
 // raycast against the panel plane produces.
 function uvOf(menu, id) {
@@ -226,5 +231,21 @@ describe('TrainingMenu dispose', () => {
     panel.dispose();
     expect(panel.mesh.parent).toBeNull();
     expect(parent.children).not.toContain(panel.mesh);
+  });
+});
+
+describe('free version', () => {
+  test('tapping the locked Player row emits locked, not start', () => {
+    tier.setFull(false);
+    const menu = new TrainingMenu();
+    const starts = [];
+    const locks = [];
+    menu.on('start', (p) => starts.push(p));
+    menu.on('locked', (p) => locks.push(p));
+    menu.handle('item:player');
+    expect(starts).toEqual([]);
+    expect(locks).toEqual([{ feature: 'trainingLevel' }]);
+    menu.handle('item:beginner');
+    expect(starts).toHaveLength(1);
   });
 });
