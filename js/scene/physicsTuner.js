@@ -17,6 +17,7 @@
 // discarded, out-of-range values clamped) rather than reinterpreted.
 
 import * as THREE from 'three';
+import { installHoverRedraw } from './hoverRedraw.js';
 import { scene } from './sceneSetup.js';
 import { COLORS as UI, F, roundRect } from './panelStyle.js';
 import { applyPhysicsPreset } from '../physics/constants.js';
@@ -46,6 +47,8 @@ const PRESET_H = 44;
 
 export class PhysicsTuner {
   constructor() {
+    // Throttled hover repaints — see hoverRedraw.js.
+    installHoverRedraw(this);
     this.canvas = document.createElement('canvas');
     this.canvas.width = CANVAS_W;
     this.canvas.height = CANVAS_H;
@@ -248,7 +251,7 @@ export class PhysicsTuner {
   setHovered(id) {
     if (this.hovered === id) return;
     this.hovered = id;
-    this.draw();
+    this.requestHoverDraw();
   }
 
   selectHovered() {

@@ -14,6 +14,7 @@
 // unchanged.
 
 import * as THREE from 'three';
+import { installHoverRedraw } from './hoverRedraw.js';
 import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
 import * as haptics from '../xr/haptics.js';
 import { Panel } from './panelKit.js';
@@ -53,6 +54,8 @@ const SUBTITLES = {
 
 export class MultiplayerMenu {
   constructor({ createLobby } = {}) {
+    // Throttled hover repaints — see hoverRedraw.js.
+    installHoverRedraw(this);
     this.model = new LobbyMenuModel({
       createLobby,
       onChange: () => this.rebuild(),
@@ -126,7 +129,7 @@ export class MultiplayerMenu {
       try { playMenuHoverTick(); } catch (e) { /* audio optional */ }
       haptics.pulseActive(0.15, 15);
     }
-    this.draw();
+    this.requestHoverDraw();
   }
 
   setPokeCursor(u, v, proximity) { this.pokeCursor = { u, v, proximity }; this.draw(); }

@@ -1383,6 +1383,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       laser.visible = false;
       return;
     }
+    // Paint a hover change the throttle deferred (hoverRedraw.js). The wrist
+    // menu has its own throttle, flushed from wristMenu.update().
+    if (panel.flushHoverDraw) panel.flushHoverDraw();
     // Poke input took the wheel this frame — hide the laser so the two input
     // modes don't visually compete. Hover is already set by updatePokeInput.
     if (pokeHandled) {

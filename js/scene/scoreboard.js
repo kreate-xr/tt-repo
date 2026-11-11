@@ -149,6 +149,23 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
   render();
   renderClock();
 
+  // A point ending fires onPointScored, onServerChange and sometimes
+  // onGameEnd back to back in one synchronous call, and each used to repaint
+  // the full 2048×1152 board (with shadowBlur glows) on its own. The state
+  // patches still apply immediately; the paint is coalesced into one
+  // microtask, so a burst costs a single repaint. needsUpdate is a flag, so
+  // the GPU upload was already once per frame either way.
+  let renderQueued = false;
+  let disposed = false;
+  function scheduleRender() {
+    if (renderQueued) return;
+    renderQueued = true;
+    queueMicrotask(() => {
+      renderQueued = false;
+      if (!disposed) render();
+    });
+  }
+
   function update(patch) {
     if (patch) Object.assign(state, patch);
     // Clock-only patch (the 1 Hz match timer): touch only the overlay.
@@ -156,12 +173,12 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
       renderClock();
       if (Object.keys(patch).length === 1) return;
     }
-    render();
+    scheduleRender();
   }
 
   function setMatchOverBanner(text) {
     state.matchOverBanner = text;
-    render();
+    scheduleRender();
   }
 
   function setVisible(v) {
@@ -170,6 +187,7 @@ export function createScoreboard({ config = {}, anchor = null } = {}) {
   }
 
   function dispose() {
+    disposed = true;
     scene.remove(mesh);
     for (const m of mirrors) scene.remove(m);
     geom.dispose();

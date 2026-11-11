@@ -11,6 +11,7 @@
 // comfortably reach, and this card carries buttons.
 
 import * as THREE from 'three';
+import { installHoverRedraw } from './hoverRedraw.js';
 import { Panel, WIDGETS } from './panelKit.js';
 import { PLANE_W as MENU_PLANE_W } from './wristMenu.js';
 import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
@@ -30,6 +31,8 @@ const PLANE_H = PLANE_W * (REPORT_H / REPORT_W);
 
 export class MatchReport {
   constructor(model = {}) {
+    // Throttled hover repaints — see hoverRedraw.js.
+    installHoverRedraw(this);
     this.canvas = document.createElement('canvas');
     this.canvas.width = REPORT_W;
     this.canvas.height = REPORT_H;
@@ -130,7 +133,7 @@ export class MatchReport {
       try { playMenuHoverTick(); } catch (e) { /* audio optional */ }
       haptics.pulseActive(0.15, 15);
     }
-    this.draw();
+    this.requestHoverDraw();
   }
 
   selectHovered() {

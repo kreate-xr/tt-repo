@@ -14,6 +14,7 @@
 // else about its input plumbing changes.
 
 import * as THREE from 'three';
+import { installHoverRedraw } from './hoverRedraw.js';
 import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
 import * as haptics from '../xr/haptics.js';
 import { Panel, WIDGETS } from './panelKit.js';
@@ -40,6 +41,8 @@ const FOOTER_IDS = ['settings', 'calibrate', 'tune', 'exit'];
 
 export class TrainingMenu {
   constructor({ settings = null, difficulties = null, showTune = TUNER_ENABLED } = {}) {
+    // Throttled hover repaints — see hoverRedraw.js.
+    installHoverRedraw(this);
     this.footerIds = showTune ? FOOTER_IDS : FOOTER_IDS.filter((id) => id !== 'tune');
     this.model = new TrainingMenuModel({ settings });
     this.panel = new Panel({ width: CANVAS_W, height: CANVAS_H });
@@ -116,7 +119,7 @@ export class TrainingMenu {
       try { playMenuHoverTick(); } catch (e) { /* audio optional */ }
       haptics.pulseActive(0.15, 15);
     }
-    this.draw();
+    this.requestHoverDraw();
   }
 
   setPokeCursor(u, v, proximity) { this.pokeCursor = { u, v, proximity }; this.draw(); }

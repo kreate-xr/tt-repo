@@ -21,6 +21,7 @@
 // inGame.js adds it to the scene.
 
 import * as THREE from 'three';
+import { installHoverRedraw } from './hoverRedraw.js';
 import { playMenuHoverTick, playMenuSelectClick } from './audio.js';
 import * as haptics from '../xr/haptics.js';
 import { Panel } from './panelKit.js';
@@ -48,6 +49,8 @@ const GAP = 14;
 
 export class PaddleQuickFit {
   constructor() {
+    // Throttled hover repaints — see hoverRedraw.js.
+    installHoverRedraw(this);
     this.panel = new Panel({ width: CANVAS_W, height: CANVAS_H });
     this.listeners = new Map();
 
@@ -124,7 +127,7 @@ export class PaddleQuickFit {
       try { playMenuHoverTick(); } catch (e) { /* audio optional */ }
       haptics.pulseActive(0.15, 15);
     }
-    this.draw();
+    this.requestHoverDraw();
   }
 
   selectHovered() {
