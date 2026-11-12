@@ -39,6 +39,7 @@ import { HandoffManager } from '../../network/HandoffManager.js';
 import { PacketType } from '../../network/serialization.js';
 import * as ThermalMonitor from '../../network/ThermalMonitor.js';
 import { TelemetryReporter } from '../../network/TelemetryReporter.js';
+import { TELEMETRY_URL } from '../../network/telemetryUrl.js';
 import { ReconnectHandler } from '../../network/ReconnectHandler.js';
 import { SessionState } from '../../lobby/SessionState.js';
 import { hudLog } from '../../scene/hud.js';
@@ -76,21 +77,6 @@ const REMOTE_INTERP_DELAY_THROTTLED_MS = 70;
 // fallback that arrives RTT/2 later.
 const BOUNCE_SOUND_DEDUPE_MS = 120;
 
-const TELEMETRY_URL = (() => {
-  const fromEnv = typeof import.meta !== 'undefined'
-    && import.meta.env
-    && import.meta.env.VITE_TELEMETRY_URL;
-  if (fromEnv) return fromEnv;
-  const host = (typeof location !== 'undefined' && location.hostname) || 'localhost';
-  // No deployed sink: the :8081 dev server (server/telemetry-server.js) only
-  // exists locally. Off localhost, disable beaconing (TelemetryReporter keeps
-  // sampling for the in-session HUD; it just doesn't POST anywhere).
-  if (host !== 'localhost' && host !== '127.0.0.1') return null;
-  // Always plain http(s) — telemetry sink is independent of the signaling
-  // protocol. Match the page's protocol to avoid mixed-content blocking.
-  const proto = (typeof location !== 'undefined' && location.protocol === 'https:') ? 'https' : 'http';
-  return `${proto}://${host}:8081/telemetry`;
-})();
 
 // `scoreboardAnchor` was `arenaAnchor` pre-beta — renamed because destructured
 // keys survive minification and the beta bundle must not hint at the
@@ -214,11 +200,9 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
 
   report.on('rematch', () => requestRematch());
   report.on('exit', () => {
-    // Tell the peer before going, so a "WAITING FOR OPPONENT…" on their card
-    // resolves instead of hanging on an answer that will never arrive.
-    try {
-      nm.sendEvent({ type: PacketType.REMATCH_REQUEST, epoch: matchEpoch, wants: false });
-    } catch (err) { /* leaving anyway */ }
+    // The "I'm leaving" notice the peer's card waits on is sent from
+    // dispose(), which every way out of the match runs — this exit, picking
+    // another mode mid-match, and the XR session ending.
     // queueMicrotask: this runs inside the panel's own press handler, and
     // leaving tears the drill (and the panel) down.
     if (hooks && hooks.exitToMenu) queueMicrotask(() => hooks.exitToMenu());
@@ -247,8 +231,13 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     });
   }
 
-  function showMatchReport(s) {
-    const sets = s.games.map((g) => ({
+  // `abandoned`: the opponent left before the match was decided — same card,
+  // no winner, the unfinished game shown as it stood.
+  function showMatchReport(s, { abandoned = false } = {}) {
+    const games = abandoned && (s.scoreHost || s.scoreGuest)
+      ? [...s.games, { scoreHost: s.scoreHost, scoreGuest: s.scoreGuest }]
+      : s.games;
+    const sets = games.map((g) => ({
       player: myAbs === 'host' ? g.scoreHost : g.scoreGuest,
       opponent: myAbs === 'host' ? g.scoreGuest : g.scoreHost,
     }));
@@ -258,16 +247,17 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     const oppGames = myAbs === 'host' ? s.gamesGuest : s.gamesHost;
     report.setModel({
       // The headline the scoreboard banner used to carry.
-      title: s.matchWinner === myAbs
-        ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
-        : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
+      title: abandoned ? 'MATCH ENDED'
+        : s.matchWinner === myAbs
+          ? `YOU WIN THE MATCH ${myGames}-${oppGames}`
+          : `OPPONENT WINS THE MATCH ${oppGames}-${myGames}`,
       playerName: 'YOU',
       opponentName: 'OPPONENT',
       playerGames: myGames,
       opponentGames: oppGames,
       bestOf: s.bestOf,
       sets,
-      winner: s.matchWinner === myAbs ? 'player' : 'opponent',
+      winner: abandoned ? null : s.matchWinner === myAbs ? 'player' : 'opponent',
       durationMs: st.durationMs,
       stats: {
         accuracyPct: st.accuracyPct,
@@ -290,11 +280,35 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // deciding point stayed visible, but with the scoreboard's win banner gone
   // it is the only announcement that the match is over, and a silent 3 s gap
   // between the last point and any feedback read as a freeze.
-  function raiseMatchReport(s) {
+  function raiseMatchReport(s, opts) {
     if (matchDone) return;
     statTracker.stop();
     stopMatchClock();
-    showMatchReport(s);
+    showMatchReport(s, opts);
+  }
+
+  // The opponent told us they've left (EXIT TO MENU, another mode, or quitting
+  // the app — all run their dispose()). No rematch is possible any more, so:
+  //  - the reconnect watcher must stop: their deliberate close would otherwise
+  //    read as a network outage — as guest that retried a deleted room 3x and
+  //    ENDED OUR XR SESSION, as host it re-created the room and waited forever;
+  //  - mid-match, the rally machinery stops and the card goes up, instead of a
+  //    serve window opening against nobody.
+  // Our own connection is released when we leave this card (inGame's
+  // teardownDrill), so MULTI opens the create/join panel again.
+  function onPeerLeft() {
+    if (reconnect) { reconnect.dispose(); reconnect = null; }
+    if (matchDone) { refreshReportButtons(); return; }
+    if (serveTimer) { clearTimeout(serveTimer); serveTimer = null; }
+    tracker.reset();
+    rallyDecided = true;
+    tossLive = false;
+    playerServe.disarm();
+    if (serveArrow) serveArrow.hide();
+    if (ballModel) ballModel.visible = false;
+    if (scoreboard) scoreboard.setMatchOverBanner(null);
+    const s = match.getState();
+    raiseMatchReport(s, { abandoned: !s.matchOver });
   }
 
   function requestRematch() {
@@ -717,7 +731,7 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
           peerLeft = true;
           peerRematch = false;
           hudLog('opponent left the match');
-          if (matchDone) refreshReportButtons();
+          onPeerLeft();
           break;
         }
         if (peerRematch) break;
@@ -929,6 +943,8 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   }
   function openServeWindow() {
     if (match.getState().gameOver) return;
+    if (peerLeft) return; // nobody to serve to — see onPeerLeft
+
     // Backstop for the serve-window race (see adoptHandoff): if a rally is
     // already live — the opponent's serve beat this timer — opening the
     // window now would hide the live ball and reset the rulebook mid-point.
@@ -1149,19 +1165,28 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
   // Wire all the connection-bound side-effects: incoming-message handlers,
   // send loop, telemetry. Called once on entry; called again after each
   // successful reconnect against the new NetworkManager.
+  // Congestion governor transitions. NetworkManager halves/restores the
+  // send rate itself; we log for operator visibility AND tell the peer —
+  // like the thermal path — so it widens its interpolation delay to match
+  // our doubled packet spacing instead of under-running its jitter buffer.
+  function onCongestion({ congested, bufferedBytes, queuingDelayMs }) {
+    hudLog(congested
+      ? `net congestion: backing off (buffered=${bufferedBytes}B queue=${queuingDelayMs === null ? '?' : queuingDelayMs.toFixed(0)}ms)`
+      : 'net congestion: clear — rate restored');
+    nm.sendEvent({ type: PacketType.CONGESTION_STATE, congested: !!congested });
+  }
+  // Undo wireConnection's subscriptions. dispose() runs it so a finished
+  // drill stops answering the peer through a connection that outlives it.
+  function unwireConnection(target) {
+    if (!target || typeof target.off !== 'function') return;
+    target.off('gameMessage', onGameMessage);
+    target.off('eventMessage', onEventMessage);
+    target.off('congestion', onCongestion);
+  }
   function wireConnection() {
     nm.on('gameMessage', onGameMessage);
     nm.on('eventMessage', onEventMessage);
-    // Congestion governor transitions. NetworkManager halves/restores the
-    // send rate itself; we log for operator visibility AND tell the peer —
-    // like the thermal path — so it widens its interpolation delay to match
-    // our doubled packet spacing instead of under-running its jitter buffer.
-    nm.on('congestion', ({ congested, bufferedBytes, queuingDelayMs }) => {
-      hudLog(congested
-        ? `net congestion: backing off (buffered=${bufferedBytes}B queue=${queuingDelayMs === null ? '?' : queuingDelayMs.toFixed(0)}ms)`
-        : 'net congestion: clear — rate restored');
-      nm.sendEvent({ type: PacketType.CONGESTION_STATE, congested: !!congested });
-    });
+    nm.on('congestion', onCongestion);
     nm.startSendLoop(60);
     startTelemetry();
     // Announce arrival AFTER the handlers are attached, so the host's reply
@@ -1430,12 +1455,23 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     return `Multiplayer ${my}-${opp}  ${serve}  ball=${own}`;
   }
   function dispose() {
+    // Every way out of the match ends here — EXIT TO MENU on the card, another
+    // mode picked mid-match, the XR session ending. Tell the peer first, so
+    // their card says OPPONENT LEFT and their reconnect watcher stands down
+    // instead of treating our teardown as an outage (see onPeerLeft). A dead
+    // channel drops this silently, which is fine.
+    if (nm && !peerLeft) {
+      try {
+        nm.sendEvent({ type: PacketType.REMATCH_REQUEST, epoch: matchEpoch, wants: false });
+      } catch (err) { /* leaving anyway */ }
+    }
     if (unsubscribeFoulRules) unsubscribeFoulRules();
     if (serveTimer) clearTimeout(serveTimer);
     stopMatchClock();
     report.dispose();
     if (remotePaddleVisual) remoteGroup.remove(remotePaddleVisual);
     scene.remove(remoteGroup);
+    unwireConnection(nm);
     if (nm) nm.stopSendLoop();
     if (removeThermalListener) removeThermalListener();
     if (telemetry) telemetry.stop();
@@ -1452,9 +1488,9 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     if (ballEvents.offTableBounce) ballEvents.offTableBounce(onTableBounce);
     if (ballEvents.offNetHit)      ballEvents.offNetHit(onNetHit);
     if (ballEvents.offBallLost)    ballEvents.offBallLost(onBallLost);
-    // Note: NetworkManager teardown is owned by the session end handler in
-    // inGame.js, not the drill — so quitting back to the wrist menu doesn't
-    // drop the peer connection.
+    // Note: NetworkManager teardown is owned by inGame.js (releaseMultiplayer,
+    // run from teardownDrill), not the drill. Opening the wrist menu with A/X
+    // mid-match does NOT dispose the drill, so it keeps the connection.
   }
 
   return {

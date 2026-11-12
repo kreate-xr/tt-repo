@@ -50,6 +50,11 @@ import { traceBoot } from '../network/connectTrace.js';
 // XR session starts (see startInGame) so the initial page bundle — and every
 // solo/AI session that never opens multiplayer — doesn't pay for it.
 let LobbyManagerCtor = null;
+// Leaving a multiplayer match: how long to wait for the "I'm leaving" event to
+// clear the data channel, then a short grace for the transport to deliver it,
+// before the connection is closed (see releaseMultiplayer).
+const MP_LEAVE_FLUSH_MS = 500;
+const MP_LEAVE_CLOSE_GRACE_MS = 150;
 // Warms Firebase (SDK construction, anonymous auth, the first Firestore round
 // trip) ahead of the CREATE/JOIN click. Reached through this same dynamic
 // import — see the re-export in LobbyManager.js for why it cannot be imported
@@ -679,6 +684,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // --- State ---
   let state = 'menu'; // 'menu' | 'freePlay' | 'drill' | 'tuner'
   let drillInstance = null;
+  // Which DRILL_FACTORIES key drillInstance came from — lastDrillParams can't
+  // say (the MULTI panel enters multiplayer without setting it).
+  let drillName = null;
+  // The peer connection the running multiplayer match uses; released when
+  // that match is torn down (see teardownDrill / releaseMultiplayer).
+  let drillMp = null;
   let drillFinished = false;
   let lastDrillParams = null;
   let prevStateBeforeTuner = 'menu'; // restore target when leaving the tuner
@@ -798,10 +809,22 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   wristMenu.on('start', ({ drill, difficulty, config, options }) => {
     // MULTI with no live peer connection opens the in-XR lobby panel instead
     // of bouncing off enterDrill's gate — before that panel existed, the tile
-    // was a dead button in any solo session. With a connection already up
-    // (lobby auto-entry, or a drill exited back to the menu) it goes straight
-    // into the match as before.
-    if (drill === 'multiplayer' && !(multiplayer && multiplayer.networkManager)) {
+    // was a dead button in any solo session. A connection only outlives its
+    // match until teardownDrill releases it, so an open one here is rare
+    // (e.g. a match that failed to start) and goes straight into the match.
+    // A match still running behind the menu (A/X opened it mid-match): MULTI
+    // goes back to it. Re-entering would reset the score on this side only,
+    // out of step with the opponent.
+    if (drill === 'multiplayer' && drillInstance && drillName === 'multiplayer') {
+      state = 'drill';
+      wristMenu.hide();
+      if (drillInstance.panel) drillInstance.panel.show();
+      return;
+    }
+    // A connection object can outlive its link (peer quit the app). Only an
+    // OPEN one may skip the lobby; a dead one is released here.
+    if (drill === 'multiplayer' && !multiplayerIsOpen()) {
+      if (multiplayer) releaseMultiplayer(multiplayer);
       // Opening the panel is the intent signal. Pay Firebase init + anonymous
       // auth + the first Firestore round trip HERE, while the player is still
       // choosing CREATE vs JOIN or typing a six-character code — otherwise all
@@ -1049,6 +1072,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       enterMenu();
       return;
     }
+    drillName = drill;
+    drillMp = drill === 'multiplayer' ? multiplayer : null;
     drillFinished = false;
     state = 'drill';
     wristMenu.hide();
@@ -1065,8 +1090,48 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     stopFreePlayFeeder();
     if (drillInstance && drillInstance.dispose) drillInstance.dispose();
     drillInstance = null;
+    drillName = null;
     clearListeners();
     if (ballModel) ballModel.visible = false;
+    // A multiplayer match that ends takes its connection with it: once either
+    // player has left the match no rematch is possible, and a kept connection
+    // made the next MULTI press skip the lobby into a match with nobody in it.
+    // (Opening the wrist menu with A/X mid-match doesn't come through here.)
+    if (drillMp) {
+      const mp = drillMp;
+      drillMp = null;
+      releaseMultiplayer(mp);
+    }
+  }
+
+  // Is the stored peer connection still usable? Prefer the lobby's manager —
+  // it holds the CURRENT one after a reconnect swap.
+  function multiplayerIsOpen() {
+    if (!multiplayer) return false;
+    const nm = (multiplayer.lobby && multiplayer.lobby.networkManager) || multiplayer.networkManager;
+    if (!nm) return false;
+    return typeof nm.isOpen === 'function' ? nm.isOpen() : true;
+  }
+
+  // Close a peer connection on purpose and forget it, so MULTI opens the
+  // create/join panel next time. The drill's dispose() has just sent its
+  // "leaving" event; wait for the channel to hand it to the transport (plus a
+  // short grace) before pc.close(), or the peer may only see a raw drop.
+  function releaseMultiplayer(mp) {
+    if (!mp) return;
+    if (multiplayer === mp) multiplayer = null;
+    const nm = (mp.lobby && mp.lobby.networkManager) || mp.networkManager;
+    const close = () => {
+      let p = null;
+      try {
+        if (mp.lobby) p = mp.lobby.teardown();
+        else if (mp.networkManager) p = mp.networkManager.teardown();
+      } catch (err) { /* best-effort */ }
+      if (p && p.catch) p.catch(() => {});
+    };
+    const flushed = nm && typeof nm.flushEvents === 'function'
+      ? nm.flushEvents(MP_LEAVE_FLUSH_MS) : Promise.resolve();
+    flushed.then(() => setTimeout(close, MP_LEAVE_CLOSE_GRACE_MS), close);
   }
 
   function endSession() {
@@ -1501,11 +1566,9 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // the remote peer is notified via the standard onclose path. Prefer the
     // lobby (it always holds the CURRENT NetworkManager after a reconnect
     // swap); fall back to the captured one for the no-lobby case.
-    if (multiplayer && multiplayer.lobby) {
-      multiplayer.lobby.teardown().catch(() => {});
-    } else if (multiplayer && multiplayer.networkManager) {
-      multiplayer.networkManager.teardown().catch(() => {});
-    }
+    // teardownDrill() above already released a match's connection; this
+    // covers one that was never in a match (e.g. the drill failed to start).
+    releaseMultiplayer(multiplayer);
   });
 
   // --- Animation loop ---

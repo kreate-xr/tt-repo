@@ -102,10 +102,48 @@ export class NetworkManager {
     if (this.listeners[event]) this.listeners[event].push(fn);
   }
 
+  // A match that ends must stop hearing this connection. Without it a disposed
+  // multiplayer drill kept answering the peer — a host's dead drill replied to
+  // a fresh GAME_READY with the FINISHED match's score.
+  off(event, fn) {
+    const arr = this.listeners[event];
+    if (!arr) return;
+    const i = arr.indexOf(fn);
+    if (i >= 0) arr.splice(i, 1);
+  }
+
+  // True while the reliable channel can still carry an event. A torn-down or
+  // peer-closed connection keeps its object around; this is the honest check.
+  isOpen() {
+    return !this._teardownStarted
+      && !!this.eventChannel && this.eventChannel.readyState === 'open';
+  }
+
+  // Resolves once the reliable channel has handed its queued bytes to the
+  // transport (or timeoutMs passes, or the channel is gone). Used before a
+  // deliberate teardown so a last "I'm leaving" event isn't cut off by
+  // pc.close().
+  flushEvents(timeoutMs = 500) {
+    const start = performance.now();
+    return new Promise((resolve) => {
+      const poll = () => {
+        const ch = this.eventChannel;
+        if (!ch || ch.readyState !== 'open' || !ch.bufferedAmount
+            || performance.now() - start >= timeoutMs) {
+          resolve();
+          return;
+        }
+        setTimeout(poll, 20);
+      };
+      poll();
+    });
+  }
+
   _emit(event, payload) {
     const arr = this.listeners[event];
     if (!arr) return;
-    for (const fn of arr) {
+    // Iterate a copy: a listener may off() itself (or another) mid-emit.
+    for (const fn of arr.slice()) {
       try { fn(payload); } catch (e) { console.error(`NetworkManager listener for ${event} threw:`, e); }
     }
   }
