@@ -34,3 +34,6 @@ e2e/.artifacts/
 
 # Firebase emulator data for npm run dev:local
 .emulator-data/
+
+# Playwright MCP session logs/snapshots (review scraping etc.)
+.playwright-mcp/
