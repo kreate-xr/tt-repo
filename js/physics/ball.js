@@ -13,7 +13,7 @@ import { computeImpulse } from './impulse.js';
 import { pulseActive as hapticsPulseActive, pulseImpact as hapticsPulseImpact, pulseSwing } from '../xr/haptics.js';
 import { shouldSuppressContact as trackingShouldSuppressContact } from '../xr/trackingLossGuard.js';
 import { recordHit as recordContactLogHit } from '../xr/contactLog.js';
-import { integrateFlightStep, applyTableBounce } from './rollout.js';
+import { integrateFlightStep, applyTableBounce, applyFloorBounce, isFloorBounce } from './rollout.js';
 import { SwingTracker, preparationGain } from './swingPreparation.js';
 import {
   SPIN_CAPTURE_GAIN, PLAYER_SPIN_GAIN,
@@ -21,7 +21,7 @@ import {
   NET_TOP_CORD_RESTITUTION, NET_TOP_CORD_TANGENT_KEEP, NET_TOP_CORD_LATERAL_JITTER,
   NET_HIT_COOLDOWN,
   PADDLE_RESTITUTION, HIT_COOLDOWN, FLOOR_Y,
-  FLOOR_LEVEL_Y, FLOOR_RESTITUTION, FLOOR_FRICTION, FLOOR_SPIN_DAMP,
+  FLOOR_LEVEL_Y, AUDIBLE_BOUNCE_MIN_IMPACT,
   TABLE_EDGE_SPIN_DAMP, TABLE_EDGE_COR_SCALE,
   STATIONARY_VEL, STATIONARY_TIME,
   DEAD_BALL_BOUNCES, DEAD_BALL_COR_SCALE, BALL_FADE_OUT_MS,
@@ -173,10 +173,10 @@ const _qInvScratch = new THREE.Quaternion();
 const _spinAxis = new THREE.Vector3();
 const _spinDq = new THREE.Quaternion();
 const _prevBallPos = new THREE.Vector3();
-const _floorNegYR = new THREE.Vector3();
-const _floorSurfVel = new THREE.Vector3();
-const _floorSlip = new THREE.Vector3();
 const _tableSquashNormal = new THREE.Vector3(0, 1, 0);
+// Reused env for rollout.isFloorBounce (refilled each tick — the table height
+// is a live binding that changes when a new Table.glb loads).
+const _floorEnv = { ballRadius: 0, tableSurfaceY: 0 };
 export const paddleFaceCenterWorld = new THREE.Vector3();
 export const paddleFaceNormalWorld = new THREE.Vector3();
 const prevPaddleFaceCenter = new THREE.Vector3();
@@ -209,15 +209,6 @@ let stationaryTime = 0;
 // is dead in every mode (see constants.js) and each further bounce takes the
 // DEAD_BALL_COR_SCALE damp so it settles in seconds, not tens of seconds.
 let bouncesSinceContact = 0;
-
-// Minimum impact speed (m/s) for a bounce to make sound and haptics. A ball
-// at rest on a surface re-accumulates g·dt of downward velocity every frame
-// (~0.11 m/s at 90 Hz, ~0.27 m/s under 36 Hz reprojection) and re-enters the
-// bounce branch each frame — physically harmless, but with the audio path's
-// IMPACT_GAIN_FLOOR each of those micro-impacts played at half volume, which
-// at frame rate turned a settling ball into a continuous buzz. Real hops
-// below this speed rebound under a centimetre and are inaudible anyway.
-const AUDIBLE_BOUNCE_MIN_IMPACT = 0.3;
 
 // Previous-frame ball position, used as the "pre" sample for swept paddle
 // collision. Tracking it at module scope (rather than recomputing inside the
@@ -1275,30 +1266,20 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
     // the table height (so we don't fake-bounce a ball that's currently
     // above the table); the table-XZ check on the table-bounce block already
     // handles balls above the play surface.
-    if (ballOwned && ballModel.position.y - ballRadius <= FLOOR_LEVEL_Y &&
-        ballVelocity.y < 0 &&
-        ballModel.position.y < tableSurfaceY) {
+    _floorEnv.ballRadius = ballRadius;
+    _floorEnv.tableSurfaceY = tableSurfaceY;
+    if (ballOwned && isFloorBounce(ballModel.position, ballVelocity, _floorEnv)) {
       ballModel.position.y = FLOOR_LEVEL_Y + ballRadius;
-      const floorImpact = Math.abs(ballVelocity.y);
+      // Restitution, spin-coupled friction, spin damp and the micro-bounce
+      // settle are the shared implementation in rollout.js (the multiplayer
+      // mirror rides the same function). Returns |v_y| before reflection.
+      const floorImpact = applyFloorBounce(ballVelocity, ballAngularVelocity, ballRadius);
       const floorIntensity = Math.min(floorImpact / 5, 1.0);
       // Softer plop than table — floor is not a taut playing surface. Reuse
       // the bounce sound scaled down so we don't need a separate asset.
       if (floorImpact > AUDIBLE_BOUNCE_MIN_IMPACT) {
         playBounceSound(floorIntensity * 0.45, ballModel.position);
       }
-      ballVelocity.y *= -FLOOR_RESTITUTION;
-
-      // Spin coupling: mirror of the table math but with FLOOR_FRICTION.
-      _floorNegYR.set(0, -ballRadius, 0);
-      _floorSurfVel.crossVectors(ballAngularVelocity, _floorNegYR);
-      _floorSlip.copy(ballVelocity).add(_floorSurfVel).negate();
-      _floorSlip.y = 0;
-      ballVelocity.x += _floorSlip.x * FLOOR_FRICTION;
-      ballVelocity.z += _floorSlip.z * FLOOR_FRICTION;
-
-      // Floor kills spin harder than the table (bare concrete/wood is less
-      // grippy than rubber, and there's no re-launch to preserve it for).
-      ballAngularVelocity.multiplyScalar(FLOOR_SPIN_DAMP);
 
       // Squash-and-stretch — same mechanism used for paddle and table hits,
       // world-up normal, amount scaled by bounce intensity. Gated on
@@ -1311,10 +1292,6 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
         squashPeakAmount = SQUASH_AMOUNT * floorIntensity;
         setBallSquash(_tableSquashNormal, squashPeakAmount);
       }
-
-      // Micro-bounce cutoff — same idea as the table's 0.05 clamp so the
-      // ball settles instead of trickling forever.
-      if (Math.abs(ballVelocity.y) < 0.1) ballVelocity.y = 0;
     }
 
     if (ballOwned) {

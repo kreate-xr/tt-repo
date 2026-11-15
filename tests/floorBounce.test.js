@@ -157,3 +157,52 @@ describe('floor bounce (spec P8)', () => {
     expect(vel.x).toBeLessThan(2.0);
   });
 });
+
+// The shared implementation in rollout.js — what ball.js and the multiplayer
+// mirror actually run. Pinned against the inline mirror above so the two
+// cannot drift, and against the multiplayer regression where the mirrored
+// ball had no floor and sank through it.
+describe('rollout floor bounce (shared by owner and multiplayer mirror)', () => {
+  const rollout = require('../js/physics/rollout.js');
+  const env = { ballRadius, tableSurfaceY, tableBox: null };
+
+  test('matches the pinned floor-bounce math', () => {
+    const vA = new THREE.Vector3(1.2, -3.4, -0.7);
+    const wA = new THREE.Vector3(40, -15, 25);
+    const pA = new THREE.Vector3(0, ballRadius - 0.001, 0);
+    const vB = vA.clone(), wB = wA.clone();
+    expect(rollout.isFloorBounce(pA, vB, env)).toBe(true);
+    applyFloorBounce(pA, vA, wA);
+    const impact = rollout.applyFloorBounce(vB, wB, ballRadius);
+    expect(impact).toBeCloseTo(3.4, 10);
+    expect(vB.x).toBeCloseTo(vA.x, 10);
+    expect(vB.y).toBeCloseTo(vA.y, 10);
+    expect(vB.z).toBeCloseTo(vA.z, 10);
+    expect(wB.x).toBeCloseTo(wA.x, 10);
+    expect(wB.y).toBeCloseTo(wA.y, 10);
+    expect(wB.z).toBeCloseTo(wA.z, 10);
+  });
+
+  test('no floor bounce above table height or while rising', () => {
+    expect(rollout.isFloorBounce(new THREE.Vector3(0, 1, 0), new THREE.Vector3(0, -1, 0), env)).toBe(false);
+    expect(rollout.isFloorBounce(new THREE.Vector3(0, 0.01, 0), new THREE.Vector3(0, 1, 0), env)).toBe(false);
+  });
+
+  test('a dead-reckoned ball dropped off the table never sinks below the floor', () => {
+    // Same shape as the multiplayer drill's stepFlightAdapter.
+    const pos = new THREE.Vector3(0, 0.5, 3);
+    const vel = new THREE.Vector3(0.4, -1, 0.6);
+    const spin = new THREE.Vector3(20, 0, 0);
+    let minY = Infinity;
+    for (let i = 0; i < 900; i++) {          // 10 s at 90 Hz
+      rollout.integrateFlightStep(pos, vel, spin, 1 / 90);
+      if (rollout.isFloorBounce(pos, vel, env)) {
+        pos.y = FLOOR_LEVEL_Y + ballRadius;
+        rollout.applyFloorBounce(vel, spin, ballRadius);
+      }
+      minY = Math.min(minY, pos.y);
+    }
+    expect(minY).toBeGreaterThanOrEqual(FLOOR_LEVEL_Y + ballRadius - 1e-9);
+    expect(pos.y).toBeCloseTo(FLOOR_LEVEL_Y + ballRadius, 6);
+  });
+});

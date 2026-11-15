@@ -553,6 +553,21 @@ export const FLOOR_RESTITUTION = 0.7;
 export const FLOOR_FRICTION    = 0.25;   // tangential energy loss per bounce
 export const FLOOR_SPIN_DAMP   = 0.85;   // ω decay per floor contact — carpet-like
 export const FLOOR_Y = -2;
+// Below this |v_y| the floor bounce zeroes the vertical velocity so the ball
+// settles instead of trickling forever (the floor's analogue of the table's
+// BOUNCE_SETTLE_VY).
+export const FLOOR_SETTLE_VY = 0.1;
+
+// Minimum impact speed (m/s) for a bounce to make sound and haptics. A ball
+// at rest on a surface re-accumulates g·dt of downward velocity every frame
+// (~0.11 m/s at 90 Hz, ~0.27 m/s under 36 Hz reprojection) and re-enters the
+// bounce branch each frame — physically harmless, but with the audio path's
+// IMPACT_GAIN_FLOOR each of those micro-impacts played at half volume, which
+// at frame rate turned a settling ball into a continuous buzz. Real hops
+// below this speed rebound under a centimetre and are inaudible anyway.
+// Shared by ball.js (owner) and the multiplayer drill (mirrored ball + the
+// TABLE_BOUNCE wire event), which must apply the same gate.
+export const AUDIBLE_BOUNCE_MIN_IMPACT = 0.3;
 
 // Pseudo-haptic paddle pose smoothing — per-frame lerp/slerp alpha applied to
 // the visual paddle's world transform as it follows the controller grip.

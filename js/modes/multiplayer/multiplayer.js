@@ -25,13 +25,17 @@ import {
   paddleModel, ballModel, tableBox, tableSurfaceY, ballRadius, netBox,
   paddleFaceOffset, paddleFaceNormalLocal, paddleHitRadius, paddleHalfThickness,
 } from '../../scene/models.js';
-import { integrateFlightStep, applyTableBounce, isTableBounce } from '../../physics/rollout.js';
+import {
+  integrateFlightStep, applyTableBounce, isTableBounce, applyFloorBounce, isFloorBounce,
+} from '../../physics/rollout.js';
 import {
   ballVelocity, ballAngularVelocity, spawnBallAt,
   paddleFaceCenterWorld, paddleFaceNormalWorld, paddleVelocity,
 } from '../../physics/ball.js';
 import { resolvePaddleTablePenetration } from '../../physics/paddleTableClamp.js';
-import { GRAVITY, HAPTIC_MAX_SPEED } from '../../physics/constants.js';
+import {
+  GRAVITY, HAPTIC_MAX_SPEED, FLOOR_LEVEL_Y, AUDIBLE_BOUNCE_MIN_IMPACT,
+} from '../../physics/constants.js';
 import { playBounceSound, playPaddleHitSound, playPaddleEdgeSound } from '../../scene/audio.js';
 import { PaddleSync } from '../../network/PaddleSync.js';
 import { GameStateSync, AUTHORITATIVE_EXTRAP_CAP_MS, BALL_EXTRAP_SUBSTEP_MS } from '../../network/GameStateSync.js';
@@ -394,6 +398,15 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
       _drBounce.x = _drPos.x;
       _drBounce.z = _drPos.z;
       hit = _drBounce;
+    } else if (isFloorBounce(_drPos, _drVel, flightEnv)) {
+      // The floor, same response the owner's tickPhysics applies. Without
+      // it the mirrored ball had no ground: every projection of a ball
+      // heading for (or lying on) the floor carried it straight through, so
+      // the non-owner watched it sink into the Focus Room floor. Not
+      // reported as a `hit` — that return value drives the TABLE bounce
+      // sound only.
+      _drPos.y = FLOOR_LEVEL_Y + ballRadius;
+      applyFloorBounce(_drVel, _drSpin, ballRadius);
     }
     pos.x = _drPos.x; pos.y = _drPos.y; pos.z = _drPos.z;
     vel.x = _drVel.x; vel.y = _drVel.y; vel.z = _drVel.z;
@@ -870,7 +883,17 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
     // authoritative for.
     const verdict = tracker.registerBounce(info.z, info.x);
     if (!gameSync.isLocalOwner() || hm.isPending()) return;
-    nm.sendEvent({ type: PacketType.TABLE_BOUNCE, x: info.x, z: info.z, volume: 0.5 });
+    // The wire copy exists only to make the bounce audible on the other
+    // headset, so it takes the same audibility gate and intensity curve as
+    // the local sound in ball.js. Ungated, a ball settling on the table —
+    // which re-enters the bounce branch every frame — sent a reliable packet
+    // per frame and the peer replayed it at fixed half volume: the "zzzz".
+    if (info.impactSpeed > AUDIBLE_BOUNCE_MIN_IMPACT) {
+      nm.sendEvent({
+        type: PacketType.TABLE_BOUNCE, x: info.x, z: info.z,
+        volume: Math.min(info.impactSpeed / 5, 1.0),
+      });
+    }
     // Where the ball lands is what ends rallies: a double bounce on the
     // receiver's side, a return that came down on the hitter's own half, an
     // illegal serve — or a cord serve that still landed good, which is a let.
@@ -1392,7 +1415,10 @@ export function createMultiplayerDrill({ ballEvents, multiplayer, hooks, xr = nu
         // Locally predicted table bounce: zero network latency, synchronized
         // with the visual by construction. Same intensity curve as ball.js;
         // the wire TABLE_BOUNCE fallback dedupes against this.
-        if (gameSync.lastBounce) {
+        // Gated like ball.js: a mirrored ball at rest on the table re-enters
+        // the bounce branch every frame (gravity re-accumulates g·dt), and
+        // ungated that played a bounce every dedupe window — a buzz.
+        if (gameSync.lastBounce && gameSync.lastBounce.impactSpeed > AUDIBLE_BOUNCE_MIN_IMPACT) {
           playDedupedBounce(Math.min(gameSync.lastBounce.impactSpeed / 5, 1.0));
         }
       }

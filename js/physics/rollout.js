@@ -39,7 +39,8 @@ import * as THREE from 'three';
 import {
   GRAVITY, BUOYANCY_ACCEL, MAGNUS_VERTICAL_SCALE,
   SPIN_DAMPING, TABLE_LINEAR_FRICTION, TABLE_SPIN_GAIN, TABLE_SIDESPIN_KICK,
-  FLOOR_Y,
+  FLOOR_Y, FLOOR_LEVEL_Y, FLOOR_RESTITUTION, FLOOR_FRICTION, FLOOR_SPIN_DAMP,
+  FLOOR_SETTLE_VY,
   applyDragStep, tableRestitution, magnusCoefficientAt,
 } from './constants.js';
 
@@ -192,6 +193,51 @@ export function isTableBounce(pos, vel, env) {
          vel.y < 0 &&
          pos.x >= env.tableBox.min.x && pos.x <= env.tableBox.max.x &&
          pos.z >= env.tableBox.min.z && pos.z <= env.tableBox.max.z;
+}
+
+/**
+ * True when the ball's bottom has reached the floor plane while descending
+ * and below table height. Same predicate as the floor-bounce branch of
+ * tickPhysics (which calls this).
+ */
+export function isFloorBounce(pos, vel, env) {
+  return (pos.y - env.ballRadius) <= FLOOR_LEVEL_Y &&
+         vel.y < 0 &&
+         pos.y < env.tableSurfaceY;
+}
+
+/**
+ * Apply the floor-bounce response, mutating vel/spin in place.
+ *
+ * This IS the floor-bounce branch of tickPhysics() — ball.js calls it for
+ * the owned ball and the multiplayer non-owner's mirrored ball rides the
+ * same function, so the two cannot drift. (They used to: the mirror had no
+ * floor at all and sank through it.) The caller snaps pos.y to the floor
+ * first, exactly as with applyTableBounce.
+ *
+ * @returns {number} floorImpact (|v_y| before reflection).
+ */
+export function applyFloorBounce(vel, spin, ballRadius) {
+  const floorImpact = Math.abs(vel.y);
+  vel.y *= -FLOOR_RESTITUTION;
+
+  // Spin coupling: mirror of the table math but with FLOOR_FRICTION.
+  _negYR.set(0, -ballRadius, 0);
+  _surfaceFromSpin.crossVectors(spin, _negYR);
+  _slipTangent.copy(vel).add(_surfaceFromSpin).negate();
+  _slipTangent.y = 0;
+  vel.x += _slipTangent.x * FLOOR_FRICTION;
+  vel.z += _slipTangent.z * FLOOR_FRICTION;
+
+  // Floor kills spin harder than the table (bare concrete/wood is less
+  // grippy than rubber, and there's no re-launch to preserve it for).
+  spin.multiplyScalar(FLOOR_SPIN_DAMP);
+
+  // Micro-bounce cutoff — same idea as the table's settle clamp so the
+  // ball settles instead of trickling forever.
+  if (Math.abs(vel.y) < FLOOR_SETTLE_VY) vel.y = 0;
+
+  return floorImpact;
 }
 
 /**
