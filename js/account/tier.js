@@ -4,9 +4,13 @@
 //
 //   FREE   Club AI, best of 1, Beginner Training Session, Mixed Reality and
 //          Focus Room, joining a room someone with the full game hosts, the
-//          last result on the start page. Unlimited, no sign-up.
+//          last result on the start page, the Club Cup tournament, the
+//          Ball Machine's forehand and backhand practices.
+//          Unlimited, no sign-up.
 //   FULL   everything: International + Elite AI, best of 3 / 5, the Player
-//          Training Session, the Arena, hosting rooms, progress trends.
+//          Training Session, the Arena, hosting rooms, progress trends, the
+//          National Open and World Masters tournaments, every Ball Machine
+//          practice.
 //
 // The answer comes from /api/me (`entitled`, i.e. entitlements/{uid}.active),
 // fed in by js/ui/accountPanel.js. In-XR menus need it synchronously and may
@@ -24,6 +28,13 @@ export const FREE_AI_LEVELS = Object.freeze(['beginner']);
 export const FREE_BEST_OF = 1;
 export const FREE_TRAINING_LEVELS = Object.freeze(['beginner']);
 export const FREE_VENUES = Object.freeze(['ar', 'vr-focus']);
+// The Club Cup is the free player's taste of the Tournament ladder; the
+// National Open and World Masters are in the full game.
+export const FREE_TOURNAMENTS = Object.freeze(['club']);
+// Ball Machine practices (js/modes/training/practice.js): the two basic
+// drives are free, the spin, footwork and reading practices are in the full
+// game.
+export const FREE_PRACTICES = Object.freeze(['forehand', 'backhand']);
 
 /**
  * What the player is told when they reach for something locked. `head` fits
@@ -49,6 +60,14 @@ export const LOCKED = Object.freeze({
   hostRoom: {
     head: 'Hosting a room is in the full game  ·  joining one is free',
     page: 'Hosting a room is in the full game. Friends you invite join free.',
+  },
+  practice: {
+    head: 'This practice is in the full game  ·  unlock it on the start page',
+    page: 'The spin, footwork and read-the-spin practices are in the full game.',
+  },
+  tournament: {
+    head: 'The National Open and World Masters are in the full game',
+    page: 'The National Open and World Masters tournaments are in the full game.',
   },
 });
 
@@ -90,6 +109,8 @@ export function canUseBestOf(n) { return full || Number(n) === FREE_BEST_OF; }
 export function canUseTrainingLevel(id) { return full || FREE_TRAINING_LEVELS.includes(id); }
 export function canUseVenue(modeId) { return full || FREE_VENUES.includes(modeId); }
 export function canHostRoom() { return full; }
+export function canUsePractice(id) { return full || FREE_PRACTICES.includes(id); }
+export function canUseTournament(id) { return full || FREE_TOURNAMENTS.includes(id); }
 export function canSeeProgressHistory() { return full; }
 
 /** The match length actually played: a stored best-of-5 plays as best of 1 on the free version. */

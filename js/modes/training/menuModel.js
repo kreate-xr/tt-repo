@@ -5,21 +5,37 @@
 // state of its own, so every menu path is a unit test rather than something
 // discovered in a headset.
 //
-// Play is the Training Session and nothing else: the root lists its levels,
-// one tap starts it. The older modes (Just Rally, the Practice intents, the
-// Ball Machine editor) were removed when the session replaced them. The only
-// other screen is Settings, reached from the footer.
+// The root lists the Training Session's levels (one tap starts it) and a row
+// into the Ball Machine: a short list of things to practise plus a Random
+// switch (js/modes/training/practice.js). The older modes (Just Rally, the
+// Practice intents, the Ball Machine EDITOR with its sliders) were removed
+// when the session replaced them; the Ball Machine list has nothing to
+// configure, by design. Settings is reached from the footer.
 
 import { SETTING_SPECS } from '../../profile/store.js';
 import { LEVELS, LEVEL_ORDER } from './session.js';
-import { canUseTrainingLevel } from '../../account/tier.js';
+import {
+  PRACTICES, CUSTOM_ID, CUSTOM_OPTIONS, CUSTOM_DEFAULT, customSummary,
+} from './practice.js';
+import { canUseTrainingLevel, canUsePractice } from '../../account/tier.js';
 
 // The row subtitle of a level that is in the full game only.
 export const LOCKED_LEVEL_SUBTITLE = 'Full game  ·  unlock it on the start page';
 
 export const SCREENS = Object.freeze({
   ROOT: 'root',
+  // The Ball Machine's list: what to practise, plus the Random switch.
+  MACHINE: 'machine',
+  // Build your own ball: spin, side, length. Three rows to tap through.
+  CUSTOM: 'custom',
   SETTINGS: 'settings',
+});
+
+const TITLES = Object.freeze({
+  [SCREENS.ROOT]: 'TRAINING',
+  [SCREENS.MACHINE]: 'BALL MACHINE',
+  [SCREENS.CUSTOM]: 'BUILD YOUR OWN',
+  [SCREENS.SETTINGS]: 'SETTINGS',
 });
 
 // M10 global settings, as menu rows.
@@ -52,6 +68,12 @@ export const SESSION_LEVEL_ITEMS = Object.freeze(LEVEL_ORDER.map((id) => ({
   bestKey: LEVELS[id].bestKey, subtitle: LEVELS[id].blurb,
 })));
 
+// The root's last row: into the Ball Machine list.
+const MACHINE_ROW = Object.freeze({
+  id: 'machine', label: 'Ball Machine', action: 'openMachine', available: true, screen: true,
+  subtitle: 'Pick one thing to practise  ·  endless, no score',
+});
+
 export class TrainingMenuModel {
   /**
    * @param {object} [opts]
@@ -60,8 +82,16 @@ export class TrainingMenuModel {
    *        player's tier has the level (js/account/tier.js); read on every
    *        call, so an unlock that lands mid-session shows on the next redraw
    */
-  constructor({ settings = null, canUseLevel = canUseTrainingLevel } = {}) {
+  constructor({
+    settings = null, canUseLevel = canUseTrainingLevel, canUsePracticeId = canUsePractice,
+  } = {}) {
     this.canUseLevel = canUseLevel;
+    this.canUsePracticeId = canUsePracticeId;
+    // The Ball Machine's Random switch. Kept for the session, not persisted:
+    // it is a per-practice choice, not a preference.
+    this.machineRandom = false;
+    // The Build-your-own choice. Also kept for the session only.
+    this.custom = { ...CUSTOM_DEFAULT };
     this.stack = [SCREENS.ROOT];
     // Injected so the model stays testable without localStorage; the renderer
     // passes the real profile store.
@@ -83,13 +113,13 @@ export class TrainingMenuModel {
     return v === 'L' ? 'L' : 'R';
   }
 
-  get title() {
-    return this.screen === SCREENS.SETTINGS ? 'SETTINGS' : 'TRAINING SESSION';
-  }
+  get title() { return TITLES[this.screen] || TITLES[SCREENS.ROOT]; }
 
   /** Breadcrumb for the header, e.g. "PLAY › SETTINGS". */
   get breadcrumb() {
-    return this.screen === SCREENS.SETTINGS ? 'PLAY › SETTINGS' : 'PLAY';
+    if (this.screen === SCREENS.ROOT) return 'PLAY';
+    if (this.screen === SCREENS.CUSTOM) return `PLAY › ${TITLES[SCREENS.MACHINE]} › ${TITLES[SCREENS.CUSTOM]}`;
+    return `PLAY › ${TITLES[this.screen]}`;
   }
 
   get canGoBack() { return this.stack.length > 1; }
@@ -114,6 +144,12 @@ export class TrainingMenuModel {
   /** Rows for the current screen. */
   items() {
     if (this.screen === SCREENS.SETTINGS) return this.settingItems();
+    if (this.screen === SCREENS.MACHINE) return this.machineItems();
+    if (this.screen === SCREENS.CUSTOM) return this.customItems();
+    return [...this.levelItems(), MACHINE_ROW];
+  }
+
+  levelItems() {
     // The subtitle carries the level's best score to beat, once there is one.
     // A level in the full game only stays tappable — the tap says so — and
     // its subtitle says it up front.
@@ -125,6 +161,52 @@ export class TrainingMenuModel {
         ? Number(this.settingsApi.getSetting(i.bestKey)) || 0 : 0;
       return { ...i, subtitle: best > 0 ? `${i.subtitle}  ·  Best ${best}%` : i.subtitle };
     });
+  }
+
+  /** The Ball Machine list: one row per practice, then the Random switch. */
+  machineItems() {
+    const rows = PRACTICES.map((p) => {
+      const base = { id: `practice:${p.id}`, label: p.label, available: true };
+      if (!this.canUsePracticeId(p.id)) {
+        return { ...base, action: 'locked', locked: true, subtitle: LOCKED_LEVEL_SUBTITLE };
+      }
+      return { ...base, action: 'startPractice', practiceId: p.id, subtitle: p.blurb };
+    });
+    // Build your own: its own screen, because it has three choices to make.
+    rows.push(this.canUsePracticeId(CUSTOM_ID)
+      ? {
+        id: 'customOpen', label: 'Build your own', action: 'openCustom', available: true,
+        screen: true, subtitle: 'Choose the spin, the side and the length',
+      }
+      : {
+        id: 'customOpen', label: 'Build your own', action: 'locked', locked: true,
+        available: true, subtitle: LOCKED_LEVEL_SUBTITLE,
+      });
+    rows.push({
+      id: 'machineRandom', label: 'Random side', action: 'toggleRandom', available: true,
+      subtitle: this.machineRandom
+        ? 'On: each ball goes to a different side'
+        : 'Off: the ball goes where the practice says',
+    });
+    return rows;
+  }
+
+  /** Build your own: one row per choice (tap to change), then START. */
+  customItems() {
+    const labelOf = (key) => CUSTOM_OPTIONS[key].find((o) => o.id === this.custom[key]).label;
+    const row = (key, label) => ({
+      id: `custom:${key}`, label, action: 'cycleCustom', customKey: key, available: true,
+      subtitle: `${labelOf(key)}  ·  tap to change`,
+    });
+    return [
+      row('spin', 'Spin'),
+      row('side', 'Side'),
+      row('length', 'Length'),
+      {
+        id: 'custom:start', label: 'START', action: 'startCustom', available: true,
+        subtitle: customSummary(this.custom),
+      },
+    ];
   }
 
   settingItems() {
@@ -164,9 +246,43 @@ export class TrainingMenuModel {
       return null;
     }
 
-    // A full-game level on the free version: nothing starts, the host says why.
+    // A full-game level or practice on the free version: nothing starts, the
+    // host says why.
     if (item.action === 'locked') {
-      return { action: 'locked', feature: 'trainingLevel' };
+      return { action: 'locked', feature: this.screen === SCREENS.MACHINE ? 'practice' : 'trainingLevel' };
+    }
+
+    if (item.action === 'openMachine') {
+      this.navigate(SCREENS.MACHINE);
+      return null;
+    }
+    if (item.action === 'toggleRandom') {
+      this.machineRandom = !this.machineRandom;
+      return null;
+    }
+    if (item.action === 'openCustom') {
+      this.navigate(SCREENS.CUSTOM);
+      return null;
+    }
+    // One tap moves a choice to its next value, wrapping round.
+    if (item.action === 'cycleCustom') {
+      const list = CUSTOM_OPTIONS[item.customKey];
+      const i = list.findIndex((o) => o.id === this.custom[item.customKey]);
+      this.custom[item.customKey] = list[(i + 1) % list.length].id;
+      return null;
+    }
+    if (item.action === 'startCustom') {
+      return {
+        action: 'start', drill: 'practice', config: null,
+        options: { practice: CUSTOM_ID, custom: { ...this.custom }, hand: this.hand, random: false },
+      };
+    }
+    // The Ball Machine on the chosen practice; endless until the player leaves.
+    if (item.action === 'startPractice') {
+      return {
+        action: 'start', drill: 'practice', config: null,
+        options: { practice: item.practiceId, hand: this.hand, random: this.machineRandom },
+      };
     }
 
     // The Training Session at the chosen level. Every feed value is the

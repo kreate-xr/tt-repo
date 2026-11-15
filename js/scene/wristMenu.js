@@ -103,6 +103,9 @@ const MODE_ICON_S   = 62;
 const MODE_LABEL_DY = 20;
 const MODE_SUB_DY   = 40;
 const MODE_TEXT_INSET = 12;
+// The radius every constant above was tuned at. Tiles laid out smaller are
+// drawn at this radius and scaled down (drawModeCircle).
+const MODE_DESIGN_R = 80;
 // Floor for shrink-to-fit. Below this the text is unreadable at XR
 // minification, so overflowing is the lesser evil and the caller gets a
 // too-wide line it can see in the preview rather than an invisible one.
@@ -225,6 +228,10 @@ const MODES = [
   { id: 'training',    label: 'PLAY',  ring: '#ffc857', icon: 'ballMachine', subtitle: 'TRAINING' },
   { id: 'aiMatch',     label: 'AI',    ring: '#3ddc97', icon: 'aiMatch',    subtitle: 'MATCH'  },
   { id: 'multiplayer', label: 'MULTI', ring: '#ff8a5b', icon: 'multiplayer', subtitle: 'PLAYER' },
+  // Opens the Tournament menu (js/modes/tournament/). The label is CUP
+  // because every tile label shares one fitted size (_modeTextFit), and
+  // "TOURNAMENT" at label size would shrink all four.
+  { id: 'tournament',  label: 'CUP',   ring: '#7aa2ff', icon: 'trophy',      subtitle: 'TOURNAMENT' },
 ];
 
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
@@ -808,12 +815,13 @@ export class WristMenu {
     }
 
     // --- Mode circles: main row ---
-    // Sized for a three-tile row: dropping the fourth tile freed enough
-    // width that 70px tiles floated in empty panel, so both radius and gap
-    // grew. Row centre sits midway between the difficulty pill's bottom and
-    // the exit pill's top.
-    const CIRCLE_R = 80;
-    const CIRCLE_GAP = 56;
+    // Four tiles (PLAY, AI, MULTI, CUP) in the same 592px span the three-tile
+    // row used, so the row's crosshair ticks still clear the Rules and
+    // Settings docks (x ≈ 202…822). The tiles draw at MODE_DESIGN_R and scale
+    // down to this radius. Row centre sits midway between the difficulty
+    // pill's bottom and the exit pill's top.
+    const CIRCLE_R = 65;
+    const CIRCLE_GAP = 24;
     const CIRCLE_ROW_W = MODES.length * (CIRCLE_R * 2) + (MODES.length - 1) * CIRCLE_GAP;
     const circleRowX = (CANVAS_W - CIRCLE_ROW_W) / 2;
     // 216, not 224: the row sat low enough that the crosshair ticks (which
@@ -1103,9 +1111,18 @@ export class WristMenu {
     const ctx = this.ctx;
     const mode = MODES[b.index];
     const lift = -3 * hp + 1.5 * pp;
-    const cx = b.cx;
-    const cy = b.cy + lift;
-    const R = b.r - 3;
+    // The tile is drawn at its design radius and scaled to the laid-out one,
+    // so icon, label and subtitle shrink together with the circle. The row
+    // went from three tiles to four (TOURNAMENT); scaling keeps every
+    // proportion the three-tile design was tuned at.
+    const k = b.r / MODE_DESIGN_R;
+    ctx.save();
+    ctx.translate(b.cx, b.cy + lift);
+    ctx.scale(k, k);
+    const cx = 0;
+    const cy = 0;
+    const r = MODE_DESIGN_R;
+    const R = r - 3;
 
     // Interior fill with drop shadow beneath.
     ctx.save();
@@ -1137,8 +1154,8 @@ export class WristMenu {
 
     // Crosshair ticks at the four cardinal points.
     ctx.lineWidth = 4;
-    const tickIn  = b.r + 2;
-    const tickOut = b.r + 14;
+    const tickIn  = r + 2;
+    const tickOut = r + 14;
     for (let i = 0; i < 4; i++) {
       const a = (Math.PI / 2) * i;
       const cos = Math.cos(a), sin = Math.sin(a);
@@ -1158,7 +1175,7 @@ export class WristMenu {
 
     // Main label + subtitle (bottom of interior), at the one size that fits
     // every tile — see _modeTextFit.
-    const fit = this._modeTextFit(b.r - 3);
+    const fit = this._modeTextFit(R);
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
@@ -1172,6 +1189,7 @@ export class WristMenu {
     if ('letterSpacing' in ctx) ctx.letterSpacing = `${MODE_SUB_LS}px`;
     ctx.fillText(mode.subtitle || '', cx, cy + MODE_SUB_DY);
     if ('letterSpacing' in ctx) ctx.letterSpacing = '0px';
+    ctx.restore();
   }
 
   /**
@@ -1488,6 +1506,10 @@ export class WristMenu {
         // lobby's connection bundle. Sending it from the tile as well would
         // give the guest a second, losing opinion.
         this.emit('start', { drill: 'multiplayer', difficulty: difficultyId, options: {} });
+      } else if (button.modeId === 'tournament') {
+        // Opens the Tournament menu. Each tournament sets its own AI tier
+        // and match length, so neither pill above applies here.
+        this.emit('tournament');
       }
       return;
     }

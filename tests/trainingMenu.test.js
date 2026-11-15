@@ -249,3 +249,45 @@ describe('free version', () => {
     expect(starts).toHaveLength(1);
   });
 });
+
+describe('reused for the Tournament menu', () => {
+  const { TournamentMenuModel } = require('../js/modes/tournament/menuModel.js');
+  const { createTournamentStore } = require('../js/modes/tournament/tournaments.js');
+  const store = () => {
+    const data = {};
+    return createTournamentStore({
+      storage: { getItem: (k) => data[k] ?? null, setItem: (k, v) => { data[k] = v; } },
+    });
+  };
+
+  test('draws the injected model with a CLOSE-only footer, and a round start carries the round tier', () => {
+    const menu = new TrainingMenu({
+      model: new TournamentMenuModel({ store: store() }), footerIds: ['exit'], showTune: false,
+    });
+    expect(menu.footerIds).toEqual(['exit']);
+    expect(menu.panel.get('footer:settings')).toBeFalsy();
+    const starts = [];
+    menu.on('start', (p) => starts.push(p));
+    clickById(menu, 'item:club');            // root → bracket
+    expect(menu.model.screen).toBe('bracket');
+    clickById(menu, 'item:round:0');          // the quarter-final
+    expect(starts).toEqual([{
+      drill: 'aiMatch', config: null, difficulty: 'beginner',
+      options: { bestOf: 3, tournament: { tournamentId: 'club', roundIndex: 0 } },
+    }]);
+  });
+
+  test('BACK from the bracket returns to the list; CLOSE at the root leaves the menu', () => {
+    const menu = new TrainingMenu({
+      model: new TournamentMenuModel({ store: store() }), footerIds: ['exit'], showTune: false,
+    });
+    const backs = [];
+    menu.on('back', () => backs.push(1));
+    clickById(menu, 'item:club');
+    clickById(menu, 'back');
+    expect(menu.model.screen).toBe('root');
+    expect(backs).toEqual([]);
+    clickById(menu, 'back');
+    expect(backs).toEqual([1]);
+  });
+});

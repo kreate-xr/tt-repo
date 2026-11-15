@@ -75,6 +75,20 @@ Not touched: physics, AI engines and tuning, multiplayer, payments.
 - Name: **Tournament**.
 - Club Cup variety: default accepted (allround only, opponents differ by name) unless changed.
 
+## As built (2026-11-12)
+
+- The tile reads **CUP** with the subtitle TOURNAMENT. All four tile labels share one
+  fitted font size, so "TOURNAMENT" as the label would have shrunk PLAY, AI and
+  MULTI too. The four tiles fit in the old three-tile width and are scaled down.
+- There's no separate intro card. The next round's row in the bracket already shows
+  the opponent, their style note and the match length before the player taps it.
+- The report card: a win shows "<ROUND> WON!" with NEXT ROUND / PLAY THE FINAL; the final
+  shows CHAMPION!; a loss shows RETRY ROUND. Every case has a TOURNAMENT button back to the bracket.
+- Files: `js/modes/tournament/{tournaments,menuModel}.js`, plus small changes in
+  `aiMatch.js` (style / opponentName / matchEnd / onReportButton options),
+  `inGame.js`, `wristMenu.js`, `trainingMenu.js` (injectable model) and `tier.js`.
+- Not done: trophies on the start page's progress panel (optional, needs your OK).
+
 ## Open questions (original, answered above)
 
 1. **Entry point:** (a) a 4th dock tile "TOUR" beside PLAY / AI / MULTI, or

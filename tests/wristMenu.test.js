@@ -191,10 +191,29 @@ describe('the other tiles still work', () => {
 
   test('every mode tile resolves to itself, none shadowed', () => {
     const menu = new WristMenu();
-    for (const id of ['mode-training', 'mode-aiMatch', 'mode-multiplayer']) {
+    for (const id of ['mode-training', 'mode-aiMatch', 'mode-multiplayer', 'mode-tournament']) {
       const [u, v] = uvOfButton(menu, id);
       expect(menu.hitTestUV(u, v)).toBe(id);
     }
+  });
+
+  test('the CUP tile opens the Tournament menu, with no tier or length attached', () => {
+    const menu = new WristMenu();
+    const seen = [];
+    menu.on('tournament', (p) => seen.push(p === undefined ? 'none' : p));
+    menu.on('start', () => seen.push('start'));
+    click(menu, 'mode-tournament');
+    expect(seen).toEqual(['none']);
+  });
+
+  test('four tiles in order, crosshair ticks clear of the docks (x ≈ 202…822)', () => {
+    const menu = new WristMenu();
+    const tiles = menu.buttons.filter((b) => b.kind === 'mode');
+    expect(tiles.map((b) => b.modeId)).toEqual(['training', 'aiMatch', 'multiplayer', 'tournament']);
+    // Ticks reach 14px past the ring at the design radius of 80, scaled.
+    const reach = (b) => b.r + 14 * (b.r / 80);
+    expect(Math.min(...tiles.map((b) => b.cx - reach(b)))).toBeGreaterThanOrEqual(202);
+    expect(Math.max(...tiles.map((b) => b.cx + reach(b)))).toBeLessThanOrEqual(822);
   });
 });
 

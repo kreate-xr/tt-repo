@@ -31,6 +31,8 @@ describe('free version', () => {
     expect(['ar', 'vr-focus', 'vr-arena'].map(tier.canUseVenue)).toEqual([true, true, false]);
     expect(tier.canHostRoom()).toBe(false);
     expect(tier.canSeeProgressHistory()).toBe(false);
+    expect(['club', 'national', 'world'].map(tier.canUseTournament)).toEqual([true, false, false]);
+    expect(['forehand', 'backhand', 'push', 'readSpin'].map(tier.canUsePractice)).toEqual([true, true, false, false]);
   });
 
   test('a stored length or tier it does not have falls back instead of failing', () => {
@@ -50,6 +52,8 @@ describe('full version', () => {
     expect(['ar', 'vr-focus', 'vr-arena'].every(tier.canUseVenue)).toBe(true);
     expect(tier.canHostRoom()).toBe(true);
     expect(tier.canSeeProgressHistory()).toBe(true);
+    expect(['club', 'national', 'world'].every(tier.canUseTournament)).toBe(true);
+    expect(['forehand', 'push', 'readSpin'].every(tier.canUsePractice)).toBe(true);
     expect(tier.effectiveBestOf(5)).toBe(5);
     expect(tier.effectiveAiLevel('pro')).toBe('pro');
   });

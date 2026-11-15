@@ -41,6 +41,8 @@ import {
 } from '../scene/wristMenu.js';
 import { TrainingMenu } from '../scene/trainingMenu.js';
 import { MultiplayerMenu } from '../scene/multiplayerMenu.js';
+import { TournamentMenuModel } from './tournament/menuModel.js';
+import { createTournamentStore, roundMatch, ROUNDS } from './tournament/tournaments.js';
 // Boot-phase timing for ?trace=1 (js/network/connectTrace.js). That module has
 // no imports of its own, so this static import costs ~1 KB in the entry bundle
 // and does NOT pull the Firebase chunk in with it.
@@ -88,6 +90,7 @@ import { createM1BallMachineDrill } from './training/drills/m1BallMachine.js';
 import { WARMUP_FEED } from './training/presets.js';
 import { validateConfig, INFINITE } from './training/drillConfig.js';
 import { createSessionDrill, SESSION } from './training/drills/session.js';
+import { createPracticeDrill, PRACTICE } from './training/drills/practice.js';
 import { createMultiplayerDrill, MULTIPLAYER } from './multiplayer/multiplayer.js';
 import { createAIMatchDrill, AI_MATCH } from './aiMatch/aiMatch.js';
 import * as AudioContextBridge from '../network/AudioContextBridge.js';
@@ -98,6 +101,7 @@ const DRILL_FACTORIES = {
   // Play: the Training Session — a scored multiball session (warm-up,
   // footwork, spin, random) run as the M1 ball machine's config provider.
   session:            { meta: SESSION,             create: createSessionDrill },
+  practice:           { meta: PRACTICE,            create: createPracticeDrill },
   multiplayer:        { meta: MULTIPLAYER,         create: createMultiplayerDrill },
   aiMatch:            { meta: AI_MATCH,            create: createAIMatchDrill },
 };
@@ -745,6 +749,16 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   const trainingMenu = new TrainingMenu({ settings: profileStore });
   scene.add(trainingMenu.mesh);
 
+  // The TOURNAMENT menu, opened from the wrist menu's CUP tile. Same renderer
+  // as PLAY, its own model; one store shared by the menu (to show progress)
+  // and the round's match (to record the result).
+  const tournamentStore = createTournamentStore();
+  const tournamentModel = new TournamentMenuModel({ store: tournamentStore });
+  const tournamentMenu = new TrainingMenu({
+    model: tournamentModel, footerIds: ['exit'], showTune: false,
+  });
+  scene.add(tournamentMenu.mesh);
+
   wristMenu.show(); // visible from the moment the session starts
   // --- Physics tuner (free-roaming panel, opened from the wrist menu) ---
   const tuner = new PhysicsTuner();
@@ -804,6 +818,18 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // from this point on — let the trigger through. The controllers themselves
   // were bound before the asset load, further up.
   uiInputReady = true;
+
+  // TEMPORARY fast-swing capture (js/diag/swingCapture.js). Only with
+  // ?swingcap on the dev server; the import is skipped otherwise, and a
+  // production build can't take this branch (__IS_DEV_SERVER__ is false).
+  let swingCapture = null;
+  if (typeof __IS_DEV_SERVER__ !== 'undefined' && __IS_DEV_SERVER__
+      && new URLSearchParams(window.location.search).has('swingcap')) {
+    import('../diag/swingCapture.js').then((m) => {
+      swingCapture = m;
+      if (m.startSwingCapture()) hudLog('[swingcap] capturing');
+    }).catch((err) => console.error('[swingcap] failed to load:', err));
+  }
 
   // --- Wrist menu actions ---
   wristMenu.on('start', ({ drill, difficulty, config, options }) => {
@@ -868,6 +894,81 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   trainingMenu.on('tune', () => { if (TUNER_ENABLED) { trainingMenu.hide(); enterTuner(tuner); } });
   trainingMenu.on('exit', () => onTunerBack());
 
+  // --- Tournament ------------------------------------------------------------
+  // A round is an ordinary AI match with the opponent fixed (style + name)
+  // and two hooks: matchEnd records the result and picks the report card's
+  // buttons, onReportButton handles the ones only a tournament has.
+  function openTournamentMenu(bracketId = null) {
+    if (bracketId) tournamentModel.openBracket(bracketId);
+    else tournamentModel.reset();
+    tournamentModel.refresh();
+    tournamentMenu.rebuild();
+    enterTuner(tournamentMenu);
+  }
+
+  function tournamentMatchEnd(tournamentId, roundIndex, won, match) {
+    const r = tournamentStore.recordResult(tournamentId, roundIndex, won);
+    hudLog(`[tournament] ${tournamentId} ${match.roundLabel} ${won ? 'won' : 'lost'} → ${r.outcome}`);
+    const toMenu = { id: 'tournament', label: 'TOURNAMENT', tone: 'ghost' };
+    if (r.outcome === 'champion') {
+      return {
+        title: 'CHAMPION!',
+        buttons: [{ ...toMenu, tone: 'primary' }, { id: 'exit', label: 'EXIT TO MENU', tone: 'ghost' }],
+      };
+    }
+    if (r.outcome === 'advanced') {
+      return {
+        title: `${match.roundLabel} WON!`,
+        // The round's name is in the title; the button stays short so it fits
+        // the card's fixed button width.
+        buttons: [{ id: 'nextRound', label: ROUNDS[r.nextRound].id === 'f' ? 'PLAY THE FINAL' : 'NEXT ROUND', tone: 'primary' }, toMenu],
+      };
+    }
+    if (r.outcome === 'retry') {
+      // PLAY AGAIN's restart replays lastDrillParams, which is this round.
+      return {
+        title: `${match.opponent.name.toUpperCase()} WINS`,
+        buttons: [{ id: 'playAgain', label: 'RETRY ROUND', tone: 'primary' }, toMenu],
+      };
+    }
+    return null; // a stale result: the card keeps its usual buttons
+  }
+
+  function startTournamentRound(tournamentId, roundIndex) {
+    const action = tournamentModel.startAction(tournamentId, roundIndex);
+    const match = roundMatch(tournamentId, roundIndex);
+    if (!action || !match) { enterMenu(); return; }
+    const options = {
+      ...action.options,
+      style: match.opponent.style,
+      opponentName: match.opponent.name.toUpperCase(),
+      matchEnd: ({ won }) => tournamentMatchEnd(tournamentId, roundIndex, won, match),
+      onReportButton: (id) => {
+        if (id === 'nextRound') {
+          startTournamentRound(tournamentId, tournamentStore.getProgress(tournamentId).round);
+        } else if (id === 'tournament') {
+          enterMenu();
+          openTournamentMenu(tournamentId);
+        }
+      },
+    };
+    lastDrillParams = { drill: action.drill, difficulty: action.difficulty, config: null, options };
+    enterDrill(action.drill, action.difficulty, null, options);
+  }
+
+  wristMenu.on('tournament', () => openTournamentMenu());
+  tournamentMenu.on('back', onTunerBack);
+  tournamentMenu.on('exit', () => onTunerBack());
+  // A full-game tournament on the free version: the row itself says so.
+  tournamentMenu.on('locked', ({ feature }) => hudLog(`[tier] locked: ${feature}`));
+  tournamentMenu.on('start', ({ options }) => {
+    tournamentMenu.hide();
+    currentTuner = null;
+    const t = options && options.tournament;
+    if (!t) { enterMenu(); return; }
+    startTournamentRound(t.tournamentId, t.roundIndex);
+  });
+
   // In-XR multiplayer lobby, opened from the wrist menu's MULTI tile when no
   // peer connection exists yet. Rides the same currentTuner machinery as the
   // training menu. On a negotiated connection it adopts the same
@@ -930,7 +1031,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // wrist menu's fixed world anchor instead of head-billboarding at 1.1 m,
   // which puts a 1.4 m-wide panel too close to read, and they own sliders that
   // the trigger has to be able to drag.
-  const isMenuPanel = (p) => p === trainingMenu || p === mpMenu;
+  const isMenuPanel = (p) => p === trainingMenu || p === mpMenu || p === tournamentMenu;
 
   function enterTuner(target) {
     prevStateBeforeTuner = state;
@@ -1193,7 +1294,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
       drillInstance.panel.selectHovered();
       return;
     }
-    // Drill-specific trigger action (e.g., trajectory practice = launch ball).
+    // Drill-specific trigger action (trajectory practice = launch ball, Ball
+    // Machine practice = next ball now).
     if (state === 'drill' && drillInstance && drillInstance.launch) {
       drillInstance.launch();
       return;
@@ -1234,6 +1336,40 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     }
     quickFit.applyStick(faceX, batY, slideY, dt);
     quickFit.update(dt);
+  }
+
+  // --- Ball Machine practice thumbsticks. Only read while that drill runs.
+  // One step per push: the stick has to come back to the middle before the
+  // next one counts, so holding it over does not run through the whole range.
+  // Up/down is speed, left/right is tempo; either controller's stick works.
+  // xr-standard axes[3] is negative when the stick is pushed up.
+  const STICK_PUSH = 0.7;
+  const STICK_REST = 0.3;
+  let practiceStickArmed = true;
+  function pollPracticeSticks() {
+    if (!session || state !== 'drill' || drillName !== 'practice'
+        || !drillInstance || typeof drillInstance.adjust !== 'function') return;
+    let x = 0, y = 0;
+    for (const src of session.inputSources) {
+      const axes = src.gamepad && src.gamepad.axes;
+      if (!axes || axes.length < 4) continue;
+      if (Math.abs(axes[2]) > Math.abs(x)) x = axes[2];
+      if (Math.abs(axes[3]) > Math.abs(y)) y = axes[3];
+    }
+    const ax = Math.abs(x), ay = Math.abs(y);
+    if (!practiceStickArmed) {
+      if (ax < STICK_REST && ay < STICK_REST) practiceStickArmed = true;
+      return;
+    }
+    if (ay >= STICK_PUSH && ay >= ax) {
+      practiceStickArmed = false;
+      drillInstance.adjust('speed', y < 0 ? 1 : -1);
+      haptics.pulseActive(0.3, 25);
+    } else if (ax >= STICK_PUSH) {
+      practiceStickArmed = false;
+      drillInstance.adjust('tempo', x > 0 ? 1 : -1);
+      haptics.pulseActive(0.3, 25);
+    }
   }
 
   // --- Paddle-hand A/X toggle (rising edge). Works with a single controller. ---
@@ -1508,6 +1644,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // guaranteed alive, and the write has to be issued from here rather than
     // from an unload handler, which on a headset-removal often never runs.
     endAnalyticsRun({});
+    // TEMPORARY fast-swing capture: send what is left while the page is alive.
+    if (swingCapture) swingCapture.stopSwingCapture();
     teardownDrill();
     clearStatsHud();
     offHand.dispose();
@@ -1524,6 +1662,8 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // the mesh out of the scene, so it cannot render in the next session.
     trainingMenu.hide();
     trainingMenu.dispose();
+    tournamentMenu.hide();
+    tournamentMenu.dispose();
     quickFit.dispose();
     // hide() cancels any in-flight room the panel still owns; a DELIVERED
     // connection is torn down below via the `multiplayer` bundle instead.
@@ -1693,6 +1833,7 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     updateMenuRaycast(pokeHandled);
     wristMenu.update(dt);
     pollQuickFitSticks(dt);
+    pollPracticeSticks();
 
     // Live HUD line
     if (state === 'drill' && drillInstance && !drillFinished) {

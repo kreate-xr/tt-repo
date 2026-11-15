@@ -295,6 +295,13 @@ const listeners = {
 let paddleRecoilHandler = null;
 export function setPaddleRecoilHandler(fn) { paddleRecoilHandler = fn || null; }
 
+// TEMPORARY fast-swing capture (js/diag/swingCapture.js — ?swingcap on the dev
+// server only; removed after the headset test). Session-lifetime like the
+// recoil handler above, so clearListeners() does not drop it between drills.
+// Null in every normal session, which costs one null check per frame.
+let swingDiag = null;
+export function setSwingDiagHandler(h) { swingDiag = h || null; }
+
 export function onPaddleHit(fn) { listeners.paddleHit.push(fn); }
 export function onTableBounce(fn) { listeners.tableBounce.push(fn); }
 export function onNetHit(fn) { listeners.netHit.push(fn); }
@@ -707,6 +714,11 @@ function tryPaddleCollision(ctx, prevBallPos, dt, clockTime) {
     return true;
   }
 
+  // The ball crossed the player's face plane without a contact: past the rim
+  // (hit=false) or inside it but within the hit cooldown (hit=true).
+  if (swingDiag && ctx.origin === 'player' && result.crossed) {
+    swingDiag.crossMiss(clockTime, result.hit, result.radialDist, ctx.hitRadius + swingMargin + ballRadius);
+  }
   if (SELF_TEST && result.crossed && !result.hit) {
     hudLog(`[NEAR MISS ${ctx.origin}] radial=${result.radialDist.toFixed(3)} over=${(result.radialDist - ctx.hitRadius - swingMargin - ballRadius).toFixed(3)}`);
   } else if (SELF_TEST && result.crossed && (clockTime - ctx.getLastHit()) <= HIT_COOLDOWN) {
@@ -899,7 +911,9 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
     // most recent emulated-position frame. Skipping this gate would let a
     // teleport-during-tracking-hiccup register as a swing at 40+ m/s.
     // AI paddles are unaffected — their pose is authoritative, not tracked.
-    if (xrController && hadControllerPos && !trackingShouldSuppressContact()) {
+    const contactSuppressed = !!(xrController && hadControllerPos && trackingShouldSuppressContact());
+    let playerHitThisFrame = false;
+    if (xrController && hadControllerPos && !contactSuppressed) {
       // Reused context object (module scope) — rebuilding the literal plus its
       // two closures every frame violated the no-allocation rule above.
       // Face-center reference for the ω×r term: paddleVelocity is the
@@ -915,7 +929,14 @@ export function tickPhysics(dt, xrController, clockTime, opts = {}) {
       _playerCollisionCtx.angularVelocity = paddleAngularVelocity;
       _playerCollisionCtx.pivot = velFaceCenter;
       _playerCollisionCtx.hitRadius = paddleHitRadius;
-      tryPaddleCollision(_playerCollisionCtx, prevBallPos, dt, clockTime);
+      playerHitThisFrame = tryPaddleCollision(_playerCollisionCtx, prevBallPos, dt, clockTime);
+    }
+    if (swingDiag && xrController && hadControllerPos) {
+      swingDiag.frame(
+        clockTime, dt, ballModel.position, paddleFaceCenterWorld,
+        rawSampled ? velFaceCenter : null, _rawPaddleVel.length(),
+        contactSuppressed, playerHitThisFrame,
+      );
     }
 
     // --- Paddle-ball collision (AI opponent paddles) ---

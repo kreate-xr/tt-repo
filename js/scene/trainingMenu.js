@@ -40,11 +40,20 @@ const BODY_Y = HEADER_H + 12;
 const FOOTER_IDS = ['settings', 'calibrate', 'tune', 'exit'];
 
 export class TrainingMenu {
-  constructor({ settings = null, difficulties = null, showTune = TUNER_ENABLED } = {}) {
+  /**
+   * `model` and `footerIds` let another menu with the same model shape reuse
+   * this renderer: the Tournament menu (js/modes/tournament/menuModel.js)
+   * passes its own model and a CLOSE-only footer.
+   */
+  constructor({
+    settings = null, difficulties = null, showTune = TUNER_ENABLED,
+    model = null, footerIds = null,
+  } = {}) {
     // Throttled hover repaints — see hoverRedraw.js.
     installHoverRedraw(this);
-    this.footerIds = showTune ? FOOTER_IDS : FOOTER_IDS.filter((id) => id !== 'tune');
-    this.model = new TrainingMenuModel({ settings });
+    const ids = footerIds || FOOTER_IDS;
+    this.footerIds = showTune ? ids : ids.filter((id) => id !== 'tune');
+    this.model = model || new TrainingMenuModel({ settings });
     this.panel = new Panel({ width: CANVAS_W, height: CANVAS_H });
     this.listeners = new Map();
     this.pokeCursor = null;
@@ -176,7 +185,7 @@ export class TrainingMenu {
     if (id.startsWith('item:')) {
       const res = m.selectItem(id.slice(5));
       if (res && res.action === 'start') {
-        return this.start(res.drill, res.config, res.options);
+        return this.start(res.drill, res.config, res.options, res.difficulty);
       }
       if (res && res.action === 'locked') {
         this.emit('locked', { feature: res.feature });
@@ -187,13 +196,15 @@ export class TrainingMenu {
     return undefined;
   }
 
-  // `options` carries the session's level and hand.
-  start(drill, config, options = null) {
+  // `options` carries the session's level and hand. A model that decides the
+  // AI tier itself (a tournament round) passes `difficulty`; otherwise the
+  // tier adopted from the wrist menu rides along.
+  start(drill, config, options = null, difficulty = null) {
     this.emit('start', {
       drill,
       config,
       options,
-      difficulty: this.difficulties[this.difficultyIndex].id,
+      difficulty: difficulty || this.difficulties[this.difficultyIndex].id,
     });
   }
 
@@ -345,7 +356,8 @@ export class TrainingMenu {
           ctx.fillText(sub, rect.x + 22, rect.y + rect.h / 2 + (tall ? 16 : 12));
         } else {
           ctx.textAlign = 'right';
-          ctx.fillText(sub, rect.x + rect.w - 46, rect.y + rect.h / 2);
+          // A padlock sits at the row's right edge; keep the text clear of it.
+          ctx.fillText(sub, rect.x + rect.w - (item.locked ? 64 : 46), rect.y + rect.h / 2);
           ctx.textAlign = 'left';
         }
       }

@@ -25,12 +25,12 @@ const fakeSettings = (initial = {}) => {
 };
 
 describe('play', () => {
-  test('opens on the Training Session and lists only its levels', () => {
+  test('opens on the Training Session: its levels, then the Ball Machine row', () => {
     const m = new TrainingMenuModel();
     expect(m.screen).toBe(SCREENS.ROOT);
     expect(m.canGoBack).toBe(false);
-    expect(m.title).toBe('TRAINING SESSION');
-    expect(m.items().map((i) => i.id)).toEqual(['beginner', 'player']);
+    expect(m.title).toBe('TRAINING');
+    expect(m.items().map((i) => i.id)).toEqual(['beginner', 'player', 'machine']);
     for (const i of m.items()) expect(i.available).toBe(true);
   });
 
@@ -171,5 +171,110 @@ describe('free version', () => {
     expect(m.selectItem('player').action).toBe('locked');
     tier.setFull(true);
     expect(m.selectItem('player').action).toBe('start');
+  });
+});
+
+describe('ball machine', () => {
+  const open = (opts) => {
+    const m = new TrainingMenuModel(opts);
+    expect(m.selectItem('machine')).toBeNull();
+    return m;
+  };
+
+  test('the row opens the list: eight practices, Build your own, then the Random switch', () => {
+    const m = open();
+    expect(m.screen).toBe(SCREENS.MACHINE);
+    expect(m.title).toBe('BALL MACHINE');
+    expect(m.breadcrumb).toBe('PLAY › BALL MACHINE');
+    expect(m.items().map((i) => i.id)).toEqual([
+      'practice:forehand', 'practice:backhand', 'practice:push', 'practice:loop',
+      'practice:sidespin', 'practice:twoPoint', 'practice:threePoint', 'practice:readSpin',
+      'customOpen',
+      'machineRandom',
+    ]);
+    for (const i of m.items()) expect(i.subtitle).toBeTruthy();
+    expect(m.back()).toBe(true);
+    expect(m.screen).toBe(SCREENS.ROOT);
+  });
+
+  test('a practice row starts the machine on it, with the hand and the Random switch', () => {
+    const m = open({ settings: fakeSettings({ dominantHand: 'L' }) });
+    expect(m.selectItem('practice:push')).toEqual({
+      action: 'start', drill: 'practice', config: null,
+      options: { practice: 'push', hand: 'L', random: false },
+    });
+    expect(m.selectItem('machineRandom')).toBeNull();
+    expect(m.items().find((i) => i.id === 'machineRandom').subtitle).toMatch(/^On/);
+    expect(m.selectItem('practice:loop').options).toEqual({ practice: 'loop', hand: 'L', random: true });
+    expect(m.selectItem('machineRandom')).toBeNull();
+    expect(m.items().find((i) => i.id === 'machineRandom').subtitle).toMatch(/^Off/);
+  });
+
+  test('on the free version only the two drives start; the rest are tappable locks', () => {
+    tier.setFull(false);
+    const m = open();
+    const rows = m.items().filter((i) => i.id.startsWith('practice:'));
+    expect(rows.filter((r) => !r.locked).map((r) => r.id)).toEqual(['practice:forehand', 'practice:backhand']);
+    expect(m.selectItem('practice:forehand').action).toBe('start');
+    expect(m.selectItem('practice:readSpin')).toEqual({ action: 'locked', feature: 'practice' });
+    // The Random switch is not a lock.
+    expect(m.items().find((i) => i.id === 'machineRandom').locked).toBeUndefined();
+  });
+});
+
+describe('build your own', () => {
+  const open = (opts) => {
+    const m = new TrainingMenuModel(opts);
+    m.selectItem('machine');
+    expect(m.selectItem('customOpen')).toBeNull();
+    return m;
+  };
+  const sub = (m, id) => m.items().find((i) => i.id === id).subtitle;
+
+  test('opens its own screen: spin, side, length, then START with the choice spelled out', () => {
+    const m = open();
+    expect(m.screen).toBe(SCREENS.CUSTOM);
+    expect(m.title).toBe('BUILD YOUR OWN');
+    expect(m.breadcrumb).toBe('PLAY › BALL MACHINE › BUILD YOUR OWN');
+    expect(m.items().map((i) => i.id)).toEqual(['custom:spin', 'custom:side', 'custom:length', 'custom:start']);
+    expect(sub(m, 'custom:start')).toBe('Topspin  ·  Forehand  ·  Long');
+    expect(m.back()).toBe(true);
+    expect(m.screen).toBe(SCREENS.MACHINE);
+  });
+
+  test('a tap moves a choice to its next value and wraps round', () => {
+    const m = open();
+    expect(m.selectItem('custom:spin')).toBeNull();
+    expect(sub(m, 'custom:spin')).toMatch(/^Backspin/);
+    for (let i = 0; i < 3; i++) m.selectItem('custom:spin');
+    expect(sub(m, 'custom:spin')).toMatch(/^Topspin/);
+    m.selectItem('custom:length');
+    m.selectItem('custom:side');
+    expect(sub(m, 'custom:start')).toBe('Topspin  ·  Middle  ·  Short');
+  });
+
+  test('START runs the machine on the built ball, and the choice is remembered', () => {
+    const m = open({ settings: fakeSettings({ dominantHand: 'L' }) });
+    m.selectItem('custom:spin');
+    expect(m.selectItem('custom:start')).toEqual({
+      action: 'start', drill: 'practice', config: null,
+      options: {
+        practice: 'custom', custom: { spin: 'back', side: 'forehand', length: 'long' },
+        hand: 'L', random: false,
+      },
+    });
+    m.reset();
+    m.selectItem('machine');
+    m.selectItem('customOpen');
+    expect(sub(m, 'custom:spin')).toMatch(/^Backspin/);
+  });
+
+  test('is a tappable lock on the free version', () => {
+    tier.setFull(false);
+    const m = new TrainingMenuModel();
+    m.selectItem('machine');
+    expect(m.items().find((i) => i.id === 'customOpen').locked).toBe(true);
+    expect(m.selectItem('customOpen')).toEqual({ action: 'locked', feature: 'practice' });
+    expect(m.screen).toBe(SCREENS.MACHINE);
   });
 });

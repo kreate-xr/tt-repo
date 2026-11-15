@@ -21,7 +21,7 @@ import {
 } from '../../../scene/models.js';
 import { spawnBallAt } from '../../../physics/ball.js';
 import { playMenuHoverTick } from '../../../scene/audio.js';
-import { FeedEngine } from '../feedEngine.js';
+import { FeedEngine, originPosition } from '../feedEngine.js';
 import { BallMachineFigure, LAUNCH_LEAD_SEC, computeContactPose } from '../ballMachineFigure.js';
 import { validateConfig, INFINITE } from '../drillConfig.js';
 import { WARMUP_FEED } from '../presets.js';
@@ -73,6 +73,10 @@ export function createM1BallMachineDrill({
   const figure = new BallMachineFigure();
   const engine = new FeedEngine(cfg, env, { rng, animationLeadSec: LAUNCH_LEAD_SEC });
   if (configProvider) engine.setConfigProvider(configProvider);
+  // Stand the machine at its feed position from the first frame. Until the
+  // first feed aims it, it would otherwise sit at the world origin — under
+  // the middle of the table — and jump to its place a second later.
+  figure.glideTo(originPosition(cfg, env), { immediate: true });
 
   // M7's analytics sink. Separate from xr/contactLog.js, which clears on any
   // calibration change (migration-plan D5).
@@ -321,6 +325,19 @@ export function createM1BallMachineDrill({
     // Session's rests). A ball already in flight still gets its verdict.
     pause() { engine.pause(); },
     resume() { engine.resume(); },
+
+    /**
+     * Feed the next ball now instead of waiting out the gap (and the previous
+     * ball). Refused while the machine is already spinning one up, so a double
+     * press cannot queue two, and while paused or finished. A ball still in
+     * play gets its verdict from the feed handler exactly as on a timed feed.
+     * Returns whether a feed was started.
+     */
+    feedNow() {
+      if (engine.paused || engine.finished || !figure.isIdle) return false;
+      engine.feedNow();
+      return true;
+    },
 
     dispose() {
       if (ballEvents) {

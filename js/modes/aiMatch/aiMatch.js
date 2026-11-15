@@ -40,7 +40,9 @@ import {
   recordPlayerLanding, recordIncomingBall, recordReturnDirection,
   resetRecentLandings, setStyleHomeDistance,
 } from './readyPosition.js';
-import { pickStyleForMatch, homeDistanceForStyle, contactDelayForStyle } from '../../ai/playerStyles.js';
+import {
+  PLAYER_STYLES, pickStyleForMatch, homeDistanceForStyle, contactDelayForStyle,
+} from '../../ai/playerStyles.js';
 import { createServer, SERVE_STATES } from './serve.js';
 import { createPlayerServeController } from './playerServe.js';
 import { createRallyManager } from './rallyManager.js';
@@ -191,6 +193,13 @@ export function createAIMatchDrill({
   ballEvents, profile, xr, hooks = null, scoreboardAnchor = null, env = null,
   sideScreenAnchor = null,
   competition = true, bestOf: bestOfIn = null,
+  // Tournament mode (js/modes/tournament/) fixes the opponent instead of
+  // rolling one: `style` is a PLAYER_STYLES value (null = the usual random
+  // pick), `opponentName` replaces "AI" on the scoreboard and report card,
+  // and `matchEnd({ won })` may return { title, buttons } for the report card.
+  // Report buttons other than playAgain / exit are passed to
+  // `onReportButton(id)`. A quick AI match passes none of these.
+  style: styleIn = null, opponentName = null, matchEnd = null, onReportButton = null,
 } = {}) {
   if (!ballEvents) throw new Error('createAIMatchDrill requires { ballEvents }');
   const arena = env;
@@ -262,7 +271,10 @@ export function createAIMatchDrill({
   // attacker/blocker/allround; Pro can also be a chopper. Each match
   // instance rolls a fresh style so back-to-back matches at the same
   // difficulty feel like different opponents.
-  const style = pickStyleForMatch(difficulty, Math.random);
+  // A tournament round fixes the style; an unknown value falls back to the roll.
+  const style = Object.values(PLAYER_STYLES).includes(styleIn)
+    ? styleIn
+    : pickStyleForMatch(difficulty, Math.random);
 
   // --- AI paddle + intent + FSM -------------------------------------------
   // V2 §section_4: reset any landing history from a prior session so Pro's
@@ -495,7 +507,10 @@ export function createAIMatchDrill({
   // scoreboardAnchor is populated by the Focus Room's back wall
   // (js/scene/focusRoom.js getBackWallAnchor). MR leaves it null and the
   // scoreboard falls back to its floating position behind the AI baseline.
-  const scoreboard = createScoreboard({ config: { bestOf }, anchor: scoreboardAnchor });
+  const scoreboard = createScoreboard({
+    config: opponentName ? { bestOf, aiName: opponentName } : { bestOf },
+    anchor: scoreboardAnchor,
+  });
 
   let arenaLighting = null;
   // Any venue exposing ceiling fixtures (currently the Focus Room) gets
@@ -554,6 +569,13 @@ export function createAIMatchDrill({
   report.on('exit', () => {
     if (hooks && hooks.exitToMenu) queueMicrotask(() => hooks.exitToMenu());
   });
+  // Buttons a tournament adds to the card. Deferred for the same reason as
+  // playAgain: the handler tears this drill down.
+  for (const id of ['nextRound', 'tournament']) {
+    report.on(id, () => {
+      if (onReportButton) queueMicrotask(() => onReportButton(id));
+    });
+  }
   // Seed the first-serve indicator so it lights before any events fire.
   updateBoards({ currentServer: initialScore.currentServer });
 
@@ -721,11 +743,18 @@ export function createAIMatchDrill({
       aiGames: e.aiGames,
       stats: s,
     });
+    // A tournament records the round here and says what the card offers next.
+    let custom = null;
+    if (matchEnd) {
+      try { custom = matchEnd({ won: e.winner === 'player' }); } catch (err) {
+        console.error('[AI Match] matchEnd hook failed:', err);
+      }
+    }
     report.setModel({
       // The headline the scoreboard banner used to carry.
-      title: e.winner === 'player' ? 'YOU WIN!' : 'AI WINS',
+      title: (custom && custom.title) || (e.winner === 'player' ? 'YOU WIN!' : `${opponentName || 'AI'} WINS`),
       playerName: 'YOU',
-      opponentName: 'AI',
+      opponentName: opponentName || 'AI',
       playerGames: e.playerGames,
       opponentGames: e.aiGames,
       bestOf,
@@ -738,7 +767,7 @@ export function createAIMatchDrill({
         topSpinPct: s.topSpinPct,
         totalPoints: totalPointsFromSets(sets),
       },
-      buttons: [
+      buttons: (custom && custom.buttons) || [
         // No restart hook (a host that never passed one) → the button would
         // do nothing, so it says so rather than silently swallowing presses.
         { id: 'playAgain', label: 'PLAY AGAIN', tone: 'primary', disabled: !(hooks && hooks.restart) },
