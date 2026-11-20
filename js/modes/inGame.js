@@ -819,18 +819,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // were bound before the asset load, further up.
   uiInputReady = true;
 
-  // TEMPORARY fast-swing capture (js/diag/swingCapture.js). Only with
-  // ?swingcap on the dev server; the import is skipped otherwise, and a
-  // production build can't take this branch (__IS_DEV_SERVER__ is false).
-  let swingCapture = null;
-  if (typeof __IS_DEV_SERVER__ !== 'undefined' && __IS_DEV_SERVER__
-      && new URLSearchParams(window.location.search).has('swingcap')) {
-    import('../diag/swingCapture.js').then((m) => {
-      swingCapture = m;
-      if (m.startSwingCapture()) hudLog('[swingcap] capturing');
-    }).catch((err) => console.error('[swingcap] failed to load:', err));
-  }
-
   // --- Wrist menu actions ---
   wristMenu.on('start', ({ drill, difficulty, config, options }) => {
     // MULTI with no live peer connection opens the in-XR lobby panel instead
@@ -1644,8 +1632,6 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
     // guaranteed alive, and the write has to be issued from here rather than
     // from an unload handler, which on a headset-removal often never runs.
     endAnalyticsRun({});
-    // TEMPORARY fast-swing capture: send what is left while the page is alive.
-    if (swingCapture) swingCapture.stopSwingCapture();
     teardownDrill();
     clearStatsHud();
     offHand.dispose();

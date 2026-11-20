@@ -1,40 +1,7 @@
 import { defineConfig, loadEnv } from 'vite';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 import { createRequire } from 'node:module';
-import { existsSync, mkdirSync, appendFileSync } from 'node:fs';
-
-// TEMPORARY — receiver for the fast-swing headset capture
-// (js/diag/swingCapture.js, ?swingcap). The Quest has no readable console, so
-// the page POSTs its records here and they are appended to
-// diag/swingcap.jsonl (gitignored). `apply: 'serve'`: never part of a build.
-// Remove together with js/diag/ after the test.
-function swingCaptureReceiver() {
-  return {
-    name: 'swing-capture-receiver',
-    apply: 'serve',
-    configureServer(server) {
-      server.middlewares.use('/__swingcap', (req, res) => {
-        if (req.method !== 'POST') { res.statusCode = 405; res.end(); return; }
-        let body = '';
-        req.on('data', (chunk) => {
-          body += chunk;
-          if (body.length > 1_000_000) req.destroy();
-        });
-        req.on('end', () => {
-          try {
-            mkdirSync('diag', { recursive: true });
-            appendFileSync('diag/swingcap.jsonl', body.endsWith('\n') ? body : `${body}\n`);
-            res.statusCode = 204;
-          } catch (err) {
-            console.error('[swingcap] write failed:', err);
-            res.statusCode = 500;
-          }
-          res.end();
-        });
-      });
-    },
-  };
-}
+import { existsSync } from 'node:fs';
 
 // Stamped into every session doc (js/analytics/session.js) so an error can be
 // tied to the deploy it came from — otherwise a fixed crash is indistinguishable
@@ -77,7 +44,7 @@ export default defineConfig(({ mode, command }) => {
   console.log(`[vite] mode=${mode} firebase project=${env.VITE_FIREBASE_PROJECT_ID || '(unset)'}`);
 
   return {
-  plugins: [...(httpOnly ? [] : [basicSsl()]), swingCaptureReceiver()],
+  plugins: [...(httpOnly ? [] : [basicSsl()])],
   define: {
     __APP_VERSION__: JSON.stringify(version),
     __GTM_CONTAINER_ID__: JSON.stringify(env.VITE_GTM_CONTAINER_ID || ''),
