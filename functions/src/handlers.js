@@ -36,7 +36,7 @@ import {
   cachedRefundableUntil, REFUND_PLAY_LIMIT_MS, LEASE_ACTIONS, LEASE_MS,
 } from './playtime.js';
 import {
-  verifyWebhook, createPaymentIntent, retrieveIntent, createRefund,
+  verifyWebhook, createPaymentIntent, retrieveIntent, createRefund, refundBreakdown,
   WebhookSignatureError, PayLayerApiError, SIGNATURE_HEADER,
 } from './paylayer.js';
 
@@ -186,6 +186,8 @@ function refundView(ent, order, user, uid, nowMs) {
     reason,
     refundableUntil: until === null ? null : new Date(until).toISOString(),
     playedSec: Math.floor(played / 1000),
+    // { amount, processingFee, currency } once PayLayer has reported them.
+    breakdown: order.refund || null,
   };
 }
 
@@ -469,8 +471,11 @@ async function postRefund(req, deps) {
     }
   });
 
+  let breakdown;
   try {
-    await createRefund(payCfg(deps), order.intentId, { reason: REFUND_REASON }, `refund-${order.intentId}`);
+    const refund = await createRefund(payCfg(deps), order.intentId, { reason: REFUND_REASON }, `refund-${order.intentId}`);
+    breakdown = refundBreakdown(refund, order.amount, order.currency);
+    if (!breakdown) deps.log({ msg: 'refund response without a usable amount/processingFee — breakdown not shown', orderId, alert: true });
   } catch (err) {
     if (err instanceof PayLayerApiError && err.status < 500) {
       // Already refunded, or the same key still in flight: the webhook settles it.
@@ -489,7 +494,11 @@ async function postRefund(req, deps) {
     deps.log({ msg: 'refund outcome unknown — left refund_requested', orderId, error: String((err && err.message) || err), alert: true });
     return { status: 'refund_requested', pending: true };
   }
-  return { status: 'refund_requested' };
+  if (!breakdown) return { status: 'refund_requested' };
+  // What the player gets back and what the gateway kept: shown now, and on
+  // the account screen afterwards (refundView).
+  await orderRef.update({ refund: breakdown });
+  return { status: 'refund_requested', refund: breakdown };
 }
 
 // ── POST /webhooks/paylayer ─────────────────────────────────────────────────
@@ -637,13 +646,17 @@ async function postPayLayerWebhook(req, deps) {
         break;
 
       case 'refund.created':
-      case 'refund.processed':
+      case 'refund.processed': {
         if (order.status !== 'refunded') tx.update(orderRef, { status: 'refunded', refundedAt: ts, updatedAt: ts });
+        // Also how a Razorpay Dashboard refund's numbers reach the account screen.
+        const breakdown = refundBreakdown(event.data.refund, order.amount, order.currency);
+        if (breakdown) tx.update(orderRef, { refund: breakdown });
         if (order.duplicate === true) { outcome = 'duplicate_refunded'; break; }
         if (isSource && ent.active === true) tx.update(entRef, { active: false, revokedAt: ts });
         tx.set(userRef, { refundUsed: true, updatedAt: ts }, { merge: true });
         outcome = 'revoked';
         break;
+      }
 
       case 'refund.failed':
         if (order.duplicate === true) {

@@ -61,6 +61,28 @@ const REFUND_REASONS = {
   played_too_long: 'Refund not available: refunds are only for less than 2 hours of play.',
 };
 
+const MONEY = { INR: ['₹', 'en-IN'], USD: ['US$', 'en-US'] };
+
+/** 194988, 'INR' → '₹1,949.88'. `minor` is paise or cents. */
+export function formatMoney(minor, currency) {
+  const [symbol, locale] = MONEY[currency] || [`${currency} `, 'en-US'];
+  return symbol + (minor / 100).toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+/**
+ * What a refund paid back, in words. `breakdown` is the server's
+ * { amount, processingFee, currency } (functions/src/paylayer.js
+ * refundBreakdown); '' when it has none.
+ */
+export function refundAmounts(breakdown) {
+  if (!breakdown) return '';
+  const { amount, processingFee, currency } = breakdown;
+  const fee = processingFee > 0
+    ? `${formatMoney(processingFee, currency)} payment processing charges deducted`
+    : 'no processing charges deducted';
+  return `${formatMoney(amount, currency)} to your original payment method (${fee})`;
+}
+
 /**
  * The refund block on the account screen: whether to show the button, and
  * the line above it. `refund` is /api/me's (null = never bought).
@@ -76,8 +98,12 @@ export function refundState(refund, formatDate = (d) => d.toLocaleString()) {
       note: until ? `Refund available until ${formatDate(until)}.` : 'Refund available.',
     };
   }
-  const note = REFUND_REASONS[refund.reason];
-  return note ? { show: true, button: false, note } : { show: false, button: false, note: '' };
+  let note = REFUND_REASONS[refund.reason];
+  if (!note) return { show: false, button: false, note: '' };
+  const refunded = refund.reason === 'refund_in_progress' || refund.reason === 'already_refunded';
+  const amounts = refunded ? refundAmounts(refund.breakdown) : '';
+  if (amounts) note += ` Refund: ${amounts}.`;
+  return { show: true, button: false, note };
 }
 
 // The refund button asks twice: a refund takes the game away.
@@ -347,8 +373,11 @@ function wireForms() {
     refundConfirmUntil = 0;
     run(async (m) => {
       setStatus('Requesting your refund…');
-      await m.requestRefund();
-      setStatus('Refund requested. The unlock has been removed and the payment goes back to your original payment method.');
+      const result = await m.requestRefund();
+      const amounts = refundAmounts(result && result.refund);
+      setStatus(amounts
+        ? `Refund of ${amounts} initiated. It usually arrives within 5–7 working days. The unlock has been removed.`
+        : 'Refund requested. The unlock has been removed and the payment goes back to your original payment method, less payment processing charges.');
     });
   });
 

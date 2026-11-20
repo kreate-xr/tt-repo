@@ -43,7 +43,8 @@ async function call(method, path, body) {
 
 /**
  * { entitled, metered, trial (legacy, ignored),
- *   refund: null | { eligible, reason, refundableUntil, playedSec },
+ *   refund: null | { eligible, reason, refundableUntil, playedSec,
+ *                     breakdown: null | { amount, processingFee, currency } },
  *   account: { anonymous, email, emailVerified, hasCheckoutProfile } }
  */
 export const fetchMe = () => call('GET', '/api/me');
@@ -54,5 +55,5 @@ export const postLease = (action) => call('POST', '/api/trial/lease', { action }
 /** `consent`: the checkout checkbox, re-checked by the server. → { intentId, clientSecret } */
 export const postOrder = ({ name, phone, consent }) => call('POST', '/api/orders', { name, phone, consent });
 
-/** Refund the account's own purchase. → { status: 'refund_requested', pending? } */
+/** Refund the account's own purchase. → { status: 'refund_requested', pending?, refund?: { amount, processingFee, currency } } */
 export const postRefund = () => call('POST', '/api/refund', {});

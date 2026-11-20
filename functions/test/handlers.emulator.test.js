@@ -550,6 +550,43 @@ test('refund: refund.created finalises the same way', { skip: !RUN }, async () =
   assert.equal((await user('u-ref-created')).refundUsed, true);
 });
 
+test('refund: the amount refunded and the processing fee reach the player', { skip: !RUN }, async () => {
+  const c = await checkout('u-ref-fee');
+  await payFor(c);
+  const paid = (await order(c.orderId)).amount;
+  const money = { amount: paid - 4712, processingFee: 4712, currency: 'INR' };
+  pay.onRefund = () => json(201, { id: 'rf_1', object: 'refund', status: 'processed', intentId: c.intentId, ...money });
+
+  const r = await requestRefund(c.t);
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body, { status: 'refund_requested', refund: money });
+  assert.deepEqual((await order(c.orderId)).refund, money);
+  let me = (await call('GET', '/api/me', { auth: c.t })).body;
+  assert.deepEqual(me.refund.breakdown, money);
+
+  await webhook(refundEvent('refund.processed', c));
+  me = (await call('GET', '/api/me', { auth: c.t })).body;
+  assert.deepEqual([me.refund.reason, me.refund.breakdown], ['already_refunded', money]);
+});
+
+test('refund: numbers that do not add up to the payment are not shown; a webhook can supply them', { skip: !RUN }, async () => {
+  const c = await checkout('u-ref-odd');
+  await payFor(c);
+  const paid = (await order(c.orderId)).amount;
+  pay.onRefund = () => json(201, { id: 'rf_1', status: 'processed', amount: paid, processingFee: 4712, currency: 'INR' });
+
+  const r = await requestRefund(c.t);
+  assert.deepEqual(r.body, { status: 'refund_requested' });
+  assert.equal((await order(c.orderId)).refund, undefined);
+
+  const money = { amount: paid - 4712, processingFee: 4712, currency: 'INR' };
+  await webhook(event('evt_ref_odd', 'refund.processed',
+    { ...pay.intents.get(c.intentId), id: c.intentId, siteReference: c.orderId },
+    { refund: { id: 'rf_1', object: 'refund', intentId: c.intentId, status: 'processed', ...money } }));
+  assert.deepEqual((await order(c.orderId)).refund, money);
+  assert.deepEqual((await call('GET', '/api/me', { auth: c.t })).body.refund.breakdown, money);
+});
+
 test('refund: blocked at 2 hours of play', { skip: !RUN }, async () => {
   const c = await checkout('u-long');
   await payFor(c);

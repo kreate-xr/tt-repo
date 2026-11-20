@@ -6,7 +6,7 @@
 //                                 first response, as PayLayer does
 //   GET  /v1/payment-intents/:id  backend → retrieve (refundableUntil)
 //   POST /v1/payment-intents/:id/refunds
-//                                 backend → full refund; answers 201, then
+//                                 backend → refund less the processing fee; answers 201, then
 //                                 sends the signed refund.processed webhook
 //   GET  /sdk/v1/pay.js           browser SDK: window.Pay.checkout(...)
 //   POST /v1/checkout/:id/pay     what the fake SDK calls instead of opening
@@ -156,10 +156,13 @@ export function startFakePayLayer({ port, webhookUrl, log = () => {} }) {
         if (body.amount !== undefined) return send(400, { error: { code: 'partial_refund_not_supported' } });
         intent.status = 'refunded';
         refunds.push({ intentId: intent.id, body, idempotencyKey: req.headers['idempotency-key'] });
-        send(201, { id: 'rf_fake', object: 'refund', intentId: intent.id, status: 'processed' });
+        // The gateway keeps its processing fee; amount + processingFee = paid.
+        const processingFee = Math.floor(intent.amount * 0.0236);
+        const money = { amount: intent.amount - processingFee, processingFee, currency: intent.currency };
+        send(201, { id: 'rf_fake', object: 'refund', intentId: intent.id, status: 'processed', ...money });
         // After the answer, as Razorpay's own notification would arrive.
         setTimeout(() => {
-          sendWebhook('refund.processed', intent, { refund: { id: 'rf_fake', status: 'processed' } })
+          sendWebhook('refund.processed', intent, { refund: { id: 'rf_fake', status: 'processed', ...money } })
             .catch((err) => log(`refund webhook failed: ${err.message}`));
         }, 50);
         return;

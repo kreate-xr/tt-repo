@@ -226,7 +226,7 @@ async function main() {
       assert.match(await page.locator('label.acct-consent').textContent(),
         /I agree that the game unlocks immediately after payment and that I lose my 14-day right of withdrawal once it does\./);
       assert.equal((await page.locator('.acct-refund-terms').textContent()).trim(),
-        "Refunds: within 3 days of purchase if you've played less than 2 hours since buying. A refund removes the unlock. One refund per account.");
+        "Refunds: within 3 days of purchase if you've played less than 2 hours since buying, less the payment gateway's processing charges (around 2–3%). A refund removes the unlock. One refund per account.");
       assert.match(await page.locator('.acct-legal').textContent(), /By paying you agree to our/);
       await consent.check();
       assert.equal(await payBtn.isDisabled(), false);
@@ -369,7 +369,10 @@ async function main() {
       assert.match(await btn.textContent(), /Tap again to confirm/);
       assert.equal(pay.refunds.length, 0, 'the first tap only asks to confirm');
       await btn.click();
-      await page.waitForFunction(() => /Refund requested/.test(document.getElementById('account-status').textContent), null, { timeout: 20_000 });
+      await page.waitForFunction(() => /Refund of /.test(document.getElementById('account-status').textContent), null, { timeout: 20_000 });
+      // 199700 paise paid; the fake gateway keeps 2.36 %.
+      assert.match(await page.textContent('#account-status'),
+        /Refund of ₹1,949\.88 to your original payment method \(₹47\.12 payment processing charges deducted\) initiated/);
       assert.equal(pay.refunds.length, 1);
       assert.equal(pay.refunds[0].intentId, paidIntent.id);
       assert.equal(pay.refunds[0].idempotencyKey, `refund-${paidIntent.id}`);

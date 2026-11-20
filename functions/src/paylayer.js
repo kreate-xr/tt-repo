@@ -1,5 +1,5 @@
 // What this backend needs from PayLayer (D:\Bhuvnesh_Data\Payment): create
-// and retrieve a payment intent, refund it in full, and verify the webhooks
+// and retrieve a payment intent, refund it (PayLayer keeps the gateway's processing fee), and verify the webhooks
 // it sends back.
 //
 // Ported from PayLayer's packages/node (client.ts, signature.ts) rather than
@@ -116,11 +116,32 @@ export function retrieveIntent(cfg, intentId) {
 }
 
 /**
- * POST /v1/payment-intents/:id/refunds — always the FULL amount (no `amount`
- * is ever sent). 201 = accepted by Razorpay, 202 = outcome pending; both
+ * POST /v1/payment-intents/:id/refunds — always the whole payment (no `amount`
+ * is ever sent; PayLayer deducts the gateway's processing fee and reports it,
+ * see refundBreakdown). 201 = accepted by Razorpay, 202 = outcome pending; both
  * resolve, and a refund.* webhook settles it. A retry must reuse the same
  * key and the same params.
  */
 export function createRefund(cfg, intentId, { reason }, idempotencyKey) {
   return request(cfg, 'POST', `/v1/payment-intents/${encodeURIComponent(intentId)}/refunds`, { reason }, idempotencyKey);
+}
+
+/**
+ * What a refund paid back, from PayLayer's refund object (the refunds
+ * response, or a refund.* webhook's): `amount` went back to the player,
+ * `processingFee` was kept by the gateway, both in the smallest unit of
+ * `currency`. Null unless all three are well-formed AND add up to `paid`
+ * (the order's amount) in the order's currency — the player is shown these
+ * numbers, so anything that does not add up is not shown at all.
+ *
+ * @returns {null|{ amount: number, processingFee: number, currency: string }}
+ */
+export function refundBreakdown(refund, paid, paidCurrency) {
+  if (!refund || typeof refund !== 'object') return null;
+  const { amount, processingFee, currency } = refund;
+  if (!Number.isSafeInteger(amount) || amount < 0) return null;
+  if (!Number.isSafeInteger(processingFee) || processingFee < 0) return null;
+  if (typeof currency !== 'string' || currency !== paidCurrency) return null;
+  if (amount + processingFee !== paid) return null;
+  return { amount, processingFee, currency };
 }

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { verifyWebhook, signWebhookPayload, WebhookSignatureError } from '../src/paylayer.js';
+import { verifyWebhook, signWebhookPayload, WebhookSignatureError, refundBreakdown } from '../src/paylayer.js';
 import { priceFor, E164 } from '../src/pricing.js';
 
 const SECRET = 'whsec_test';
@@ -28,6 +28,22 @@ test('rejects a wrong secret, a tampered body, a stale timestamp and a missing h
     { rawBody: body, signatureHeader: 'garbage', secret: SECRET, now },
   ];
   for (const opts of bad) assert.throws(() => verifyWebhook(opts), WebhookSignatureError);
+});
+
+test('refund breakdown: only numbers that add up to what was paid are passed on', () => {
+  const ok = { amount: 194988, processingFee: 4712, currency: 'INR' };
+  assert.deepEqual(refundBreakdown({ id: 'rf_1', status: 'processed', ...ok }, 199700, 'INR'), ok);
+  assert.deepEqual(refundBreakdown({ amount: 1997, processingFee: 0, currency: 'USD' }, 1997, 'USD'),
+    { amount: 1997, processingFee: 0, currency: 'USD' });
+  for (const bad of [
+    undefined, null, 'rf_1', {},
+    { ...ok, processingFee: undefined },
+    { ...ok, amount: '194988' },
+    { ...ok, amount: 1949.88 },
+    { ...ok, processingFee: -1, amount: 199701 },
+    { ...ok, currency: 'USD' },
+    { ...ok, amount: 194000 }, // does not add up to the payment
+  ]) assert.equal(refundBreakdown(bad, 199700, 'INR'), null, JSON.stringify(bad));
 });
 
 test('pricing: Indian numbers pay INR, everyone else USD', () => {

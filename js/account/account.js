@@ -208,7 +208,8 @@ export async function buyFullGame({ name, phone, consent }, { onPaid = () => {} 
 /**
  * Refund this account's purchase. Every rule is the server's; a refusal
  * throws an ApiError whose message says why.
- * @returns {Promise<{ status: 'refund_requested', pending?: boolean }>}
+ * @returns {Promise<{ status: 'refund_requested', pending?: boolean,
+ *   refund?: { amount: number, processingFee: number, currency: string } }>}
  */
 export async function requestRefund() {
   const result = await postRefund();
