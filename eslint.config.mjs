@@ -31,6 +31,7 @@ export default [
         __RECAPTCHA_SITE_KEY__: 'readonly',
         __APPCHECK_DEBUG_TOKEN__: 'readonly',
         __IS_DEV_SERVER__: 'readonly',
+        __DEMO_FULL__: 'readonly',
         __PAYLAYER_URL__: 'readonly',
       },
     },

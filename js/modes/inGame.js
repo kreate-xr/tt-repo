@@ -24,7 +24,7 @@ import { beginSession, endSession as endAnalyticsRun, mark } from '../analytics/
 import { showPostSession } from '../ui/postSession.js';
 import { refreshProgress } from '../ui/progressPanel.js';
 import { showReconnect, refreshAccessSoon, isPlayMetered } from '../ui/accountPanel.js';
-import { isFull } from '../account/tier.js';
+import { isFull, isDemoFull } from '../account/tier.js';
 import { createTrialClock } from '../account/trialClock.js';
 import { hudLog, TUNER_ENABLED } from '../scene/hud.js';
 // Frame-time meter: opt-in with ?fps in the URL (see fpsMeter.js).
@@ -709,11 +709,12 @@ export async function startInGame({ overlay, loadingScreen, statusEl, multiplaye
   // finish (METER_END_GRACE_MS at most) and the session ends; the 2D page
   // then shows a reconnect message in place of the post-session dialog. The
   // API module, and the Firebase SDK behind it, load on the first lease call
-  // — never on entry.
+  // — never on entry. The dev server's demo mode (js/account/tier.js) has no
+  // purchase behind it and may have no connection, so it is never metered.
   const METER_END_GRACE_MS = 8000;
   let meterBlockedAt = null; // performance.now() when the clock blocked play
   let meterEndRequested = false;
-  const trialClock = isFull()
+  const trialClock = isFull() && !isDemoFull()
     ? createTrialClock({
       lease: (action) => import('../account/api.js').then((m) => m.postLease(action)),
       onBlocked: () => {

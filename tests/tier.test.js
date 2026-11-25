@@ -100,6 +100,37 @@ describe('the last known answer', () => {
   });
 });
 
+describe('demo mode (npm run dev:demo)', () => {
+  beforeEach(() => {
+    jest.resetModules();
+    globalThis.__DEMO_FULL__ = true;
+    tier = require('../js/account/tier.js');
+  });
+  afterEach(() => { delete globalThis.__DEMO_FULL__; });
+
+  test('is the full version with nothing stored and no account', () => {
+    expect(tier.isDemoFull()).toBe(true);
+    expect(tier.isFull()).toBe(true);
+    expect(tier.canUseVenue('vr-arena')).toBe(true);
+    expect(tier.effectiveBestOf(5)).toBe(5);
+  });
+
+  test('a server answer neither takes it away nor reaches storage', () => {
+    tier.setFull(false);
+    expect(tier.isFull()).toBe(true);
+    tier.setFull(true);
+    expect(globalThis.localStorage.data['tt.fullVersion']).toBeUndefined();
+  });
+
+  test('is off unless the flag is literally true', () => {
+    globalThis.__DEMO_FULL__ = 'true';
+    jest.resetModules();
+    tier = require('../js/account/tier.js');
+    expect(tier.isDemoFull()).toBe(false);
+    expect(tier.isFull()).toBe(false);
+  });
+});
+
 describe('change notifications', () => {
   test('fire on a change only, and stop after unsubscribing', () => {
     const seen = [];

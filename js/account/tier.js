@@ -20,9 +20,20 @@
 // Like the rest of the game this is enforced client-side; a patched client
 // can skip it, which is accepted at this price (functions/index.js).
 //
+// DEMO: `npm run dev:demo` (vite.config.js) serves the full version to every
+// headset with no account and no connection, for an exhibition stand without
+// internet. The flag is defined true only under the dev server in demo mode —
+// `vite build` always defines it false, so no deployed bundle can carry it.
+// While it is on, server answers are ignored and nothing is written to
+// storage, so leaving demo mode returns each headset to its real tier.
+//
 // No Firebase in here — it is imported by the startup bundle and the menus.
 
 const STORE_KEY = 'tt.fullVersion';
+
+// Read behind a typeof guard so the module also loads under Jest, where
+// nothing is substituted (see eslint.config.mjs).
+const DEMO_FULL = typeof __DEMO_FULL__ !== 'undefined' ? __DEMO_FULL__ === true : false;
 
 export const FREE_AI_LEVELS = Object.freeze(['beginner']);
 export const FREE_BEST_OF = 1;
@@ -75,17 +86,21 @@ function readStore() {
   try { return localStorage.getItem(STORE_KEY) === '1'; } catch { return false; }
 }
 
-let full = readStore();
+let full = DEMO_FULL || readStore();
 const listeners = new Set();
 
 /** true = the full version is unlocked on this account (or was, last we heard). */
 export function isFull() { return full; }
+
+/** true = the dev server's demo mode is forcing the full version (no account behind it). */
+export function isDemoFull() { return DEMO_FULL; }
 
 /**
  * Record the server's answer. Called on every /api/me answer — including a
  * `false` after a sign-out or a refund, which takes the full version away.
  */
 export function setFull(next) {
+  if (DEMO_FULL) return;
   const value = next === true;
   try {
     if (value) localStorage.setItem(STORE_KEY, '1');
@@ -121,6 +136,6 @@ export function effectiveAiLevel(id) { return canUseAiLevel(id) ? id : FREE_AI_L
 
 /** Test seam: forget the in-memory answer and re-read storage. */
 export function _resetForTests() {
-  full = readStore();
+  full = DEMO_FULL || readStore();
   listeners.clear();
 }

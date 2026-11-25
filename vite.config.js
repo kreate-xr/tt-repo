@@ -43,6 +43,12 @@ export default defineConfig(({ mode, command }) => {
   // shows the mistake before `firebase deploy` does.
   console.log(`[vite] mode=${mode} firebase project=${env.VITE_FIREBASE_PROJECT_ID || '(unset)'}`);
 
+  // `npm run dev:demo`: the full version for every headset, no account and no
+  // connection needed (js/account/tier.js) — an exhibition stand without
+  // internet. Dev server only: a `vite build --mode demo` still defines false.
+  const demoFull = isDevServer && mode === 'demo';
+  if (demoFull) console.log('[vite] DEMO: full version unlocked for everyone on this dev server');
+
   return {
   plugins: [...(httpOnly ? [] : [basicSsl()])],
   define: {
@@ -51,6 +57,7 @@ export default defineConfig(({ mode, command }) => {
     __RECAPTCHA_SITE_KEY__: JSON.stringify(env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY || ''),
     __APPCHECK_DEBUG_TOKEN__: JSON.stringify(isDevServer ? (secrets.APPCHECK_DEBUG_TOKEN || '') : ''),
     __IS_DEV_SERVER__: JSON.stringify(isDevServer),
+    __DEMO_FULL__: JSON.stringify(demoFull),
     // PayLayer service origin; its browser SDK is loaded from here at checkout
     // (js/account/account.js). Public. Test and prod use different PayLayer
     // deployments (test-mode vs live Razorpay keys).
